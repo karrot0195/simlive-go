@@ -1,0 +1,7 @@
+POST http://localhost:8080/api/channels
+Content-Type: application/json
+
+{
+  "channel_id": "7261da4b-9c45-4619-bfb0-a6119dc7b6e6",
+  "is_active": true
+}

@@ -1,0 +1,28 @@
+package utils
+
+import (
+	"fmt"
+	"simlive/internal/configs"
+	"time"
+)
+
+func ParseESPXTime(timeStr, tzStr string) (time.Time, error) {
+	loc, err := time.LoadLocation(tzStr)
+	if err != nil {
+		loc = GetLoc()
+	}
+
+	if t, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS, timeStr, loc); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unable to parse time: %s", timeStr)
+}
+
+func GetLoc() *time.Location {
+	return time.FixedZone(configs.TZ, configs.TZ_OFFSET)
+}
+
+// TimeNumToText converts a Unix timestamp (seconds) to local time text (HH:MM:SS), e.g. 01:23:45
+func TimeNumToText(timeNum int64) string {
+	return time.Unix(timeNum, 0).In(GetLoc()).Format("15:04:05")
+}
