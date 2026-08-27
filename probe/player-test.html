@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>simlive playback probe</title>
+<style>body{font-family:monospace;font-size:12px;background:#111;color:#eee;padding:8px}video{width:640px;height:360px;background:#000}</style>
+</head>
+<body>
+<video id="v" muted autoplay playsinline></video>
+<pre id="log"></pre>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+<script>
+const url = new URLSearchParams(location.search).get("url") ||
+  "http://localhost:8080/live/7261da4b-9c45-4619-bfb0-a6119dc7b6e6/playlist.m3u8";
+const DURATION = parseInt(new URLSearchParams(location.search).get("t") || "100", 10);
+const v = document.getElementById("v");
+const logEl = document.getElementById("log");
+let events = [];
+let lastTime = 0, lastTimeAt = Date.now();
+let maxGap = 0;
+let fragSeqs = [];
+let errors = [];
+let res = "";
+let stallSince = 0;
+
+function log(msg) {
+  events.push(msg);
+  if (events.length > 300) events.shift();
+  logEl.textContent = events.join("\n");
+}
+
+setInterval(() => {
+  const now = Date.now();
+  if (v.currentTime > lastTime + 0.01) {
+    lastTime = v.currentTime;
+    lastTimeAt = now;
+    stallSince = 0;
+  } else if (!v.paused && v.readyState >= 2) {
+    if (stallSince === 0) stallSince = now;
+    if (now - stallSince > 5000) {
+      log(`STALL: currentTime frozen at ${v.currentTime.toFixed(3)} for ${((now-stallSince)/1000).toFixed(1)}s`);
+      stallSince = now;
+    }
+  }
+}, 500);
+
+v.addEventListener("error", () => {
+  log(`VIDEO ERROR: code=${v.error ? v.error.code : "?"} message=${v.error ? v.error.message : "?"}`);
+});
+
+let Hls = window.Hls;
+if (Hls && Hls.isSupported()) {
+  const hls = new Hls({ liveSyncDurationCount: 3, maxBufferLength: 15, startLevel: -1 });
+  hls.on(Hls.Events.MANIFEST_PARSED, (e, data) => {
+    log(`MANIFEST_PARSED levels=${data.levels.length}`);
+  });
+  hls.on(Hls.Events.ERROR, (e, data) => {
+    if (data.fatal) log(`FATAL ${data.type}:${data.details}`);
+    else log(`ERR ${data.type}:${data.details}`);
+    errors.push(`${data.type}:${data.details}`);
+    if (data.fatal) {
+      if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+      else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+    }
+  });
+  hls.on(Hls.Events.FRAG_BUFFERED, (e, data) => {
+    const f = data.frag;
+    fragSeqs.push(f.seq);
+    const gap = v.buffered.length ? v.buffered.end(v.buffered.length - 1) - v.currentTime : 0;
+    if (gap > maxGap) maxGap = gap;
+    if (v.videoWidth) res = `${v.videoWidth}x${v.videoHeight}`;
+    if (fragSeqs.length % 4 === 0) {
+      log(`frag seq=${f.seq} dur=${f.duration.toFixed(3)} cur=${v.currentTime.toFixed(2)} buf=${gap.toFixed(2)} res=${res}`);
+    }
+  });
+  hls.loadSource(url);
+  hls.attachMedia(v);
+} else if (v.canPlayType("application/vnd.apple.mpegurl")) {
+  v.src = url;
+}
+
+setTimeout(() => {
+  const seqs = fragSeqs;
+  let seqJumps = 0, prev = -1;
+  for (const s of seqs) {
+    if (prev >= 0 && s !== prev + 1) seqJumps++;
+    prev = s;
+  }
+  let summary = "===== SUMMARY =====\n";
+  summary += `duration=${DURATION}s currentTime=${v.currentTime.toFixed(2)}\n`;
+  summary += `fragments buffered=${fragSeqs.length} seq jumps=${seqJumps}\n`;
+  summary += `errors=${JSON.stringify(errors)}\n`;
+  summary += `maxBufferAhead=${maxGap.toFixed(2)}s res=${res}\n`;
+  summary += `stalled=${stallSince ? "yes" : "no"}\n`;
+  summary += events.join("\n");
+  log(summary);
+  // Gửi kết quả về server để thu thập
+  try { fetch("http://localhost:8897/result", {method: "POST", body: summary}); } catch (e) {}
+  document.title = "PLAYBACK_DONE";
+}, DURATION * 1000);
+</script>
+</body>
+</html>

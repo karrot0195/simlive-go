@@ -19,10 +19,23 @@ type PlayoutChannel struct {
 // SegmentItem - Cấu trúc lưu trong Redis Sorted Set
 type SegmentItem struct {
 	Sequence    int64   `json:"sequence"`
-	StoragePath string  `json:"storage_path"` // e.g. espx-video-lib/PCwdH9LA.../L_0/segment_000.ts
-	Duration    float64 `json:"duration"`     // tính bằng giây
-	StartTime   int64   `json:"start_time"`   // Unix timestamp (Giây)
-	TimeText    string  `json:"time_text"`    // Giờ phút
+	StoragePath string  `json:"storage_path"`
+	Duration    float64 `json:"duration"`   // Dùng cho #EXTINF
+	StartTime   int64   `json:"start_time"` // Giữ lại để tương thích hiển thị/debug (Unix timestamp)
+	TimeText    string  `json:"time_text"`  // Giờ phút
+
+	// --- BỔ SUNG CHO PTS TIMELINE ---
+	PtsStart   int64   `json:"pts_start"`   // Giá trị thô từ #EXT-X-PTS-RANGE
+	PtsEnd     int64   `json:"pts_end"`     // Giá trị thô từ #EXT-X-PTS-RANGE
+	MediaStart float64 `json:"media_start"` // PTS Start quy đổi ra giây (PtsStart / 90000 + PtsOffset)
+	MediaEnd   float64 `json:"media_end"`   // PTS End quy đổi ra giây (PtsEnd / 90000 + PtsOffset)
+
+	// PtsOffset là vị trí của segment trên timeline cục bộ của kênh (giây):
+	// MediaStart - timelineBase, với timelineBase = MediaStart của segment đầu tiên.
+	// Engine dùng nó để viết lại PTS/DTS của file .ts (ffmpeg -copyts -output_ts_offset)
+	// sao cho DTS liên tục xuyên suốt VOD + ads mà không phụ thuộc epoch tuyệt đối.
+	// nil khi segment cũ chưa có field này (engine fallback sang MediaStart).
+	PtsOffset *float64 `json:"pts_offset,omitempty"`
 }
 
 // Response structs cho ESPX APIs

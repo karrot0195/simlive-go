@@ -1,5 +1,10 @@
 # specification.md (Updated)
 
+> Status: reflects the **implemented** system as of 2026-08-27 — 3-tier quality
+> selection (`SIMLIVE_QUALITY`), VOD↔ads rendition matching, local `PtsOffset`
+> timeline, and ffmpeg PTS/DTS rewrite in the engine. For current status and
+> gotchas see `docs/HANDOFF.md` and `AGENTS.md`.
+
 ```markdown
 ## 🇬🇧 English Version: SimLive Project Specification & Architecture (Updated)
 
@@ -65,7 +70,8 @@ rclone cat espx-video-lib:espx-video-lib/PCwdH9LA7uS6jYJDDsmZCL3x/L_0/vod.m3u8
 
 2. **Parse Manifest Contents:**
 * Extract segment file names (`segment_000.ts`, `segment_001.ts`) and target durations (`#EXTINF:XX.X`).
-* The system supports dynamic ad insertion by parsing a separate ad manifest (`ads-v3/L0/vod.m3u8`).
+* The system supports dynamic ad insertion by parsing a separate ad manifest (`ads-v3/{adsRend}/vod.m3u8`).
+* **Rendition selection:** the VOD dir (`L_0`/`L_1`/`L_2`) and ads dir (`L0`/`L1`/`L2`) are resolved per `SIMLIVE_QUALITY` (see §6.1) so VOD and ads always match resolution.
 
 
 3. **Download Segment TS (Engine Phase):**
@@ -92,8 +98,9 @@ Runs periodically (e.g., every 30-60 minutes) or at start-of-day:
 3. For each schedule item:
 * Read Stream ID (`programme.short_url`).
 * Execute `rclone cat` to read variant `m3u8` contents.
-* Compute absolute timeline timestamps for each `.ts` file based on `local_date_start` + accumulated segment durations.
-* **Ad Insertion:** Periodically insert ad segments at configured intervals (every 120 seconds).
+* Compute timeline timestamps for each `.ts` file from the manifest's `#EXT-X-PTS-RANGE` (raw PTS) shifted to a **local timeline**: every segment gets `PtsOffset = MediaStart − timelineBase` (timelineBase = first segment's MediaStart, in seconds). Local offsets avoid the 2^33/90000 ≈ 95443.7s PTS wrap of huge epoch offsets.
+* **Ad Insertion:** Periodically insert ad segments at configured intervals (`AdInsertionInterval` = 30 seconds); ads are placed on the same local timeline.
+* **Quality tier:** resolve `SIMLIVE_QUALITY` (`auto`|`360p`|`720p`|`1080p`) and pick the VOD/ads rendition pair matching the tier resolution (see §6.1).
 
 
 4. Push segment mappings into a **Redis Sorted Set** (`ZADD` with Epoch timestamp as score):
@@ -104,38 +111,50 @@ Runs periodically (e.g., every 30-60 minutes) or at start-of-day:
   "sequence": 1052,
   "storage_path": "espx-video-lib/PCwdH9LA7uS6jYJDDsmZCL3x/L_0/segment_001.ts",
   "duration": 6.006,
-  "start_time": 1234567890
+  "start_time": 1234567890,
+  "pts_start": 2259900,
+  "pts_end": 2264550,
+  "media_start": 677.80,
+  "media_end": 681.72,
+  "pts_offset": 12345.60
 }
 
 ```
+* `pts_offset` (local timeline, seconds) is what the engine rewrites each segment's PTS/DTS to (`MediaStart − timelineBase`); `nil` on legacy segments → engine falls back to `media_start`.
 
 
 5. **Redis Pipeline Batching:** Batch insert operations every 50 items to optimize Redis performance.
 
 #### **Module 2: Engine (StartSimlive - Live Engine & HLS Generator)**
 
-An infinite real-time loop managing playout state:
+An infinite 1-second tick loop managing playout state:
 
-1. **Clean Channel State:** On startup, clean local cache directory and HLS Redis key while preserving timeline data.
+1. **Clean Channel State:** On startup, delete the local cache directory (`TMP_DIR`) while preserving the Redis timeline; also deletes `.ts`/`.pts` files that leave the active window.
 2. **Clock Sync:** Check current system epoch timestamp (`currentTime`).
 3. **Sliding Window Selector:**
-* Query Redis for segments within `[currentTime - 120s, currentTime + 60s]`.
+* Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`).
 
 
-4. **Segment Fetcher (Worker Pool):**
-* Inspect local cache directory `/tmp/simlive/{playout_id}/`.
-* Use a worker pool (configurable max goroutines) to run `rclone copyto` and prebuffer upcoming segments.
-* Segments are stored as `seg_{sequence}.ts` in the local cache.
+4. **Segment Fetcher (Worker Pool, async):**
+* Inspect local cache directory `{TMP_DIR}/{playout_id}/`.
+* Use a worker pool (configurable max goroutines) to run `rclone copyto` and prebuffer upcoming segments; downloads run async so the tick never blocks (window slides exactly +1 segment per ~4s).
+* Segments are stored as `seg_{sequence}.ts` in the local cache, with an in-flight dedupe map so a file is never downloaded/rewritten twice.
+
+5. **PTS/DTS Rewrite (`rewritePtsOffset`):**
+* After download, each `.ts` is remuxed once with ffmpeg `-c copy -copyts -muxdelay 0 -muxpreload 0 -output_ts_offset <offset>`, where `offset = target − firstVideoDTS` (probed with ffprobe).
+* Target = `seg.PtsOffset` (local timeline) → fallback `MediaStart` (legacy) → fallback `PtsStart`. No re-encode — DTS becomes continuous across VOD↔ads boundaries.
+* Success is marked by a `seg_{sequence}.ts.pts` marker (idempotent); if probing fails the raw file is kept but still marked prepared so the window never stalls.
 
 
-5. **HLS Dynamic Playlist Builder:**
-* Generate live `playlist.m3u8` with 3-5 segments in the `[now-20s, now+10s]` window.
+6. **HLS Dynamic Playlist Builder:**
+* Generate live `playlist.m3u8` (5-segment sliding window) with `#EXT-X-TARGETDURATION` from the longest segment.
 * Increment `#EXT-X-MEDIA-SEQUENCE` based on the first segment's sequence.
-* Write playlist to both local disk and Redis.
+* **Only advertises prepared segments** (those with a `.pts` marker) so players never request in-progress files; keeps the previous playlist while nothing is ready.
+* Written atomically to `{TMP_DIR}/{playout_id}/playlist.m3u8`, served by the API at `http://localhost:8080/live/{channelID}/playlist.m3u8`.
 
 
-6. **Garbage Collection (Clean Up):**
-* Delete local `.ts` files no longer in the active window.
+7. **Garbage Collection (Clean Up):**
+* Delete local `.ts`/`.pts` files no longer in the active window.
 * Purge expired items from Redis older than 120 seconds.
 
 
@@ -148,26 +167,41 @@ An infinite real-time loop managing playout state:
 
 * **Key:** `simlive:timeline:{channel_id}`
 * **Type:** Sorted Set
-* **Score:** Unix timestamp (start time of segment)
+* **Score:** `MediaStart` (segment start on the local timeline, seconds)
 * **Member:** JSON-encoded `SegmentItem`
 * **Expiry:** 26 hours
 
 #### **Ad Insertion Logic**
 
-* Load ad segments from `espx-video-lib:espx-video-lib/ads-v3/L0/vod.m3u8`
+* Load ad segments from `espx-video-lib:espx-video-lib/ads-v3/{adsRend}/vod.m3u8`, where `{adsRend}` is chosen by `resolveAdsRendition()` (see §6.1)
 * Insert ads when:
-1. Current segment time >= current time
-2. Elapsed time since last ad >= 120 seconds
-* Ads are inserted between content segments and increment both global time and ad offset
+1. Segment start time >= current time
+2. Elapsed time since last ad >= `AdInsertionInterval` (30 seconds)
+* Ads are inserted between content segments, get the same local `PtsOffset` treatment, and increment both global time and ad offset
 
 #### **Segment Processing Constants**
 
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `WindowItemSize` | 50 | Redis pipeline flush batch size |
-| `AdInsertionInterval` | 120 | Seconds between ad insertions |
+| `AdInsertionInterval` | 30 | Seconds between ad insertions |
 | `RedisExpiryHours` | 26 | Redis key expiration in hours |
-| `WindowBufferSeconds` | 120 | Lookback buffer for segment inclusion |
+| `WindowBufferSeconds` | 120 | Lookback buffer for segment inclusion (planner) |
+
+### 6.1 Quality Tier & Rendition Matching (SIMLIVE_QUALITY)
+
+| Quality | Target resolution | VOD dir | Ads dir |
+|---------|-------------------|---------|---------|
+| 360p    | 640×360           | `L_0`   | `L2`    |
+| 720p    | 1280×720          | `L_1`   | `L1`    |
+| 1080p   | 1920×1080         | `L_2`   | `L0`    |
+
+Selection logic (`internal/planner/planner.go`):
+* `SIMLIVE_QUALITY=auto` (default) — highest equal-resolution VOD==ads pair.
+* Explicit tier — `resolveRenditions()`: (1) exact VOD==ads pair at the tier resolution; (2) closest VOD==ads pair; (3) min-area-diff pair. Probe failures (e.g. missing `L_3`) are skipped gracefully.
+* Hard overrides `SIMLIVE_VOD_RENDITION` + `SIMLIVE_ADS_RENDITION` (both set) beat the tier.
+* Ads side is resolved once per planner run by `resolveAdsRendition()`: env override > tier-closest > tier fallback map > largest (auto). **Note:** `pair.ads` in `resolveRenditions()` is log-only — real ads paths come from `resolveAdsRendition()`.
+* **Invariant:** VOD and ads must resolve to the SAME resolution — a mid-stream resolution change in one MSE SourceBuffer fails playback even with continuous PTS.
 
 ---
 
@@ -207,8 +241,15 @@ An infinite real-time loop managing playout state:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `TMP_DIR` | OS Temp | Directory for local segment cache |
-| `MAX_WORKERS` | Configurable | Maximum concurrent downloads per channel |
+| `SIMLIVE_QUALITY` | `auto` | `360p`/`720p`/`1080p` quality tier (currently `360p` in `.env`) |
+| `SIMLIVE_VOD_RENDITION` | (empty) | Hard override: VOD rendition dir (e.g. `L_0`) |
+| `SIMLIVE_ADS_RENDITION` | (empty) | Hard override: ads rendition dir (e.g. `L2`) |
+| `DB_HOST`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` | localhost/postgres | Postgres (`playout_channels`) |
+| `REDIS_ADDR` | `localhost:6371` | Redis (note: 6371, not 6379) |
+| `ESPX_API_URL` | `https://api2.espx.cloud` | EPG API base URL |
+| `TMP_DIR` | `./outputs` | Engine local segment cache (`{TMP_DIR}/{channelID}/`) |
+| `MAX_WORKERS` / `WORKER_POOL_SIZE` | 50 | Download concurrency |
+| `ENABLE_CLEAN_UP` | `false` | Cache cleanup toggle |
 | `TZ_NUM` | Configurable | Timezone offset for API queries |
 
 ---
@@ -216,7 +257,9 @@ An infinite real-time loop managing playout state:
 ### 9. Error Handling & Resilience
 
 - **Ad Load Failure:** Non-critical; system continues with content segments only
-- **Segment Download Failure:** Logged but doesn't block the playlist generation
+- **Segment Download Failure:** Logged but doesn't block the playlist generation; in-flight dedupe prevents duplicate downloads
+- **Rendition Probe Failure:** Missing renditions (e.g. `L_3`) fail the probe gracefully and are skipped; per-tier fallback map used when nothing probes
+- **PTS Rewrite Failure:** Anchor falls back from `PtsOffset` → `MediaStart` → `PtsStart`; if all fail the raw file is kept but still marked prepared — the window never stalls
 - **Batch Flush Failures:** Individual batch failures are logged; system continues
 - **Redis Empty Windows:** Fallback to slate (handled by player-side fallback)
 - **End of Timeline Check:** Prevents processing beyond the configured day
@@ -254,6 +297,12 @@ type Planner struct {
     redisSyncOffset    int64          // Offset tracking for ads
     channelID          string         // Current channel being processed
     processStartTime   time.Time      // Processing start time
+
+    // Rendition matching (quality tier)
+    rendMu     sync.Mutex              // Guards rendCache
+    rendCache  map[string]renditionPair // streamID -> {vod, ads} pair
+    adsRend    string                  // Resolved once (ads shared across streams)
+    adsRendSet bool                    // Whether adsRend was resolved
 }
 ```
 
@@ -270,6 +319,10 @@ type SegmentProcessor struct {
     totalAdsAdded   int       // Count of ads inserted
     nowUnix         int64     // Current Unix timestamp
     adSegments      []models.SegmentItem // Loaded ad segments
+
+    // PTS timeline (local, seconds)
+    currentPtsOffset float64  // Shift applied to raw PTS for the current program
+    timelineBase     float64  // MediaStart of first segment (local anchor)
 }
 ```
 
@@ -290,27 +343,28 @@ Main entry point for timeline building:
 - Delegates to `processStreamSegments()`
 
 #### processStreamSegments()
-- Fetches and parses m3u8 manifest using `rclone cat`
-- Extracts segment duration and filenames
+- Fetches and parses m3u8 manifest using `rclone cat` (VOD dir from the tier pair)
+- Parses `#EXT-X-PTS-RANGE` → raw `pts_start`/`pts_end`
+- Shifts to local timeline: `mediaStart = (pts_start + currentPtsOffset) / 90000`
 - Processes each segment through `processSegment()`
 
 #### processSegment()
 - Increments sequence counter
-- Calculates actual start time from global running time
+- Computes `PtsOffset = setTimelineBase(mediaStart)` (MediaStart − timelineBase)
 - Adds segment to Redis if within window (`now - 120s`)
 - Updates global running time with segment duration
 - Triggers ad insertion via `insertAdsIfNeeded()`
 
 #### insertAdsIfNeeded()
-- Checks if time to insert ads (after current time and 120s interval)
+- Checks if time to insert ads (after current time and 30s interval)
 - Iterates through loaded ad segments
-- Sets sequence and start time for each ad
+- Assigns each ad the same local `PtsOffset` treatment (`media_start − timelineBase`)
 - Adds to Redis pipeline
 - Updates ad offset and global running time
 
 #### loadAdSegments()
-- Fetches ad manifest from `ads-v3/L0/vod.m3u8`
-- Parses EXTINF and segment filenames
+- Fetches ad manifest from `ads-v3/{adsRend}/vod.m3u8` (ads rendition resolved once via `resolveAdsRendition()`)
+- Parses EXTINF, segment filenames and PTS
 - Returns slice of ad segments for insertion
 
 ### Processing Flow
@@ -339,10 +393,15 @@ Reads the prepared timeline from Redis and generates a live HLS stream with dyna
 #### Engine Structure
 ```go
 type Engine struct {
-    rdb        *redis.Client          // Redis client for timeline access
-    rclone     *storage.RcloneService // RClone service for file operations
-    tmpDir     string                 // Temporary directory for local cache
-    workerPool chan struct{}          // Worker pool for concurrent downloads
+    rdb           *redis.Client          // Redis client for timeline access
+    rclone        *storage.RcloneService // RClone service for file operations
+    tmpDir        string                 // Local cache dir (TMP_DIR, default ./outputs)
+    workerPool    chan struct{}          // Worker pool for concurrent downloads
+    enableCleanup bool                   // ENABLE_CLEAN_UP toggle
+    states        map[string]*channelState // Per-channel playlist state (seq tracking)
+    statesMu      sync.Mutex
+    inFlight      map[string]bool        // In-flight download/rewrite dedupe
+    inFlightMu    sync.Mutex
 }
 ```
 
@@ -354,25 +413,31 @@ type Engine struct {
 - Clears only the HLS playlist cache key (`simlive:hls`)
 
 #### StartPlayoutLoop()
-The main infinite loop that runs every 2 seconds:
+The main infinite loop that ticks every **1 second**:
 
 1. **Fetch Timeline Window**
-   - Queries Redis for segments in `[now-120s, now+60s]`
+   - Queries Redis for segments in `[now-300s, now+120s]` (score = `media_start`)
    - Deserializes JSON segment items
 
 2. **Sync Local Cache**
-   - Removes local `.ts` files not in the active window
+   - Removes local `.ts`/`.pts` files not in the active window
 
-3. **Download Missing Segments**
-   - Uses worker pool for concurrent downloads
-   - Skips already cached segments
+3. **Download Missing Segments (async)**
+   - Uses worker pool for concurrent `rclone copyto`
+   - Skips already cached segments; in-flight dedupe prevents duplicate downloads across ticks
    - Stores as `seg_{sequence}.ts`
 
-4. **Generate HLS Playlist**
-   - Creates playlist with 3-5 segments in `[now-20s, now+10s]`
-   - Writes to both local disk and Redis
+4. **Rewrite PTS/DTS (`rewritePtsOffset`)**
+   - Probes first video DTS (ffprobe), remuxes with `-c copy -copyts -output_ts_offset` so DTS is continuous across VOD↔ads
+   - Target = `seg.PtsOffset` (local timeline) → fallback `MediaStart` → fallback `PtsStart`
+   - Writes `seg_{sequence}.ts.pts` marker when prepared (idempotent)
 
-5. **Cleanup Redis**
+5. **Generate HLS Playlist**
+   - Creates 5-segment sliding playlist; `#EXT-X-MEDIA-SEQUENCE` from first segment
+   - **Only advertises segments with a `.pts` marker**; keeps previous playlist while nothing is ready
+   - Writes atomically to `{TMP_DIR}/{channelID}/playlist.m3u8`
+
+6. **Cleanup Redis**
    - Removes segments older than `now-120s`
 
 #### syncLocalCacheDir()
@@ -388,11 +453,13 @@ The main infinite loop that runs every 2 seconds:
 ### Processing Flow
 
 ```
-[Redis Timeline] ← [ZRangeByScore: now-120 to now+60]
+[Redis Timeline] ← [ZRangeByScore: now-300 to now+120]
          ↓
 [Local Cache Check] → [Download Missing Segments]
          ↓
-[HLS Playlist Generation] → [Local File + Redis Cache]
+[PTS/DTS Rewrite (ffmpeg -copyts -output_ts_offset)] → [.pts marker]
+         ↓
+[HLS Playlist Generation (prepared segs only)] → [Local File]
          ↓
 [Cleanup: Local Files + Redis Entries]
 ```
@@ -403,12 +470,13 @@ The main infinite loop that runs every 2 seconds:
 
 | Constant | Planner | Engine | Description |
 |----------|---------|--------|-------------|
-| `WindowBufferSeconds` | 120 | 120 | Lookback buffer for segment inclusion |
-| `AdInsertionInterval` | 120 | - | Seconds between ad insertions |
+| `WindowBufferSeconds` | 120 | - | Lookback buffer for segment inclusion (planner) |
+| `AdInsertionInterval` | 30 | - | Seconds between ad insertions |
 | `WindowItemSize` | 50 | - | Redis pipeline flush batch size |
 | `RedisExpiryHours` | 26 | - | Redis key expiration in hours |
-| Loop Interval | - | 2s | Engine processing tick |
-| Lookahead Window | - | 60s | Future segment pre-fetch |
+| Loop Interval | - | 1s | Engine processing tick |
+| Lookback Window | - | 300s | Past segments fetched from Redis |
+| Lookahead Window | - | 120s | Future segment pre-fetch |
 | HLS TTL | - | 10s | Playlist Redis cache expiry |
 
 ---
@@ -418,10 +486,22 @@ The main infinite loop that runs every 2 seconds:
 ### SegmentItem
 ```go
 type SegmentItem struct {
-    Sequence    int64   `json:"sequence"`
-    StoragePath string  `json:"storage_path"`
-    Duration    float64 `json:"duration"`
-    StartTime   int64   `json:"start_time"`
+    Sequence    int64    `json:"sequence"`
+    StoragePath string   `json:"storage_path"`
+    Duration    float64  `json:"duration"`    // Used for #EXTINF
+    StartTime   int64    `json:"start_time"`  // Unix timestamp (debug/display)
+    TimeText    string   `json:"time_text"`   // HH:mm display
+
+    // PTS timeline fields
+    PtsStart   int64    `json:"pts_start"`   // Raw #EXT-X-PTS-RANGE start (90kHz)
+    PtsEnd     int64    `json:"pts_end"`     // Raw #EXT-X-PTS-RANGE end (90kHz)
+    MediaStart float64  `json:"media_start"` // PtsStart/90000 + offset (seconds)
+    MediaEnd   float64  `json:"media_end"`   // PtsEnd/90000 + offset (seconds)
+
+    // Local timeline position: MediaStart - timelineBase (seconds).
+    // Engine rewrites PTS/DTS to this value; nil on legacy segments
+    // (engine falls back to MediaStart).
+    PtsOffset  *float64 `json:"pts_offset,omitempty"`
 }
 ```
 
@@ -453,10 +533,11 @@ type ESPXScheduleItem struct {
 
 | Path Pattern | Module | Description |
 |--------------|--------|-------------|
-| `{bucket}/{streamID}/L_0/vod.m3u8` | Planner | Content m3u8 manifest |
-| `{adsBucket}/L0/vod.m3u8` | Planner | Ad manifest |
-| `{bucket}/{streamID}/L_0/{segment}.ts` | Both | Remote segment storage |
+| `{bucket}/{streamID}/{vodDir}/vod.m3u8` | Planner | Content m3u8 manifest (vodDir per tier: `L_0`/`L_1`/`L_2`) |
+| `{adsBucket}/{adsRend}/vod.m3u8` | Planner | Ad manifest (adsRend per tier: `L0`/`L1`/`L2`) |
+| `{bucket}/{streamID}/{vodDir}/{segment}.ts` | Both | Remote segment storage |
 | `{tmpDir}/{channelID}/seg_{seq}.ts` | Engine | Local cached segment |
+| `{tmpDir}/{channelID}/seg_{seq}.ts.pts` | Engine | Prepared marker (PTS rewrite done) |
 | `{tmpDir}/{channelID}/playlist.m3u8` | Engine | Local HLS playlist |
 
 ---
