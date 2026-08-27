@@ -42,7 +42,6 @@ func (h *ChannelHandler) RegisterChannel(c *gin.Context) {
 		BaseName:        detail.BaseName,
 		ContentTimezone: detail.ContentTimezone,
 		ChannelEpgID:    detail.ChannelEpg.ID,
-		IsActive:        req.IsActive,
 		UpdatedAt:       time.Now(),
 	}
 

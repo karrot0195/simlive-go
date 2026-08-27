@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -19,8 +20,17 @@ import (
 	"simlive/internal/utils"
 )
 
-const WINDOW_ITEM_SIZE = 50
+const (
+	WindowItemSize      = 50
+	AdInsertionInterval = 120 // seconds
+	RedisExpiryHours    = 26
+	WindowBufferSeconds = 120 // seconds before current time to include segments
+)
 
+// ErrEndOfTimeline indicates that the end of the timeline has been reached
+var ErrEndOfTimeline = errors.New("end of timeline reached - processing complete")
+
+// Planner handles the orchestration of EPG to timeline processing
 type Planner struct {
 	db         *gorm.DB
 	rdb        *redis.Client
@@ -28,9 +38,37 @@ type Planner struct {
 	rclone     *storage.RcloneService
 	bucketName string
 	adsBucket  string
+
+	// processing state: Uses float64 to prevent fractional duration truncation (e.g. 3.999s)
+	globalRunningTime  float64
+	totalSegmentsAdded int64
+	redisSyncOffset    int64
+	channelID          string
+	processStartTime   time.Time
 }
 
-func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
+// SegmentProcessor handles segment processing logic
+type SegmentProcessor struct {
+	planner *Planner
+	pipe    redis.Pipeliner
+	ctx     context.Context
+
+	// processing state
+	sequenceCounter int64
+	adOffset        float64
+	lastAdTime      float64
+	totalAdsAdded   int
+	nowUnix         float64
+	adSegments      []models.SegmentItem
+}
+
+// NewPlanner creates a new Planner instance
+func NewPlanner(
+	db *gorm.DB,
+	rdb *redis.Client,
+	espx *api.ESPXClient,
+	rclone *storage.RcloneService,
+) *Planner {
 	return &Planner{
 		db:         db,
 		rdb:        rdb,
@@ -41,12 +79,7 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 	}
 }
 
-type AdSegment struct {
-	Duration    float64
-	StoragePath string
-}
-
-func (p *Planner) loadAdSegments() ([]AdSegment, error) {
+func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	adsM3u8Path := fmt.Sprintf("%s/L0/vod.m3u8", p.adsBucket)
 	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
 	if err != nil {
@@ -54,17 +87,21 @@ func (p *Planner) loadAdSegments() ([]AdSegment, error) {
 	}
 
 	lines := strings.Split(m3u8Content, "\n")
-	var adSegments []AdSegment
+	var adSegments []models.SegmentItem
 	var currentDuration float64
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#EXTINF:") {
+
+		switch {
+		case strings.HasPrefix(line, "#EXTINF:"):
 			durStr := strings.TrimPrefix(line, "#EXTINF:")
 			durStr = strings.Split(durStr, ",")[0]
-			currentDuration, _ = strconv.ParseFloat(durStr, 64)
-		} else if strings.HasSuffix(line, ".ts") {
-			adSegments = append(adSegments, AdSegment{
+			if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
+				currentDuration = dur
+			}
+		case strings.HasSuffix(line, ".ts"):
+			adSegments = append(adSegments, models.SegmentItem{
 				Duration:    currentDuration,
 				StoragePath: fmt.Sprintf("%s/L0/%s", p.adsBucket, line),
 			})
@@ -78,183 +115,291 @@ func (p *Planner) loadAdSegments() ([]AdSegment, error) {
 	return adSegments, nil
 }
 
-// just running into 24:00:00, so we need to adjust the duration by 1 second
-func (p *Planner) CheckEndOfTimeline(processTime time.Time, globalRunningTime int) bool {
-	endOfDay := processTime.AddDate(0, 0, 1)
-	currentRunningTime := processTime.Add(time.Duration(globalRunningTime))
-	if endOfDay.Before(currentRunningTime) {
-		return true
-	}
-	return false
+func (p *Planner) getRedisKey() string {
+	return fmt.Sprintf("simlive:timeline:%s", p.channelID)
 }
 
-func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.PlayoutChannel, dateStr string) error {
-	loc := utils.GetLoc()
-	tz := configs.TZ_NUM
+// getLastSequenceNumber queries existing items in Redis to maintain monotonic sequence IDs
+func (p *Planner) getLastSequenceNumber(ctx context.Context) int64 {
+	items, err := p.rdb.ZRevRange(ctx, p.getRedisKey(), 0, 0).Result()
+	if err != nil || len(items) == 0 {
+		return 0
+	}
+	var seg models.SegmentItem
+	if err := json.Unmarshal([]byte(items[0]), &seg); err == nil {
+		return seg.Sequence
+	}
+	return 0
+}
 
-	nowLocal := time.Now().In(loc)
-	nowUnix := nowLocal.Unix()
+func (p *Planner) ProcessEPGToTimeline(
+	ctx context.Context,
+	channel models.PlayoutChannel,
+	dateStr string,
+) error {
+	p.channelID = channel.ID
+	p.processStartTime = time.Now()
 
-	log.Printf("[Planner] Fetching schedules for channel %s (%s) date: %s tz: %s | Now Local: %s",
-		channel.Name, channel.ID, dateStr, tz, nowLocal.Format(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS))
+	log.Printf("[Planner] Starting processing for channel %s (%s) date: %s",
+		channel.Name, channel.ID, dateStr)
 
-	// get schedule items
-	schedules, err := p.espx.GetSchedules(channel.ChannelEpgID, dateStr, tz)
+	// Fetch schedules
+	schedules, err := p.espx.GetSchedules(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
 	if err != nil {
-		log.Printf("[Planner ERROR] Failed to fetch schedules: %v", err)
-		return err
+		return fmt.Errorf("failed to fetch schedules: %w", err)
 	}
 
 	if len(schedules.Data) == 0 {
-		log.Printf("[Planner WARNING] No schedule items returned from ESPX API for channel %s", channel.ID)
+		log.Printf("[Planner] No schedule items for channel %s", channel.ID)
 		return nil
 	}
 
-	adSegments, adErr := p.loadAdSegments()
-	if adErr != nil {
-		log.Printf("[Planner WARN] Could not load ads, proceeding without ads: %v", adErr)
+	adSegments, err := p.loadAdSegments()
+	if err != nil {
+		log.Printf("[Planner] Warning: Could not load ads: %v", err)
+		adSegments = []models.SegmentItem{}
 	}
 
-	redisKey := fmt.Sprintf("simlive:timeline:%s", channel.ID)
-	var sequenceCounter int64 = 0
+	lastSeq := p.getLastSequenceNumber(ctx)
 
-	var adOffset int64 = 0
-	var lastAdTime int64 = 0
-	var globalRunningTime int64 = 0
+	processor := &SegmentProcessor{
+		planner:         p,
+		pipe:            p.rdb.Pipeline(),
+		ctx:             ctx,
+		nowUnix:         float64(time.Now().Unix()),
+		sequenceCounter: lastSeq,
+		adSegments:      adSegments,
+	}
 
-	// urgentWindowMax := nowUnix + 300
-	// urgentFlushed := false
-
-	pipe := p.rdb.Pipeline()
-	totalSegmentsAdded := 0
-	totalAdsAdded := 0
-
+	nowLocal := p.processStartTime
 	for _, item := range schedules.Data {
-		if len(item.Programme.ProgrammeStreams) == 0 {
+		if p.isEndOfTimeline(p.processStartTime, p.globalRunningTime) {
+			log.Printf("[Planner] End of timeline reached, stopping processing")
+			break
+		}
+
+		if err := processor.processScheduleItem(item, channel, nowLocal); err != nil {
+			if err == ErrEndOfTimeline {
+				log.Printf("[Planner] End of timeline reached during processing, stopping")
+				break
+			}
+			log.Printf("[Planner] Warning: Failed to process schedule item: %v", err)
 			continue
 		}
+	}
 
-		streamID := item.Programme.ProgrammeStreams[0].StreamID
-		if streamID == "" {
-			continue
-		}
+	// Finalize remaining items in Redis pipeline
+	if err := p.flushRedisPipeline(processor.pipe); err != nil {
+		return fmt.Errorf("failed to finalize Redis operations: %w", err)
+	}
 
-		startTime, err := utils.ParseESPXTime(item.LocalDateStart, channel.ContentTimezone)
-		endTime, err := utils.ParseESPXTime(item.LocalDateEnd, channel.ContentTimezone)
-		if err != nil || endTime.Before(nowLocal) {
-			continue
-		}
+	log.Printf("[Planner] Successfully processed %d segments (%d ads) for channel %s",
+		p.totalSegmentsAdded, processor.totalAdsAdded, channel.ID)
 
-		epgStartTimeUnix := startTime.Unix()
-		epgWithOffset := epgStartTimeUnix + adOffset
-		if epgWithOffset > globalRunningTime {
-			globalRunningTime = epgWithOffset
-		}
+	return nil
+}
 
-		if lastAdTime == 0 {
-			lastAdTime = globalRunningTime
-		}
+func (p *Planner) flushRedisPipeline(pipe redis.Pipeliner) error {
+	pipe.Expire(context.Background(), p.getRedisKey(), RedisExpiryHours*time.Hour)
 
-		m3u8Path := fmt.Sprintf("%s/%s/L_0/vod.m3u8", p.bucketName, streamID)
-		m3u8Content, err := p.rclone.Cat(m3u8Path)
-		if err != nil {
-			log.Printf("[Planner ERROR] Failed rclone cat %s: %v", m3u8Path, err)
-			continue
-		}
+	if _, err := pipe.Exec(context.Background()); err != nil {
+		return fmt.Errorf("pipeline execution failed: %w", err)
+	}
 
-		lines := strings.Split(m3u8Content, "\n")
-		var currentDuration float64
+	return nil
+}
 
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "#EXTINF:") {
-				durStr := strings.TrimPrefix(line, "#EXTINF:")
-				durStr = strings.Split(durStr, ",")[0]
-				currentDuration, _ = strconv.ParseFloat(durStr, 64)
-			} else if strings.HasSuffix(line, ".ts") {
-				sequenceCounter++
-				segmentPath := fmt.Sprintf("%s/%s/L_0/%s", p.bucketName, streamID, line)
-				actualStartTime := globalRunningTime
+func (sp *SegmentProcessor) processScheduleItem(
+	item models.ESPXScheduleItem,
+	channel models.PlayoutChannel,
+	nowLocal time.Time,
+) error {
+	if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
+		return ErrEndOfTimeline
+	}
 
-				seg := models.SegmentItem{
-					Sequence:    sequenceCounter,
-					StoragePath: segmentPath,
-					Duration:    currentDuration,
-					StartTime:   actualStartTime,
-					TimeText:    utils.TimeNumToText(actualStartTime),
-				}
+	if len(item.Programme.ProgrammeStreams) == 0 {
+		return nil
+	}
 
-				segBytes, _ := json.Marshal(seg)
+	streamID := item.Programme.ProgrammeStreams[0].StreamID
+	if streamID == "" {
+		return nil
+	}
 
-				if actualStartTime >= (nowUnix - 120) {
-					pipe.ZAdd(ctx, redisKey, redis.Z{
-						Score:  float64(actualStartTime),
-						Member: string(segBytes),
-					})
-					totalSegmentsAdded++
-				}
+	startTime, err := utils.ParseESPXTime(item.LocalDateStart, channel.ContentTimezone)
+	if err != nil {
+		return fmt.Errorf("failed to parse start time: %w", err)
+	}
 
-				globalRunningTime += int64(currentDuration)
+	endTime, err := utils.ParseESPXTime(item.LocalDateEnd, channel.ContentTimezone)
+	if err != nil {
+		return fmt.Errorf("failed to parse end time: %w", err)
+	}
 
-				// Chèn Ads định kỳ
-				if len(adSegments) > 0 && actualStartTime >= nowUnix && (actualStartTime-lastAdTime) >= 120 {
-					for _, adSeg := range adSegments {
-						sequenceCounter++
-						adItem := models.SegmentItem{
-							Sequence:    sequenceCounter,
-							StoragePath: adSeg.StoragePath,
-							Duration:    adSeg.Duration,
-							StartTime:   globalRunningTime,
-							TimeText:    utils.TimeNumToText(globalRunningTime),
-						}
-						adBytes, _ := json.Marshal(adItem)
+	if endTime.Before(nowLocal) {
+		return nil
+	}
 
-						pipe.ZAdd(ctx, redisKey, redis.Z{
-							Score:  float64(globalRunningTime),
-							Member: string(adBytes),
-						})
+	epgStartUnix := float64(startTime.Unix())
+	epgWithOffset := epgStartUnix + sp.adOffset
+	if epgWithOffset > sp.planner.globalRunningTime {
+		sp.planner.globalRunningTime = epgWithOffset
+	}
 
-						adDurationInt := int64(adSeg.Duration)
-						globalRunningTime += adDurationInt
-						adOffset += adDurationInt
+	if sp.lastAdTime == 0 {
+		sp.lastAdTime = sp.planner.globalRunningTime
+	}
 
-						totalSegmentsAdded++
-						totalAdsAdded++
+	return sp.processStreamSegments(streamID)
+}
 
-						if p.CheckEndOfTimeline(nowLocal, int(globalRunningTime)) {
-							return nil
-						}
+func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
+	m3u8Path := fmt.Sprintf("%s/%s/L_0/vod.m3u8", sp.planner.bucketName, streamID)
+	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
+	if err != nil {
+		return fmt.Errorf("failed to fetch m3u8: %w", err)
+	}
 
-					}
-					lastAdTime = globalRunningTime
-				}
-				// if totalSegmentsAdded / 10 -> push to Redis every 10 segments
-				if totalSegmentsAdded%WINDOW_ITEM_SIZE == 0 {
-					_, err := pipe.Exec(ctx)
-					if err != nil {
-						log.Printf("[Planner ERROR] Fast-path flush failed: %v", err)
-					} else {
-						log.Printf("[Planner FAST-PATH] Added %d items into redis (total=%d, runnning-time=%s)", WINDOW_ITEM_SIZE, totalSegmentsAdded, utils.TimeNumToText(globalRunningTime))
-					}
-					pipe = p.rdb.Pipeline()
-				}
+	lines := strings.Split(m3u8Content, "\n")
+	var currentDuration float64
 
-				if p.CheckEndOfTimeline(nowLocal, int(globalRunningTime)) {
-					return nil
-				}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
 
+		switch {
+		case strings.HasPrefix(line, "#EXTINF:"):
+			durStr := strings.TrimPrefix(line, "#EXTINF:")
+			durStr = strings.Split(durStr, ",")[0]
+			if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
+				currentDuration = dur
+			}
+		case strings.HasSuffix(line, ".ts"):
+			if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
+				return ErrEndOfTimeline
+			}
+
+			if err := sp.processSegment(streamID, line, currentDuration); err != nil {
+				return err
 			}
 		}
 	}
 
-	pipe.Expire(ctx, redisKey, 26*time.Hour)
-	if _, err := pipe.Exec(ctx); err != nil {
-		log.Printf("[Planner ERROR] Final pipeline execution failed: %v", err)
+	return nil
+}
+
+func (sp *SegmentProcessor) processSegment(streamID, line string, duration float64) error {
+	sp.sequenceCounter++
+
+	segmentPath := fmt.Sprintf("%s/%s/L_0/%s", sp.planner.bucketName, streamID, line)
+	actualStartTime := sp.planner.globalRunningTime
+
+	segment := models.SegmentItem{
+		Sequence:    sp.sequenceCounter,
+		StoragePath: segmentPath,
+		Duration:    duration,
+		StartTime:   int64(actualStartTime),
+	}
+
+	if actualStartTime >= (sp.nowUnix - WindowBufferSeconds) {
+		if err := sp.planner.addSegmentToRedis(sp.pipe, sp.ctx, actualStartTime, segment); err != nil {
+			return err
+		}
+		sp.planner.totalSegmentsAdded++
+	}
+
+	// Adds exact float duration (e.g. 3.999s) to prevent timeline drift
+	sp.planner.globalRunningTime += duration
+
+	if err := sp.insertAdsIfNeeded(actualStartTime); err != nil {
 		return err
 	}
 
-	log.Printf("[Planner SUCCESS] Completed schedule processing. Total %d segments (%d ads) in Redis key: %s",
-		totalSegmentsAdded, totalAdsAdded, redisKey)
+	return nil
+}
+
+func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
+	if len(sp.adSegments) == 0 {
+		return nil
+	}
+
+	if actualStartTime < sp.nowUnix || (actualStartTime-sp.lastAdTime) < float64(AdInsertionInterval) {
+		return nil
+	}
+
+	for _, adSeg := range sp.adSegments {
+		if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
+			return ErrEndOfTimeline
+		}
+
+		sp.sequenceCounter++
+
+		adItem := adSeg
+		adItem.Sequence = sp.sequenceCounter
+		adItem.StartTime = int64(sp.planner.globalRunningTime)
+
+		if err := sp.planner.addSegmentToRedis(sp.pipe, sp.ctx, sp.planner.globalRunningTime, adItem); err != nil {
+			return err
+		}
+
+		sp.planner.globalRunningTime += adItem.Duration
+		sp.adOffset += adItem.Duration
+		sp.planner.totalSegmentsAdded++
+		sp.totalAdsAdded++
+	}
+
+	sp.lastAdTime = sp.planner.globalRunningTime
+	return nil
+}
+
+func (p *Planner) addSegmentToRedis(
+	pipe redis.Pipeliner,
+	ctx context.Context,
+	runningTime float64,
+	data models.SegmentItem,
+) error {
+	if p.isEndOfTimeline(p.processStartTime, runningTime) {
+		return ErrEndOfTimeline
+	}
+
+	data.TimeText = utils.TimeNumToText(data.StartTime)
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal segment: %w", err)
+	}
+
+	redisKey := p.getRedisKey()
+	pipe.ZAdd(ctx, redisKey, redis.Z{
+		Score:  runningTime,
+		Member: bytes,
+	})
+
+	// Immediate pipeline flush if segment falls into current playout window
+	if runningTime <= (float64(time.Now().Unix()) + 120) {
+		_ = p.flushBatch(pipe, ctx)
+	} else if p.totalSegmentsAdded > 0 && p.totalSegmentsAdded%WindowItemSize == 0 {
+		if err := p.flushBatch(pipe, ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (p *Planner) isEndOfTimeline(processTime time.Time, runningTime float64) bool {
+	endOfDay := utils.EndOfDay(processTime)
+	currentRunningTime := time.Unix(int64(runningTime), 0)
+	return endOfDay.Before(currentRunningTime)
+}
+
+func (p *Planner) flushBatch(pipe redis.Pipeliner, ctx context.Context) error {
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("[Planner] Batch flush failed: %v", err)
+		return err
+	}
+
+	log.Printf("[Planner] Batch flushed: %d items (total=%d, running_time=%s)",
+		WindowItemSize, p.totalSegmentsAdded, utils.TimeNumToText(int64(p.globalRunningTime)))
 
 	return nil
 }

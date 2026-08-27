@@ -26,3 +26,7 @@ func GetLoc() *time.Location {
 func TimeNumToText(timeNum int64) string {
 	return time.Unix(timeNum, 0).In(GetLoc()).Format("15:04:05")
 }
+
+func EndOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, t.Location())
+}

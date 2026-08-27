@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	models "simlive/internal"
+	"simlive/internal/models"
 	"time"
 )
 
