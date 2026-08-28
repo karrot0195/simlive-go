@@ -3,7 +3,6 @@
 > Status: reflects the **implemented** system as of 2026-08-27 — 3-tier quality
 > selection (`SIMLIVE_QUALITY`), VOD↔ads rendition matching, local `PtsOffset`
 > timeline, and ffmpeg PTS/DTS rewrite in the engine. For current status and
-> gotchas see `docs/HANDOFF.md` and `AGENTS.md`.
 
 ```markdown
 ## 🇬🇧 English Version: SimLive Project Specification & Architecture (Updated)

@@ -1,21 +1,21 @@
 simlive/
 ├── cmd/
-│   └── main.go                 # Entrypoint khởi chạy API, Planner & Engine
+│   └── main.go                 # API, Planner & Engine entrypoint
 ├── config/
-│   └── config.go               # Load biến môi trường & config
+│   └── config.go               # Environment variables & config loading
 ├── internal/
-│   ├── api/                    # REST API endpoints & client ESPX
-│   │   ├── espx_client.go      # HTTP Client gọi 3 API ESPX
-│   │   └── handler.go          # Handlers phục vụ HLS playlist & channel
-│   ├── database/               # Khởi tạo Postgres & Redis
+│   ├── api/                    # REST API endpoints & ESPX client
+│   │   ├── espx_client.go      # HTTP client calling the 3 ESPX APIs
+│   │   └── handler.go          # Handlers serving HLS playlists & channels
+│   ├── database/               # Postgres & Redis initialization
 │   │   └── db.go
-│   ├── models/                 # Struct Postgres & Redis
+│   ├── models/                 # Postgres & Redis structs
 │   │   └── models.go
-│   ├── planner/                # Module PrepareSimlive
+│   ├── planner/                # PrepareSimlive module
 │   │   └── planner.go
-│   ├── engine/                 # Module StartSimlive (HLS Packager & Worker Pool)
+│   ├── engine/                 # StartSimlive module (HLS Packager & Worker Pool)
 │   │   └── engine.go
-│   └── storage/                # Wrapper thực thi Rclone
+│   └── storage/                # Rclone execution wrapper
 │       └── rclone.go
 ├── docker-compose.yml
 └── Dockerfile
