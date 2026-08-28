@@ -30,8 +30,8 @@ const (
 	WindowBufferSeconds = 120
 )
 
-// Các rendition có thể có của VOD và ads. Thứ tự ưu tiên từ thấp đến cao
-// (ưu tiên chọn cặp có resolution bằng nhau, cao nhất có thể).
+// Possible renditions for VOD and ads. Priority from lowest to highest
+// (prefer pairs with equal resolution, as high as possible).
 var (
 	vodRenditionCandidates = []string{"L_0", "L_1", "L_2", "L_3"}
 	adsRenditionCandidates = []string{"L0", "L1", "L2"}
@@ -44,29 +44,29 @@ type renditionPair struct {
 	ads string
 }
 
-// qualityTier: cấp chất lượng theo SIMLIVE_QUALITY.
+// qualityTier: quality level per SIMLIVE_QUALITY.
 type qualityTier struct {
 	label string
-	w, h  int // resolution mục tiêu (width x height)
+	w, h  int // target resolution (width x height)
 }
 
-// qualityTierMap: SIMLIVE_QUALITY -> resolution mục tiêu.
+// qualityTierMap: SIMLIVE_QUALITY -> target resolution.
 var qualityTierMap = map[string]qualityTier{
 	"360p":  {label: "360p", w: 640, h: 360},
 	"720p":  {label: "720p", w: 1280, h: 720},
 	"1080p": {label: "1080p", w: 1920, h: 1080},
 }
 
-// fallbackRenditionForTier: cặp VOD/ads mặc định đã verify cho từng tier khi
-// không probe được rendition nào (360p->L_0/L2, 720p->L_1/L1, 1080p->L_2/L0).
+// fallbackRenditionForTier: verified default VOD/ads pair per tier used when
+// no rendition can be probed (360p->L_0/L2, 720p->L_1/L1, 1080p->L_2/L0).
 var fallbackRenditionForTier = map[string]renditionPair{
 	"360p":  {vod: "L_0", ads: "L2"},
 	"720p":  {vod: "L_1", ads: "L1"},
 	"1080p": {vod: "L_2", ads: "L0"},
 }
 
-// resolveQualityTier đọc SIMLIVE_QUALITY: auto (mặc định) | 360p | 720p | 1080p.
-// Trả về tier đã chọn và isAuto. Giá trị không hợp lệ -> WARN + dùng auto.
+// resolveQualityTier reads SIMLIVE_QUALITY: auto (default) | 360p | 720p | 1080p.
+// Returns the selected tier and isAuto. Invalid values -> WARN + auto.
 func (p *Planner) resolveQualityTier() (tier qualityTier, isAuto bool) {
 	q := utils.GetEnv("SIMLIVE_QUALITY", "auto")
 	if q == "" || q == "auto" {
@@ -75,7 +75,7 @@ func (p *Planner) resolveQualityTier() (tier qualityTier, isAuto bool) {
 	if t, ok := qualityTierMap[q]; ok {
 		return t, false
 	}
-	log.Printf("[Planner] WARN: SIMLIVE_QUALITY=%q không hợp lệ (auto|360p|720p|1080p), dùng auto", q)
+	log.Printf("[Planner] WARN: SIMLIVE_QUALITY=%q invalid (auto|360p|720p|1080p), using auto", q)
 	return qualityTier{}, true
 }
 
@@ -92,10 +92,10 @@ type Planner struct {
 	channelID          string
 	processStartTime   time.Time
 
-	// Rendition matching: đảm bảo VOD và ads cùng resolution để stream liền mạch
+	// Rendition matching: ensures VOD and ads share the same resolution for seamless streaming
 	rendMu     sync.Mutex
 	rendCache  map[string]renditionPair
-	adsRend    string // resolved một lần (ads dùng chung cho mọi stream)
+	adsRend    string // resolved once (ads are shared across all streams)
 	adsRendSet bool
 }
 
@@ -109,10 +109,10 @@ type SegmentProcessor struct {
 	nowUnix         float64
 	adSegments      []models.SegmentItem
 
-	// PTS mapping state cho stream hiện tại
+	// PTS mapping state for the current stream
 	currentPtsOffset float64
-	// Mốc timeline cục bộ: MediaStart của segment đầu tiên trong timeline.
-	// Mọi segment được gán PtsOffset = MediaStart - timelineBase (giây cục bộ).
+	// Local timeline anchor: MediaStart of the first segment in the timeline.
+	// Every segment gets PtsOffset = MediaStart - timelineBase (local seconds).
 	timelineBase float64
 }
 
@@ -130,9 +130,9 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 
 // --- Rendition resolution -------------------------------------------------
 
-// probeResolution tải segment đầu tiên của một rendition về tạm và đọc
-// resolution video (width x height) bằng ffprobe. Trả về lỗi nếu rendition
-// không tồn tại / không đọc được.
+// probeResolution downloads the first segment of a rendition temporarily and reads
+// the video resolution (width x height) with ffprobe. Returns an error if the
+// rendition does not exist / cannot be read.
 func (p *Planner) probeResolution(remotePath string) (w, h int, err error) {
 	tmp, err := os.CreateTemp("", "simlive-probe-*.ts")
 	if err != nil {
@@ -159,7 +159,7 @@ func (p *Planner) probeResolution(remotePath string) (w, h int, err error) {
 		log.Printf("[Planner] probe %s: ffprobe failed: %v", remotePath, err)
 		return 0, 0, fmt.Errorf("ffprobe: %w", err)
 	}
-	// ffprobe có thể in resolution 2 lần (mpegts multi-program), chỉ lấy dòng đầu
+	// ffprobe may print the resolution twice (mpegts multi-program), take the first line only
 	firstLine := strings.TrimSpace(strings.Split(strings.TrimSpace(string(out)), "\n")[0])
 	parts := strings.Split(firstLine, ",")
 	if len(parts) != 2 {
@@ -174,7 +174,7 @@ func (p *Planner) probeResolution(remotePath string) (w, h int, err error) {
 	return w, h, nil
 }
 
-// probeRenditions đo resolution của từng rendition trong danh sách.
+// probeRenditions measures the resolution of each rendition in the list.
 func (p *Planner) probeRenditions(basePath, firstSeg string, candidates []string) map[string][2]int {
 	res := make(map[string][2]int)
 	for _, dir := range candidates {
@@ -187,10 +187,10 @@ func (p *Planner) probeRenditions(basePath, firstSeg string, candidates []string
 	return res
 }
 
-// resolveAdsRendition chọn rendition của ads theo thứ tự: env
-// SIMLIVE_ADS_RENDITION (ép cứng) > tier SIMLIVE_QUALITY (rendition gần
-// resolution mục tiêu nhất) > auto (rendition lớn nhất đo được). Kết quả được
-// cache một lần vì ads dùng chung cho mọi stream.
+// resolveAdsRendition picks the ads rendition by priority: env
+// SIMLIVE_ADS_RENDITION (hard override) > SIMLIVE_QUALITY tier (rendition closest
+// to the target resolution) > auto (largest measured rendition). The result is
+// cached once because ads are shared across all streams.
 func (p *Planner) resolveAdsRendition() string {
 	if p.adsRendSet {
 		return p.adsRend
@@ -210,7 +210,7 @@ func (p *Planner) resolveAdsRendition() string {
 			return p.adsRend
 		}
 		if fb, ok := fallbackRenditionForTier[tier.label]; ok {
-			log.Printf("[Planner] WARN: không probe được resolution ads cho tier %s, fallback %s", tier.label, fb.ads)
+			log.Printf("[Planner] WARN: could not probe ads resolution for tier %s, fallback %s", tier.label, fb.ads)
 			p.adsRend = fb.ads
 			return p.adsRend
 		}
@@ -224,18 +224,18 @@ func (p *Planner) resolveAdsRendition() string {
 		}
 	}
 	if best == "" {
-		log.Printf("[Planner] WARN: không probe được resolution ads, fallback L0")
+		log.Printf("[Planner] WARN: could not probe ads resolution, fallback L0")
 		best = "L0"
 	}
 	p.adsRend = best
 	return best
 }
 
-// resolveRenditions chọn cặp rendition (VOD, ads) cho streamID theo tier
-// SIMLIVE_QUALITY: ưu tiên cặp VOD==ads có resolution đúng tier mục tiêu; nếu
-// không có thì chọn cặp VOD==ads gần tier nhất (VOD==ads là quan trọng nhất
-// cho playback liền mạch). Auto: cặp resolution bằng nhau cao nhất. Có thể ép
-// bằng env SIMLIVE_VOD_RENDITION / SIMLIVE_ADS_RENDITION.
+// resolveRenditions picks the (VOD, ads) rendition pair for streamID per the
+// SIMLIVE_QUALITY tier: prefer a VOD==ads pair at exactly the tier resolution; if
+// none, pick the VOD==ads pair closest to the tier (VOD==ads matters most for
+// seamless playback). Auto: highest equal-resolution pair. Can be forced
+// via env SIMLIVE_VOD_RENDITION / SIMLIVE_ADS_RENDITION.
 func (p *Planner) resolveRenditions(streamID string) renditionPair {
 	p.rendMu.Lock()
 	defer p.rendMu.Unlock()
@@ -243,7 +243,7 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 		return pair
 	}
 
-	pair := renditionPair{vod: "L_0", ads: "L0"} // fallback cũ nếu mọi thứ fail
+	pair := renditionPair{vod: "L_0", ads: "L0"} // legacy fallback if everything fails
 	vodExplicit := utils.GetEnv("SIMLIVE_VOD_RENDITION", "")
 	adsExplicit := utils.GetEnv("SIMLIVE_ADS_RENDITION", "")
 
@@ -259,12 +259,12 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 	tier, isAuto := p.resolveQualityTier()
 
 	if len(vodProbes) == 0 || len(adsProbes) == 0 {
-		log.Printf("[Planner] WARN: không probe được rendition cho stream %s (vod=%d ads=%d)",
+		log.Printf("[Planner] WARN: could not probe renditions for stream %s (vod=%d ads=%d)",
 			streamID, len(vodProbes), len(adsProbes))
 		if !isAuto {
 			if fb, ok := fallbackRenditionForTier[tier.label]; ok {
 				pair = fb
-				log.Printf("[Planner] WARN: stream %s fallback theo tier %s: VOD %s + ads %s",
+				log.Printf("[Planner] WARN: stream %s fallback by tier %s: VOD %s + ads %s",
 					streamID, tier.label, pair.vod, pair.ads)
 				p.rendCache[streamID] = pair
 				return pair
@@ -278,18 +278,18 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 		if tierPair, exact, ok := pickPairForTier(vodProbes, adsProbes, tier.w, tier.h); ok {
 			pair = tierPair
 			if !exact {
-				log.Printf("[Planner] WARN: stream %s không có cặp VOD/ads khớp tier %s (%dx%d), chọn VOD %s (%dx%d) + ads %s (%dx%d) gần nhất",
+				log.Printf("[Planner] WARN: stream %s has no VOD/ads pair matching tier %s (%dx%d), picking closest VOD %s (%dx%d) + ads %s (%dx%d)",
 					streamID, tier.label, tier.w, tier.h,
 					pair.vod, vodProbes[pair.vod][0], vodProbes[pair.vod][1],
 					pair.ads, adsProbes[pair.ads][0], adsProbes[pair.ads][1])
 			}
-			// ads rendition thực tế được chọn toàn cục (resolveAdsRendition) -
-			// log và cảnh báo nếu lệch resolution với VOD đã chọn.
+			// The actual ads rendition is chosen globally (resolveAdsRendition) -
+			// log and warn if its resolution differs from the chosen VOD.
 			adsRend := p.resolveAdsRendition()
 			if aWh, ok := adsProbes[adsRend]; ok {
 				vWh := vodProbes[pair.vod]
 				if vWh[0] != aWh[0] || vWh[1] != aWh[1] {
-					log.Printf("[Planner] WARN: stream %s VOD %s (%dx%d) lệch resolution với ads %s (%dx%d); cân nhắc ép SIMLIVE_VOD_RENDITION/SIMLIVE_ADS_RENDITION",
+					log.Printf("[Planner] WARN: stream %s VOD %s (%dx%d) resolution differs from ads %s (%dx%d); consider forcing SIMLIVE_VOD_RENDITION/SIMLIVE_ADS_RENDITION",
 						streamID, pair.vod, vWh[0], vWh[1], adsRend, aWh[0], aWh[1])
 				}
 			}
@@ -297,10 +297,10 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 			p.rendCache[streamID] = pair
 			return pair
 		}
-		log.Printf("[Planner] WARN: stream %s không có probe rendition nào cho tier %s", streamID, tier.label)
+		log.Printf("[Planner] WARN: stream %s has no rendition probes for tier %s", streamID, tier.label)
 	}
 
-	// 1) Auto (hoặc tier không khớp): ưu tiên cặp resolution bằng nhau, cao nhất
+	// 1) Auto (or tier mismatch): prefer the highest equal-resolution pair
 	bestPair := renditionPair{}
 	bestArea := -1
 	for vDir, vWh := range vodProbes {
@@ -316,7 +316,7 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 	if bestArea >= 0 {
 		pair = bestPair
 	} else {
-		// 2) Không có cặp bằng nhau: chọn cặp lệch diện tích ít nhất
+		// 2) No equal pair: pick the pair with the smallest area difference
 		diff := int(^uint(0) >> 1) // MaxInt
 		for vDir, vWh := range vodProbes {
 			for aDir, aWh := range adsProbes {
@@ -326,7 +326,7 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 				}
 			}
 		}
-		log.Printf("[Planner] WARN: stream %s không có cặp rendition cùng resolution, chọn VOD %s + ads %s (lệch ít nhất)",
+		log.Printf("[Planner] WARN: stream %s has no equal-resolution pair, choosing VOD %s + ads %s (smallest difference)",
 			streamID, pair.vod, pair.ads)
 	}
 
@@ -335,7 +335,7 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 	return pair
 }
 
-// pickClosestRendition chọn rendition có resolution gần target nhất (theo diện tích).
+// pickClosestRendition picks the rendition whose resolution is closest to the target (by area).
 func pickClosestRendition(probes map[string][2]int, tw, th int) (string, bool) {
 	best := ""
 	bestDiff := int(^uint(0) >> 1) // MaxInt
@@ -351,14 +351,14 @@ func pickClosestRendition(probes map[string][2]int, tw, th int) (string, bool) {
 	return best, true
 }
 
-// pickPairForTier chọn cặp (VOD, ads) cho tier mục tiêu:
-//  1. Cặp VOD==ads có resolution đúng tier mục tiêu -> exact=true.
-//  2. Không có: cặp VOD==ads gần tier nhất theo diện tích -> exact=false.
-//  3. Không có cặp VOD==ads nào: cặp lệch diện tích ít nhất -> exact=false.
+// pickPairForTier picks the (VOD, ads) pair for the target tier:
+//  1. A VOD==ads pair at exactly the target resolution -> exact=true.
+//  2. Otherwise: VOD==ads pair closest to the tier by area -> exact=false.
+//  3. No VOD==ads pair at all: smallest area-difference pair -> exact=false.
 //
-// ok=false chỉ khi không có probe nào.
+// ok=false only when there are no probes at all.
 func pickPairForTier(vodProbes, adsProbes map[string][2]int, tw, th int) (pair renditionPair, exact bool, ok bool) {
-	// 1) Đúng tier
+	// 1) Exact tier
 	for vDir, vWh := range vodProbes {
 		for aDir, aWh := range adsProbes {
 			if vWh[0] == tw && vWh[1] == th && aWh[0] == tw && aWh[1] == th {
@@ -367,7 +367,7 @@ func pickPairForTier(vodProbes, adsProbes map[string][2]int, tw, th int) (pair r
 		}
 	}
 
-	// 2) VOD==ads, gần tier nhất
+	// 2) VOD==ads, closest to tier
 	bestPair := renditionPair{}
 	bestDiff := int(^uint(0) >> 1) // MaxInt
 	for vDir, vWh := range vodProbes {
@@ -385,7 +385,7 @@ func pickPairForTier(vodProbes, adsProbes map[string][2]int, tw, th int) (pair r
 		return bestPair, false, true
 	}
 
-	// 3) Không có cặp VOD==ads: cặp lệch diện tích ít nhất
+	// 3) No VOD==ads pair: smallest area difference
 	diff := int(^uint(0) >> 1) // MaxInt
 	for vDir, vWh := range vodProbes {
 		for aDir, aWh := range adsProbes {
@@ -408,7 +408,7 @@ func abs(x int) int {
 	return x
 }
 
-// loadAdSegments cập nhật để parse PTS cho ads nếu cần (hoặc dùng duration chuẩn)
+// loadAdSegments parses PTS for ads when available (or falls back to the standard duration)
 func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	adsRend := p.resolveAdsRendition()
 	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, adsRend)
@@ -539,7 +539,7 @@ func (sp *SegmentProcessor) processScheduleItem(item models.ESPXScheduleItem, ch
 		sp.planner.globalRunningTime = epgStartUnix
 	}
 
-	// Khởi tạo mốc đếm thời gian ad đầu tiên nếu chưa có
+	// Initialize the first ad insertion marker if not set yet
 	if sp.lastAdTime == 0 {
 		sp.lastAdTime = sp.planner.globalRunningTime
 	}
@@ -581,12 +581,12 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				return ErrEndOfTimeline
 			}
 
-			// 1. Kiểm tra và chèn quảng cáo ngay trước segment video (nếu đến lịch)
+			// 1. Check and insert ads right before the video segment (when scheduled)
 			if err := sp.insertAdsIfNeeded(sp.planner.globalRunningTime); err != nil {
 				return err
 			}
 
-			// Neo chuẩn PTS offset dựa trên globalRunningTime hiện tại tại thời điểm bắt đầu segment
+			// Anchor the PTS offset on the current globalRunningTime at the segment start
 			if firstSegmentInStream {
 				targetPtsStart := sp.planner.globalRunningTime * 90000.0
 				sp.currentPtsOffset = targetPtsStart - float64(ptsStart)
@@ -603,18 +603,18 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				calculatedDuration = currentDuration
 			}
 
-			// Nếu vừa chèn ad xong, globalRunningTime đã được đẩy lên, đồng bộ lại mediaStart cho video
+			// If ads were just inserted, globalRunningTime was pushed forward; resync mediaStart for the video
 			if sp.planner.globalRunningTime > mediaStart {
 				mediaStart = sp.planner.globalRunningTime
 				mediaEnd = mediaStart + calculatedDuration
 			}
 
-			// 2. Xử lý và ghi segment video thường vào Redis (chỉ gọi 1 hàm duy nhất quản lý sequence)
+			// 2. Process and write the regular video segment to Redis (single function owns the sequence)
 			if err := sp.processSegment(streamID, pair.vod, line, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd); err != nil {
 				return err
 			}
 
-			// Cập nhật globalRunningTime tiến lên theo segment video thực tế
+			// Advance globalRunningTime by the actual video segment
 			sp.planner.globalRunningTime = mediaEnd
 		}
 	}
@@ -622,7 +622,7 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 }
 
 func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64) error {
-	sp.sequenceCounter++ // Tăng sequence chuẩn +1 duy nhất tại đây cho video
+	sp.sequenceCounter++ // Single +1 sequence bump here for video
 	segmentPath := fmt.Sprintf("%s/%s/%s/%s", sp.planner.bucketName, streamID, vodDir, line)
 	ptsOffset := sp.setTimelineBase(mediaStart)
 
@@ -648,8 +648,8 @@ func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, durati
 	return nil
 }
 
-// setTimelineBase ghim mốc timeline cục bộ vào segment đầu tiên và trả về
-// PtsOffset (giây cục bộ) cho segment hiện tại: MediaStart - timelineBase.
+// setTimelineBase anchors the local timeline on the first segment and returns
+// the PtsOffset (local seconds) for the current segment: MediaStart - timelineBase.
 func (sp *SegmentProcessor) setTimelineBase(mediaStart float64) float64 {
 	if sp.timelineBase == 0 {
 		sp.timelineBase = mediaStart
@@ -662,22 +662,22 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		return nil
 	}
 
-	// Kiểm tra xem đã đủ mốc 30 giây (AdInsertionInterval) kể từ lần chèn ad trước đó chưa
+	// Check whether 30s (AdInsertionInterval) have elapsed since the last ad insertion
 	if actualStartTime < sp.nowUnix || (actualStartTime-sp.lastAdTime) < float64(AdInsertionInterval) {
 		return nil
 	}
 
-	// Tiến hành chèn cụm segment quảng cáo vào timeline
+	// Insert the ad segment block into the timeline
 	for _, adSeg := range sp.adSegments {
 		if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
 			return ErrEndOfTimeline
 		}
 
-		sp.sequenceCounter++ // Tăng sequence tịnh tiến chuẩn +1
+		sp.sequenceCounter++ // Standard +1 sequence bump
 		adItem := adSeg
 		adItem.Sequence = sp.sequenceCounter
 
-		// Map ad nối tiếp chuẩn xác ngay sau globalRunningTime hiện tại
+		// Map the ad right after the current globalRunningTime
 		adItem.MediaStart = sp.planner.globalRunningTime
 		adItem.MediaEnd = sp.planner.globalRunningTime + adItem.Duration
 		adItem.StartTime = int64(adItem.MediaStart)
@@ -693,7 +693,7 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		sp.totalAdsAdded++
 	}
 
-	// Cập nhật lại mốc thời gian của lần chèn ad gần nhất để sau 30 giây tiếp theo nó sẽ tiếp tục trigger
+	// Update the last ad insertion marker so the next insertion triggers after 30 more seconds
 	sp.lastAdTime = sp.planner.globalRunningTime
 	return nil
 }

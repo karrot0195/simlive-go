@@ -12,7 +12,7 @@ func NewRcloneService() *RcloneService {
 	return &RcloneService{}
 }
 
-// CatReadsExec - Gọi `rclone cat` đọc manifest M3U8 từ S3/MinIO
+// Cat reads an M3U8 manifest from S3/MinIO via `rclone cat`
 func (r *RcloneService) Cat(remotePath string) (string, error) {
 	cmd := exec.Command("rclone", "cat", remotePath)
 	var out bytes.Buffer
@@ -27,7 +27,7 @@ func (r *RcloneService) Cat(remotePath string) (string, error) {
 	return out.String(), nil
 }
 
-// CopyTo - Tải `.ts` file về thư mục đệm cục bộ
+// CopyTo downloads a `.ts` file to the local buffer directory
 func (r *RcloneService) CopyTo(srcRemotePath, localDestPath string) error {
 	cmd := exec.Command("rclone", "copyto", srcRemotePath, localDestPath)
 	var stderr bytes.Buffer

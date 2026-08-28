@@ -56,7 +56,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	// 4. Planner Cron Loop: CHỈ XỬ LÝ CHANNELS is_active = true
+	// 4. Planner Cron Loop: ONLY PROCESS CHANNELS WITH is_active = true
 	go func() {
 		defer wg.Done()
 		// for {

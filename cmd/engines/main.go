@@ -54,7 +54,7 @@ func main() {
 	var wg sync.WaitGroup
 
 	wg.Add(1)
-	// 5. Engine Loop: CHỈ CHẠY STREAM CHO CHANNELS is_active = true
+	// 5. Engine Loop: ONLY STREAM FOR CHANNELS WITH is_active = true
 	go func() {
 		time.Sleep(3 * time.Second)
 		activeEngineTasks := make(map[string]context.CancelFunc)
@@ -63,7 +63,7 @@ func main() {
 			var activeChannels []models.PlayoutChannel
 			db.Where("is_active = ?", true).Find(&activeChannels)
 
-			// Khởi chạy loop cho các kênh active mới kích hoạt
+			// Start loops for newly activated active channels
 			for _, ch := range activeChannels {
 				if _, running := activeEngineTasks[ch.ID]; !running {
 					log.Printf("[Engine] Starting playout engine for channel: %s", ch.ID)

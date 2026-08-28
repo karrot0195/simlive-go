@@ -28,14 +28,14 @@ func (h *ChannelHandler) RegisterChannel(c *gin.Context) {
 		return
 	}
 
-	// 1. Validate Channel ID với ESPX API
+	// 1. Validate Channel ID against the ESPX API
 	detail, err := h.espx.GetChannelDetailWithEPG(req.ChannelID)
 	if err != nil || detail.ID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in ESPX API"})
 		return
 	}
 
-	// 2. Map dữ liệu chuẩn bị lưu DB
+	// 2. Map data for DB storage
 	channel := models.PlayoutChannel{
 		ID:              detail.ID,
 		Name:            detail.Name,
@@ -45,7 +45,7 @@ func (h *ChannelHandler) RegisterChannel(c *gin.Context) {
 		UpdatedAt:       time.Now(),
 	}
 
-	// 3. Upsert vào Database
+	// 3. Upsert into the Database
 	err = h.db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"name", "base_name", "content_timezone", "channel_epg_id", "is_active", "updated_at"}),

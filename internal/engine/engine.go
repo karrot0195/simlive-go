@@ -38,7 +38,7 @@ type Engine struct {
 	states        map[string]*channelState
 	statesMu      sync.Mutex
 
-	// Chống download/rewrite trùng lặp cho cùng một file giữa các tick
+	// Prevents duplicate download/rewrite of the same file across ticks
 	inFlight   map[string]bool
 	inFlightMu sync.Mutex
 }
@@ -81,7 +81,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			nowUnix := time.Now().Unix()
 			redisKey := fmt.Sprintf("simlive:timeline:%s", channelID)
 
-			// Query lookahead window từ Redis (score là MediaStart)
+			// Query the lookahead window from Redis (score = MediaStart)
 			min := fmt.Sprintf("%d", nowUnix-300)
 			maxLookahead := fmt.Sprintf("%d", nowUnix+120)
 
@@ -109,7 +109,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			var candidateSegs []models.SegmentItem
 			currentIndex := -1
 
-			// 1. Tìm segment chứa thời gian hiện tại
+			// 1. Find the segment containing the current time
 			for idx, seg := range allSegs {
 				if seg.MediaStart <= nowFloat && nowFloat < seg.MediaEnd {
 					currentIndex = idx
@@ -117,17 +117,17 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 				}
 			}
 
-			// 2. Cơ chế tự động bắt nhịp (Auto-Catchup) nếu nowFloat bị lệch so với Redis
+			// 2. Auto-Catchup if nowFloat drifts away from the Redis timeline
 			if currentIndex == -1 && len(allSegs) > 0 {
 				if nowFloat >= allSegs[len(allSegs)-1].MediaEnd {
-					// Nếu thời gian thực đã vượt quá segment cuối cùng -> lấy nhóm segment cuối để chạy
+					// If real time passed the last segment -> play the final window
 					if len(allSegs) >= windowSize {
 						currentIndex = len(allSegs) - windowSize
 					} else {
 						currentIndex = 0
 					}
 				} else {
-					// Nếu timeline ở tương lai hoặc chưa khớp -> chọn segment có MediaStart gần nhất với hiện tại
+					// If the timeline is in the future or out of sync -> pick the segment whose MediaStart is closest to now
 					for idx, seg := range allSegs {
 						if seg.MediaStart >= nowFloat {
 							currentIndex = idx
@@ -135,12 +135,12 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 						}
 					}
 					if currentIndex == -1 {
-						currentIndex = 0 // Fallback về segment đầu tiên nếu không khớp
+						currentIndex = 0 // Fall back to the first segment if nothing matches
 					}
 				}
 			}
 
-			// Lấy cửa sổ segment
+			// Get the segment window
 			if currentIndex != -1 {
 				endIndex := currentIndex + windowSize
 				if endIndex > len(allSegs) {
@@ -149,7 +149,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 				candidateSegs = allSegs[currentIndex:endIndex]
 			}
 
-			// Fallback an toàn nếu danh sách quá ít
+			// Safe fallback when the list is too short
 			if len(candidateSegs) < windowSize {
 				if len(allSegs) <= windowSize {
 					candidateSegs = allSegs
@@ -182,19 +182,19 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			}
 			state.mu.Unlock()
 
-			// Đồng bộ cache thư mục cục bộ và tải các file .ts còn thiếu (Không dùng wg.Wait() chặn luồng chính ghi m3u8)
+			// Sync the local cache dir and download missing .ts files (no wg.Wait() so the main tick never blocks playlist writes)
 			activeMap := make(map[string]bool)
 			for _, seg := range allSegs {
 				activeMap[fmt.Sprintf("seg_%d.ts", seg.Sequence)] = true
 			}
 			e.syncLocalCacheDir(channelDir, activeMap)
 
-			// Download + rewrite PTS/DTS nền, không chặn luồng ghi playlist
-			// (chạy goroutine để tick 1s không bị nghẽn bởi download -> window
-			// trượt đều +1 segment, tránh playlist nhảy 2-3 index một lúc)
+			// Download + rewrite PTS/DTS in the background so playlist writes are never blocked
+			// (goroutines keep the 1s tick from stalling on downloads -> the window
+			// slides exactly +1 segment, avoiding 2-3 index jumps in the playlist)
 			go e.downloadAndPrepareSegments(channelDir, channelID, allSegs)
 
-			// Ghi playlist ngay lập tức không bị nghẽn bởi download
+			// Write the playlist immediately, never blocked by downloads
 			e.generateHLSPlaylist(ctx, channelID, candidateSegs)
 		}
 	}
@@ -210,7 +210,7 @@ func (e *Engine) syncLocalCacheDir(dir string, activeFiles map[string]bool) {
 			continue
 		}
 		name := f.Name()
-		// Xóa cả file .ts và marker .pts của segment không còn trong window
+		// Remove both the .ts file and the .pts marker of segments no longer in the window
 		base := name
 		if strings.HasSuffix(name, ".pts") {
 			base = strings.TrimSuffix(name, ".pts")
@@ -221,9 +221,9 @@ func (e *Engine) syncLocalCacheDir(dir string, activeFiles map[string]bool) {
 	}
 }
 
-// downloadAndPrepareSegments tải các segment còn thiếu và viết lại PTS/DTS
-// (ffmpeg -copyts -output_ts_offset) để DTS liên tục xuyên suốt VOD + ads.
-// Mỗi file chỉ được xử lý một lần (in-flight dedupe + marker .pts).
+// downloadAndPrepareSegments downloads missing segments and rewrites PTS/DTS
+// (ffmpeg -copyts -output_ts_offset) so DTS stays continuous across VOD + ads.
+// Each file is processed only once (in-flight dedupe + .pts marker).
 func (e *Engine) downloadAndPrepareSegments(channelDir, channelID string, segs []models.SegmentItem) {
 	var wg sync.WaitGroup
 	for _, seg := range segs {
@@ -255,14 +255,14 @@ func (e *Engine) downloadAndPrepareSegments(channelDir, channelID string, segs [
 	wg.Wait()
 }
 
-// prepareSegment đảm bảo segment đã được tải về và đã được viết lại PTS/DTS
-// (có marker .pts). Idempotent: bỏ qua nếu marker đã tồn tại.
+// prepareSegment ensures the segment is downloaded and has its PTS/DTS rewritten
+// (marked by the .pts marker). Idempotent: skips when the marker already exists.
 func (e *Engine) prepareSegment(channelDir string, seg models.SegmentItem) error {
 	dest := filepath.Join(channelDir, fmt.Sprintf("seg_%d.ts", seg.Sequence))
 	marker := dest + ".pts"
 
 	if _, err := os.Stat(marker); err == nil {
-		return nil // đã sẵn sàng
+		return nil // already prepared
 	}
 
 	if _, err := os.Stat(dest); err != nil {
@@ -272,7 +272,7 @@ func (e *Engine) prepareSegment(channelDir string, seg models.SegmentItem) error
 	}
 
 	if err := e.rewritePtsOffset(dest, marker, seg); err != nil {
-		// Giữ file gốc (hành vi cũ) nhưng vẫn đánh dấu để không kẹt window
+		// Keep the raw file (legacy behavior) but still mark it so the window never stalls
 		log.Printf("[%s] PTS rewrite failed for %s: %v", filepath.Base(channelDir), filepath.Base(dest), err)
 		return e.markPrepared(marker)
 	}
@@ -287,14 +287,14 @@ func (e *Engine) markPrepared(marker string) error {
 	return f.Close()
 }
 
-// rewritePtsOffset viết lại toàn bộ timestamp (PCR/PTS/DTS) của file .ts bằng
-// ffmpeg remux (-c copy, không re-encode) sao cho video packet đầu tiên có DTS
-// đúng bằng PtsOffset (timeline cục bộ của kênh, giây). Nhờ vậy DTS liên tục
-// giữa các segment VOD/ads kề nhau -> Chrome không còn lỗi "Parsed buffers not
-// in DTS sequence" khi chuyển normal -> ads.
+// rewritePtsOffset rewrites all timestamps (PCR/PTS/DTS) of the .ts file via an
+// ffmpeg remux (-c copy, no re-encode) so the first video packet has DTS equal
+// to PtsOffset (the channel's local timeline, in seconds). This keeps DTS
+// continuous across adjacent VOD/ads segments -> Chrome no longer throws
+// "Parsed buffers not in DTS sequence" when switching normal -> ads.
 func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) error {
-	// Đích cho video packet đầu tiên: ưu tiên timeline cục bộ (PtsOffset);
-	// fallback sang MediaStart (epoch) cho dữ liệu cũ chưa có field này.
+	// Target for the first video packet: prefer the local timeline (PtsOffset);
+	// fall back to MediaStart (epoch) for legacy data that lacks this field.
 	target := seg.MediaStart
 	if seg.PtsOffset != nil {
 		target = *seg.PtsOffset
@@ -303,8 +303,8 @@ func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) e
 	firstDTS, err := probeFirstVideoDTS(dest)
 	var offset float64
 	if err != nil {
-		// Fallback: neo theo PtsStart (video PTS đầu tiên từ tag #EXT-X-PTS-RANGE).
-		// DTS đầu ra = target - delta (delta không đổi trong một encode) nên vẫn liên tục.
+		// Fallback: anchor on PtsStart (first video PTS from the #EXT-X-PTS-RANGE tag).
+		// Output DTS = target - delta (delta is constant within one encode) so it stays continuous.
 		if seg.PtsStart <= 0 {
 			return fmt.Errorf("probe first video DTS: %w", err)
 		}
@@ -338,7 +338,7 @@ func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) e
 	return e.markPrepared(marker)
 }
 
-// probeFirstVideoDTS đọc DTS (giây) của video packet đầu tiên trong file .ts.
+// probeFirstVideoDTS reads the DTS (seconds) of the first video packet in the .ts file.
 func probeFirstVideoDTS(path string) (float64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -352,7 +352,7 @@ func probeFirstVideoDTS(path string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("ffprobe: %w", err)
 	}
-	// csv có thể in thêm dấu phẩy cuối dòng ("373.772011,\n") -> cắt bỏ
+	// The csv may append a trailing comma ("373.772011,\n") -> strip it
 	v, err := strconv.ParseFloat(strings.TrimRight(strings.TrimSpace(string(out)), ","), 64)
 	if err != nil {
 		return 0, fmt.Errorf("parse dts %q: %w", out, err)
@@ -369,8 +369,8 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID string, segm
 		return segments[i].Sequence < segments[j].Sequence
 	})
 
-	// Chỉ quảng bá các segment đã sẵn sàng (đã tải + đã rewrite PTS, có marker .pts)
-	// để player không request phải file đang tải dở / chưa có -> tránh 404 gây buffer.
+	// Only advertise prepared segments (downloaded + PTS-rewritten, with the .pts marker)
+	// so players never request files still being written / missing -> avoids 404 buffering.
 	channelDir := filepath.Join(e.tmpDir, channelID)
 	var available []models.SegmentItem
 	for _, seg := range segments {
@@ -380,7 +380,7 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID string, segm
 		}
 	}
 	if len(available) == 0 {
-		return // giữ playlist cũ cho tới khi window sẵn sàng
+		return // keep the previous playlist until the window is ready
 	}
 	segments = available
 
