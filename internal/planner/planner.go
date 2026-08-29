@@ -35,7 +35,7 @@ const (
 // Possible renditions for VOD and ads. Priority from lowest to highest
 // (prefer pairs with equal resolution, as high as possible).
 var (
-	vodRenditionCandidates = []string{"L_0", "L_1", "L_2", "L_3"}
+	vodRenditionCandidates = []string{"L_0", "L_1", "L_2"}
 	adsRenditionCandidates = []string{"L0", "L1", "L2"}
 )
 
