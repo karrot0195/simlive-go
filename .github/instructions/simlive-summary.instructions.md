@@ -41,3 +41,7 @@ A simulated-live (24/7 linear) HLS playout system in Go:
 After finishing any code change, update this summary and
 `docs/specification.md` for everything the change affects (models, env vars,
 constants, architecture, quality tiers) — and nothing else.
+
+## Additional env vars
+- `PLANNER_INTERVAL` (default 5m), `RETENTION_SECONDS` (7200), `LOOKAHEAD_SECONDS` (7200) — 24/7 continuous cursor + cleanup.
+- Cursor: `planner:cursor:{channelID}`; cleanup: `ZREMRANGEBYSCORE` with `RETENTION_SECONDS`.

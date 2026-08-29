@@ -28,6 +28,8 @@ const (
 	AdInsertionInterval = 30 // seconds
 	RedisExpiryHours    = 26
 	WindowBufferSeconds = 120
+	RETENTION_SECONDS   = 7200
+	LOOKAHEAD_SECONDS   = 7200
 )
 
 // Possible renditions for VOD and ads. Priority from lowest to highest
@@ -532,4 +534,33 @@ func (p *Planner) isEndOfTimeline(processTime time.Time, runningTime float64) bo
 func (p *Planner) flushBatch(pipe redis.Pipeliner, ctx context.Context) error {
 	_, err := pipe.Exec(ctx)
 	return err
+}
+
+func (p *Planner) getCursor(ctx context.Context, channelID string) int64 {
+	val, err := p.rdb.Get(ctx, fmt.Sprintf("planner:cursor:%s", channelID)).Int64()
+	if err != nil {
+		return int64(time.Now().Unix())
+	}
+	return val
+}
+
+func (p *Planner) setCursor(ctx context.Context, channelID string, ts int64) {
+	p.rdb.Set(ctx, fmt.Sprintf("planner:cursor:%s", channelID), ts, 0)
+}
+
+func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) error {
+	cursor := p.getCursor(ctx, ch.ID)
+	nowUnix := int64(time.Now().Unix())
+	if cursor < nowUnix {
+		cursor = nowUnix
+	}
+	lookahead := nowUnix + int64(LOOKAHEAD_SECONDS)
+	p.setCursor(ctx, ch.ID, lookahead)
+	return nil
+}
+
+func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
+	cutoff := time.Now().Unix() - RETENTION_SECONDS
+	key := fmt.Sprintf("timeline:%s", channelID)
+	p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff))
 }
