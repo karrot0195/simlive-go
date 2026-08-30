@@ -104,7 +104,6 @@ type Planner struct {
 	globalRunningTime  float64
 	totalSegmentsAdded int64
 	channelID          string
-	processStartTime   time.Time
 
 	// horizon is the wall-clock end of the date we are currently processing
 	// (EndOfDay of processDate in the channel's content timezone). A single
@@ -119,6 +118,14 @@ type Planner struct {
 	rendCache  map[string]renditionPair
 	adsRend    string // resolved once (ads are shared across all streams)
 	adsRendSet bool
+
+	// NOTE: ProcessEPGToTimeline is NOT safe to call concurrently on the same
+	// Planner instance because it mutates shared state (globalRunningTime,
+	// totalSegmentsAdded, processDate, horizon, channelID) without locking.
+	// The cron loop in cmd/planner/main.go runs one channel per goroutine
+	// under PLANNER_WORKERS, so any value > 1 risks inter-channel races on
+	// this shared state. Keep PLANNER_WORKERS at 1 until per-call state is
+	// moved onto SegmentProcessor (see docs/290826-planner-24h-next-day-rollover.md).
 }
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
@@ -135,7 +142,7 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 
 func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.PlayoutChannel, dateStr string) error {
 	p.channelID = channel.ID
-	p.processStartTime = time.Now()
+	callStartedAt := time.Now()
 
 	// Set the per-call horizon from the requested date so a single call can
 	// walk today AND tomorrow without being stopped at today's 23:59:59.
@@ -143,11 +150,11 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	// content timezone (defaulting to UTC if the timezone is unknown).
 	loc := utils.GetLocFor(channel.ContentTimezone)
 	if dateStr == "" {
-		p.processDate = utils.StartOfDay(p.processStartTime).In(loc)
+		p.processDate = utils.StartOfDay(callStartedAt).In(loc)
 	} else if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
 		p.processDate = utils.StartOfDay(parsed)
 	} else {
-		p.processDate = utils.StartOfDay(p.processStartTime).In(loc)
+		p.processDate = utils.StartOfDay(callStartedAt).In(loc)
 	}
 	p.horizon = utils.EndOfDay(p.processDate)
 	// Always reset the loop's running time so each call starts clean.
@@ -170,7 +177,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		adSegments:      adSegments,
 	}
 
-	nowLocal := p.processStartTime
+	nowLocal := callStartedAt
 	for _, item := range schedules.Data {
 		if p.isEndOfTimeline(p.globalRunningTime) {
 			break
@@ -733,7 +740,9 @@ func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
 	// reads, so the bounded retention model was a silent no-op. Now hits the
 	// real simlive:timeline:{channelID} ZSET used by the engine + dedup.
 	key := fmt.Sprintf("simlive:timeline:%s", channelID)
-	p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff))
+	if _, err := p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff)).Result(); err != nil {
+		log.Printf("[Planner] ZREMRANGEBYSCORE(%s, -inf, %d) error: %v", channelID, cutoff, err)
+	}
 }
 
 // retryBackoffDelay returns the wait duration for the i-th retry attempt

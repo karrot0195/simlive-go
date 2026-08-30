@@ -77,6 +77,7 @@ constants, architecture, quality tiers) — and nothing else.
 
 ## Resilience & observability (planner)
 - **Worker pool:** active channels are processed in parallel by `PLANNER_WORKERS` goroutines (semaphore + WaitGroup) — bounded so a 50-channel fleet doesn't open 50 simultaneous EPG fetches.
+- **Concurrency caveat (NOT YET SAFE):** `Planner` carries shared mutable state across calls (`globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID`) without a mutex. Setting `PLANNER_WORKERS > 1` will race two concurrent `ProcessEPGToTimeline` calls on the same `*Planner` instance and produce corrupt timelines. Keep `PLANNER_WORKERS=1` (the default is 4 — see `internal/planner/planner.go` NOTE block; the parallel loop is wired but the underlying state isn't safe until per-call state is moved onto `SegmentProcessor`).
 - **Retry/backoff:** `ProcessEPGToTimelineWithRetry` wraps the raw EPG walk; schedule is `base * 2^(i-1)` capped at `PREPARE_RETRY_MAX_MS`, attempts = `MAX_PREPARE_RETRIES`. On final failure the channel's `planner:failures:{id}` counter is incremented via `HandlePrepareResultForChannel`.
 - **Breaker:** once the counter ≥ `failureInactivateThreshold` (5) the channel is set `is_active=false`. A successful prepare (or a "date already prepared" short-circuit) resets the counter to 0.
 - **Metrics:** each tick logs `[METRIC] channel={id} name=... zset_size={n} cursor={ts}` per active channel (via `TimelineSize` + `LastProcessedCursor`); greppable for Loki/etc.

@@ -131,5 +131,5 @@ the existing plans and the summary instructions; full detail lives in
 
 - [`.github/instructions/simlive-summary.instructions.md`](../../instructions/simlive-summary.instructions.md)
   — always-on summary; plans must keep it in sync after implementation.
-- `AGENTS.md` (repo root) — the agent's source of truth on conventions.
 - `docs/specification.md` — the spec the plan must cross-check.
+- `docs/* md` — all docs that are part of the project.

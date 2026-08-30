@@ -16,10 +16,9 @@ import (
 )
 
 // newPlannerForHorizonTest builds a Planner with only the fields isEndOfTimeline
-// touches (horizon, processStartTime, globalRunningTime). All other deps (db,
-// rdb, espx, rclone) are nil — callers must not exercise any code path that
-// dereferences them. This keeps the test pure Go (no Postgres, no Redis, no
-// network).
+// touches (horizon, globalRunningTime). All other deps (db, rdb, espx, rclone)
+// are nil — callers must not exercise any code path that dereferences them.
+// This keeps the test pure Go (no Postgres, no Redis, no network).
 func newPlannerForHorizonTest() *Planner {
 	return &Planner{}
 }
@@ -34,7 +33,7 @@ func TestIsEndOfTimeline_HorizonIndependentOfProcessStartTime(t *testing.T) {
 	now := time.Date(2026, 8, 29, 23, 58, 0, 0, loc) // 23:58 today (Asia/Saigon)
 
 	p := newPlannerForHorizonTest()
-	p.processStartTime = now
+	_ = now // kept for narrative clarity; isEndOfTimeline now consults horizon only
 
 	t.Run("at 23:58 with horizon=tomorrow_end: not end of timeline", func(t *testing.T) {
 		tomorrow := time.Date(2026, 8, 30, 0, 0, 0, 0, loc)
@@ -181,6 +180,24 @@ func TestHasDateInTimeline_DedupSkipsPreparedDates(t *testing.T) {
 	}
 	if card != 0 {
 		t.Fatalf("ZCARD after CleanupOldSegments = %d, want 0 (correct key + retention trim)", card)
+	}
+
+	// Boundary: an empty ZSET must report has=false (no off-by-one in the
+	// ZCOUNT [start,end] window). This is the cold-start case before the
+	// planner's first ProcessEPGToTimeline ever writes a member.
+	emptyChID := "test-horizon-rollover-empty"
+	emptyKey := fmt.Sprintf("simlive:timeline:%s", emptyChID)
+	rdb.Del(ctx, emptyKey)
+	t.Cleanup(func() { rdb.Del(context.Background(), emptyKey) })
+
+	emptyToday := utils.StartOfDay(time.Date(2026, 8, 29, 12, 0, 0, 0, loc))
+	hasEmpty, err := p.HasDateInTimeline(ctx, emptyChID,
+		utils.StartOfDay(emptyToday), utils.EndOfDay(emptyToday))
+	if err != nil {
+		t.Fatalf("HasDateInTimeline(empty) error: %v", err)
+	}
+	if hasEmpty {
+		t.Fatalf("HasDateInTimeline(empty) = true, want false (no segments seeded)")
 	}
 }
 
