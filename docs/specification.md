@@ -209,6 +209,24 @@ An infinite 1-second tick loop managing playout state:
 1. Segment start time >= current time
 2. Elapsed time since last ad >= `AdInsertionInterval` (30 seconds)
 * Ads are inserted between content segments, get the same local `PtsOffset` treatment, and increment both global time and ad offset
+* **SCTE-35 break metadata (M-SCTE35):** every ad segment in a single break is stamped with 4 `omitempty` fields on the `SegmentItem` so the engine can render `#EXT-X-DATERANGE` cue tags in the per-rung media playlist (see §6.1a below): `is_ad`, `ad_break_id` (stable ID `adbreak-<int64(breakStart)>`), `ad_break_start` (unix seconds → `START-DATE`), `ad_break_duration` (sum of pool durations, seconds → `DURATION` + SCTE-35 `BreakDuration.Duration` 90kHz ticks). Library: `github.com/Comcast/scte35-go` v1.8.0. Plan: [300826-implement-scte35-cue-markers.md](300826-implement-scte35-cue-markers.md).
+
+#### 6.1a SCTE-35 cue tags in media playlists
+
+Per-rung media playlists (`playlist_360p.m3u8` / `_720p` / `_1080p.m3u8`) emit `#EXT-X-DATERANGE` lines on VOD<->ad transitions, mirroring `tmp/SCTE35Utils.ts`:
+
+* **CUE-OUT** (`!prev.IsAd && seg.IsAd`): emitted BEFORE the first ad `seg_N.ts` EXTINF
+  ```
+  #EXT-X-DATERANGE:ID="<id>",CLASS="com.apple.hls.avails",START-DATE="<RFC3339 UTC>",SCTE35-OUT="<base64>",DURATION=<n>,END-ON-NEXT=YES
+  ```
+* **CUE-IN** (`prev.IsAd && !seg.IsAd`): emitted AFTER the last ad `seg_N.ts` EXTINF, BEFORE the first post-ad VOD EXTINF
+  ```
+  #EXT-X-DATERANGE:ID="<id>",START-DATE="<RFC3339 UTC>",SCTE35-IN="<base64>",DURATION=<n>
+  ```
+* `SCTE35-OUT` / `SCTE35-IN` base64 is a `SpliceInfoSection` with `SpliceInsert{SpliceImmediateFlag:true, OutOfNetworkIndicator:<out>, BreakDuration{AutoReturn:true, Duration:uint64(durSec*90000)} if out}, Tier:4095, SAPType:3` (CRC32 auto-validated by the library).
+* `DURATION` is unquoted and trailing — threefive `TagParser` parses a line as quoted-vs-unquoted by the line's last char; a trailing quoted base64 value gets misparsed (see `tmp/SCTE35Utils.ts#L51-L59`).
+* DURATION precision: 3 decimal places (matches `#EXTINF:%.3f`); trailing zeros + lone trailing dot stripped. The `comcast/scte35-go` library builds the `SpliceInfoSection`; `internal/engine/scte35.go` wraps it (`buildSpliceInsert`, `buildCueOutLine`, `buildCueInLine`, `buildMediaPlaylistBody`, `adBreakEventID`).
+* Detection runs only on the **prepared** (`available`, `.pts`-marker-filtered) segments so a CUE-OUT never references a segment not in the playlist.
 
 #### **Segment Processing Constants**
 
@@ -546,6 +564,19 @@ type SegmentItem struct {
     // Engine rewrites PTS/DTS to this value; nil on legacy segments
     // (engine falls back to MediaStart).
     PtsOffset  *float64 `json:"pts_offset,omitempty"`
+
+    // M1.5: per-rung dispatch tag. Empty on legacy members; engine
+    // rescues to DefaultRendition ("360p").
+    Rendition  string   `json:"rendition,omitempty"`
+
+    // M-SCTE35: ad-break metadata stamped by insertAdsIfNeeded (see
+    // §6.1a). All omitempty so VOD members round-trip to JSON
+    // unchanged and pre-existing timeline entries remain valid
+    // without a flush.
+    IsAd            bool    `json:"is_ad,omitempty"`
+    AdBreakID       string  `json:"ad_break_id,omitempty"`         // "adbreak-<int64(breakStart)>"
+    AdBreakStart    float64 `json:"ad_break_start,omitempty"`      // unix seconds; → START-DATE
+    AdBreakDuration float64 `json:"ad_break_duration,omitempty"`   // seconds; → DURATION + SCTE-35 BreakDuration
 }
 ```
 

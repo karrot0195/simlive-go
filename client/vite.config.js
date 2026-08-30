@@ -9,12 +9,14 @@ const videoJsElements = new Set([
   'media-container',
   'hlsjs-video',
   'media-live-button',
+  'media-mute-button',
   'media-menu',
   'media-menu-content',
   'media-quality-radio-group',
   'media-menu-radio-item',
   'media-menu-item-indicator',
   'session-info-panel',
+  'hls-inspector',
 ])
 
 // https://vite.dev/config/

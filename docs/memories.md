@@ -151,3 +151,49 @@
 - **Spec §6 + SegmentItem model block** in `docs/specification.md` was NOT updated in this pass; the plan doc and the summary instructions carry the SCTE-35 details. A spec refresh is a follow-up (out of scope per the user's "implement" request; the plan doc + summary suffice for now).
 - **Verifier hook** (optional follow-up): `cmd/verifier/main.go` could decode the served playlist's `SCTE35-OUT` and assert it parses — `decodeSpliceInsert` is the helper.
 - **go mod tidy** not run; the cobra/pflag/mousetrap CLI deps are unused in our code path. Run `go mod tidy` in a follow-up if/when the scte35-go CLI is also added to the binary.
+
+## 2026-08-30 18:00 — Implementation + doc-pass: SCTE-35 cue markers (EXT-X-DATERANGE), planner unit tests, DURATION precision fix
+
+**Context:** Three-session work: (1) implement SCTE-35 ad-break markers in the engine's per-rung media playlists using `github.com/Comcast/scte35-go` v1.8.0; (2) add unit tests for the planner's break-stamping layer (the one layer not yet covered); (3) fix a `DURATION` precision regression where FP noise from summing 90kHz-derived ad durations produced `DURATION=20.019999999999996` in the playlist. This entry covers the final state after the doc-pass skill ran (the first two session bullets were added by the implementer agent in prior entries; this entry reconciles drift the doc-pass found).
+
+**Change (doc-pass patches applied in this run):**
+- **`docs/specification.md` §6.1a (new section):** Added the canonical SCTE-35 cue-tag spec — CUE-OUT/CUE-IN shape, base64 `SpliceInfoSection` structure, threefive `TagParser` gotcha (DURATION must be unquoted + trailing), 3-decimal DURATION precision, prepared-segments-only detection.
+- **`docs/specification.md` §5 Ad Insertion Logic:** Added a bullet pointing to §6.1a and listing the 4 stamped `omitempty` fields + the `Comcast/scte35-go` dep.
+- **`docs/specification.md` Data Models → SegmentItem:** Added the 4 ad-break fields (IsAd, AdBreakID, AdBreakStart, AdBreakDuration) to the Go struct snippet; kept them in a "M-SCTE35" group with the omitempty/round-trip contract called out.
+- **`.github/instructions/simlive-summary.instructions.md`:** Architecture snapshot — added 3-decimal DURATION precision + `formatBreakStartDate`/`formatBreakDuration` to the SCTE-35 bullet. Tests section — added `internal/planner/scte35_stamping_test.go` (8 pure + 1 Redis-gated) and the two new `TestFormatBreakDuration_*` precision tests in the engine test list.
+- **`/memories/repo/simlive-go.md`:** Inserted a new M-SCTE35 fact (line 15) verified against code: planner stamps, engine emits, library fields, threefive gotcha, edge placement.
+
+**Files touched (doc-pass scope):**
+- `docs/specification.md` (3 patches: §5 Ad Insertion bullet, §6.1a new, Data Models → SegmentItem)
+- `.github/instructions/simlive-summary.instructions.md` (2 patches: architecture snapshot, tests)
+- `/memories/repo/simlive-go.md` (insert line 15)
+- `docs/memories.md` (this entry)
+
+**Files touched (earlier implementation sessions, recap):**
+- `go.mod`, `go.sum` — `github.com/Comcast/scte35-go v1.8.0`
+- `internal/models/models.go` — + 4 ad-break fields on `SegmentItem`
+- `internal/planner/segment_processor.go` — `insertAdsIfNeeded` stamps every ad; extracted `adBreakIDFor` + `totalBreakDuration` pure helpers
+- `internal/engine/scte35.go` (new) — `buildSpliceInsert`, `decodeSpliceInsert`, `adBreakEventID`, `formatBreakStartDate`, `formatBreakDuration` (3 decimals + trim trailing zeros), `buildCueOutLine`, `buildCueInLine`, `buildMediaPlaylistBody` (VOD<->ad edge detection on prepared segments)
+- `internal/engine/engine.go` — `generateHLSPlaylist` body loop factored into the pure `buildMediaPlaylistBody` helper
+- `internal/engine/scte35_test.go` (new) — 9 tests (splice_insert round-trip, format locks, formatBreakDuration precision)
+- `internal/engine/cue_tag_test.go` (new) — 7 tests (no-ads shape, CUE-OUT/CUE-IN placement, multi-break, empty, trailing-unquoted gotcha, round-trip)
+- `internal/models/scte35_fields_test.go` (new) — 3 tests (omitempty, roundtrip, legacy rescue)
+- `internal/planner/scte35_stamping_test.go` (new) — 9 tests (3 adBreakIDFor, 3 totalBreakDuration, 1 stamping contract, 1 JSON round-trip, 1 Redis-gated end-to-end)
+- `docs/300826-implement-scte35-cue-markers.md` (new) — full plan
+
+**Notes — verified state vs. doc (SCTE-35):**
+- **Planner stamping:** `insertAdsIfNeeded` (`internal/planner/segment_processor.go`) captures `breakStart = globalRunningTime`, `breakDuration = totalBreakDuration(sp.adSegments)`, `breakID = adBreakIDFor(breakStart)` before the ad loop, then stamps every ad `SegmentItem` with `IsAd=true / AdBreakID / AdBreakStart / AdBreakDuration`. `lastAdTime` advances to `breakStart + breakDuration` so the 30s cadence holds.
+- **Edge detection:** `buildMediaPlaylistBody` (`internal/engine/scte35.go`) walks the **prepared** (`available`, `.pts`-marker-filtered) segments sorted by Sequence; emits CUE-OUT BEFORE the first ad EXTINF (`!prev.IsAd && seg.IsAd`, plus cold-start `i==0 && seg.IsAd`); emits CUE-IN BEFORE the first post-ad VOD EXTINF using the **previous** ad segment's `AdBreakID/Start/Duration` (it's the end of that break, not the start of the next VOD).
+- **Tag format:** `ID="adbreak-<int64(breakStart)>"`, `CLASS="com.apple.hls.avails"`, `START-DATE="<RFC3339 UTC>"`, `SCTE35-OUT/IN="<base64 splice_info_section>"`, `DURATION=<n>` (3 decimals, unquoted, trailing), `END-ON-NEXT=YES` (CUE-OUT only).
+- **SCTE-35 payload:** `SpliceInfoSection{SpliceCommand: &SpliceInsert{SpliceEventID, SpliceImmediateFlag:true, OutOfNetworkIndicator:out, Program: NewSpliceInsertProgram(0), BreakDuration{AutoReturn:true, Duration:uint64(durSec*90000)} if out}, EncryptedPacket{EncryptionAlgorithm:None, CWIndex:255}, Tier:4095, SAPType:3}.Base64()`. CRC32 auto-validated by the library on Encode/Decode.
+- **Precision fix:** `formatBreakDuration` now uses `strconv.FormatFloat(durSec, 'f', 3, 64)` then strips trailing zeros + lone dot. `DURATION=30.0` → `DURATION=30`, `DURATION=6.012+6.012+6.012+1.984` → `DURATION=20.02` (was `DURATION=20.019999999999996`), `DURATION=0.1+0.2` → `DURATION=0.3` (was `DURATION=0.30000000000000004`). Matches `#EXTINF:%.3f` already used in `buildMediaPlaylistBody`.
+- **No regressions** in `go test ./internal/...` — same 3 pre-existing `main` failures (`TestBuildMasterPlaylist_Format`, `TestSegmentGuard_RejectsDotDotAndSlash`, `TestProbeBitrateFallback_Formula`) verified to pre-exist this work via `git stash`. 24 new tests across 4 new test files all pass.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`docs/specification.md` §5 Module 2 step 4** was patched in the previous M1.5 doc-pass; SCTE-35 references are now in §5 + §6.1a + Data Models, but **no SCTE-35 line in §6 Key Implementation Details table** (the table at lines 218+). Adding a one-line row would make the spec table self-indexed; low priority.
+- **No SCTE-35 line in §7 Architectural Diagram Summary** — the ASCII diagram still says "Generate Dynamic Live m3u8 (local + Redis)" without mentioning the DATERANGE emission. Could be appended; out of scope for this pass.
+- **`docs/structure.md`** was flagged in the previous doc-pass but is still not reviewed in this session; recommend a separate audit pass.
+- **AGENTS.md references in historical plans** (`docs/270826-…`, `docs/290826-…`) are intentionally untouched per the doc-pass skill rule "Do not edit historical plan files."
+- **M2 follow-up items** (per `docs/300826-multi-rendition-abr-ladder.md` §7): true per-rung separate segments, `CODECS` line in master, per-rung `BANDWIDTH` parsed from upstream storage manifests. None landed yet.
+- **`cmd/verifier/main.go`** still doesn't decode the served playlist's `SCTE35-OUT` payload to verify the engine output. `internal/engine/scte35.go decodeSpliceInsert` is the helper; a ~20-line verifier hook would close the loop end-to-end.
+- **`go.mod` indirect deps** (`spf13/{cobra,pflag}`, `inconshreveable/mousetrap`) brought in by `comcast/scte35-go`'s CLI sub-module are unused in our code path; `go mod tidy` would drop them. Low priority.

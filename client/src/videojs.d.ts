@@ -17,12 +17,14 @@ declare module 'vue' {
       poster?: string
     }>
     'media-live-button': import('vue').DefineComponent<{}>
+    'media-mute-button': import('vue').DefineComponent<{}>
     'media-menu': import('vue').DefineComponent<{}>
     'media-menu-content': import('vue').DefineComponent<{}>
     'media-quality-radio-group': import('vue').DefineComponent<{}>
     'media-menu-radio-item': import('vue').DefineComponent<{}>
     'media-menu-item-indicator': import('vue').DefineComponent<{}>
     'session-info-panel': import('vue').DefineComponent<{}>
+    'hls-inspector': import('vue').DefineComponent<{}>
   }
 }
 
