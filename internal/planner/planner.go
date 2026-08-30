@@ -80,6 +80,14 @@ type Planner struct {
 	channelID          string
 	processStartTime   time.Time
 
+	// horizon is the wall-clock end of the date we are currently processing
+	// (EndOfDay of processDate in the channel's content timezone). A single
+	// ProcessEPGToTimeline call walks the timeline up to this point and no
+	// further, regardless of when the planner was started. Zero means
+	// "no horizon set" -- isEndOfTimeline is a no-op in that case.
+	horizon     time.Time
+	processDate time.Time
+
 	// Rendition matching: ensures VOD and ads share the same resolution for seamless streaming
 	rendMu     sync.Mutex
 	rendCache  map[string]renditionPair
@@ -103,6 +111,22 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	p.channelID = channel.ID
 	p.processStartTime = time.Now()
 
+	// Set the per-call horizon from the requested date so a single call can
+	// walk today AND tomorrow without being stopped at today's 23:59:59.
+	// If dateStr is empty or unparseable, fall back to today in the channel's
+	// content timezone (defaulting to UTC if the timezone is unknown).
+	loc := utils.GetLocFor(channel.ContentTimezone)
+	if dateStr == "" {
+		p.processDate = utils.StartOfDay(p.processStartTime).In(loc)
+	} else if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
+		p.processDate = utils.StartOfDay(parsed)
+	} else {
+		p.processDate = utils.StartOfDay(p.processStartTime).In(loc)
+	}
+	p.horizon = utils.EndOfDay(p.processDate)
+	// Always reset the loop's running time so each call starts clean.
+	p.globalRunningTime = 0
+
 	schedules, err := p.espx.GetSchedules(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
 	if err != nil || len(schedules.Data) == 0 {
 		return err
@@ -122,7 +146,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	nowLocal := p.processStartTime
 	for _, item := range schedules.Data {
-		if p.isEndOfTimeline(p.processStartTime, p.globalRunningTime) {
+		if p.isEndOfTimeline(p.globalRunningTime) {
 			break
 		}
 		if err := processor.ProcessScheduleItem(item, channel, nowLocal); err == ErrEndOfTimeline {
@@ -503,7 +527,7 @@ func (p *Planner) flushRedisPipeline(pipe redis.Pipeliner) error {
 }
 
 func (p *Planner) addSegmentToRedis(pipe redis.Pipeliner, ctx context.Context, runningTime float64, data models.SegmentItem) error {
-	if p.isEndOfTimeline(p.processStartTime, runningTime) {
+	if p.isEndOfTimeline(runningTime) {
 		return ErrEndOfTimeline
 	}
 
@@ -526,9 +550,32 @@ func (p *Planner) addSegmentToRedis(pipe redis.Pipeliner, ctx context.Context, r
 	return nil
 }
 
-func (p *Planner) isEndOfTimeline(processTime time.Time, runningTime float64) bool {
-	endOfDay := utils.EndOfDay(processTime)
-	return endOfDay.Before(time.Unix(int64(runningTime), 0))
+// isEndOfTimeline reports whether runningTime (Unix seconds) has crossed the
+// per-call horizon. If no horizon is set the function is a defensive no-op
+// (returns false) so legacy callers that never set horizon keep walking.
+func (p *Planner) isEndOfTimeline(runningTime float64) bool {
+	if p.horizon.IsZero() {
+		return false
+	}
+	return p.horizon.Before(time.Unix(int64(runningTime), 0))
+}
+
+// HasDateInTimeline returns true when the ZSET simlive:timeline:{channelID}
+// already has at least one segment whose MediaStart score falls inside the
+// local date [dayStart, dayEnd]. Used by the cron loop to short-circuit
+// re-processing of a date that has already been prepared.
+func (p *Planner) HasDateInTimeline(ctx context.Context, channelID string, dayStart, dayEnd time.Time) (bool, error) {
+	if p.rdb == nil {
+		return false, nil
+	}
+	key := fmt.Sprintf("simlive:timeline:%s", channelID)
+	n, err := p.rdb.ZCount(ctx, key,
+		fmt.Sprintf("%d", dayStart.Unix()),
+		fmt.Sprintf("%d", dayEnd.Unix())).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
 }
 
 func (p *Planner) flushBatch(pipe redis.Pipeliner, ctx context.Context) error {
@@ -561,6 +608,9 @@ func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) e
 
 func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
 	cutoff := time.Now().Unix() - RETENTION_SECONDS
-	key := fmt.Sprintf("timeline:%s", channelID)
+	// Bug fix: was "timeline:%s" which never matched the real key the engine
+	// reads, so the bounded retention model was a silent no-op. Now hits the
+	// real simlive:timeline:{channelID} ZSET used by the engine + dedup.
+	key := fmt.Sprintf("simlive:timeline:%s", channelID)
 	p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff))
 }

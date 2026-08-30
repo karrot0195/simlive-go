@@ -89,7 +89,7 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				ptsEnd, _ = strconv.ParseInt(parts[1], 10, 64)
 			}
 		case strings.HasSuffix(line, ".ts"):
-			if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
+			if sp.planner.isEndOfTimeline(sp.planner.globalRunningTime) {
 				return ErrEndOfTimeline
 			}
 
@@ -181,7 +181,7 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 
 	// Insert the ad segment block into the timeline
 	for _, adSeg := range sp.adSegments {
-		if sp.planner.isEndOfTimeline(sp.planner.processStartTime, sp.planner.globalRunningTime) {
+		if sp.planner.isEndOfTimeline(sp.planner.globalRunningTime) {
 			return ErrEndOfTimeline
 		}
 

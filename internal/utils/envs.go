@@ -2,6 +2,7 @@ package utils
 
 import (
 	"os"
+	"strconv"
 )
 
 type Settings struct {
@@ -20,6 +21,17 @@ func GetEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// GetEnvInt returns the integer value of an environment variable, or defaultVal
+// when the variable is unset, empty, or not a valid integer.
+func GetEnvInt(key string, defaultVal int) int {
+	if v := os.Getenv(key); v != "" {
+		if i, err := strconv.Atoi(v); err == nil {
+			return i
+		}
+	}
+	return defaultVal
 }
 
 func GetSettings() *Settings {

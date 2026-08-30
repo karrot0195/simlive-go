@@ -1,4 +1,4 @@
-PHONY: start-api start-planner start-engines
+PHONY: start-api start-planner start-engines start-all
 
 start-api:
 	go run ./cmd/api/main.go
@@ -6,5 +6,12 @@ start-api:
 start-planner:
 	go run ./cmd/planner/main.go
 
-start-engines: 
+start-engines:
 	go run ./cmd/engines/main.go
+
+start-all:
+	@make start-api & \
+	make start-planner & \
+	make start-engines & \
+	wait
+

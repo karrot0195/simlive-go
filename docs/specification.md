@@ -11,7 +11,7 @@
 
 The system operates as a 24/7 linear playout engine (Simulated Live Streaming):
 
-1. **Planner (PrepareSimlive):** Periodically queries the ESPX API to fetch EPG schedules, maps program items to `.ts` files using `rclone`, and writes the timeline metadata to **Redis** with ad insertion capabilities.
+1. **Planner (PrepareSimlive):** Periodically queries the ESPX API to fetch EPG schedules, maps program items to `.ts` files using `rclone`, and writes the timeline metadata to **Redis** with ad insertion capabilities. Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override); each tick prepares **today + tomorrow** in the channel's `content_timezone`, short-circuiting dates whose ZSET range is already non-empty (`HasDateInTimeline` via `ZCOUNT`).
 2. **Engine (StartSimlive):** Reads mapped segment timelines from Redis using real-time system clocks, downloads required `.ts` files to a local sliding window directory, stitches them into a dynamic HLS stream (`playlist.m3u8`), and serves video players.
 
 ---
@@ -90,11 +90,12 @@ rclone copyto espx-video-lib:espx-video-lib/PCwdH9LA7uS6jYJDDsmZCL3x/L_0/segment
 
 #### **Module 1: Planner (PrepareSimlive - Cron Job)**
 
-Runs periodically (e.g., every 30-60 minutes) or at start-of-day:
+Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective value 1s). Each tick:
 
 1. Query active channels from `playout_channels`.
-2. Call **API 3** to retrieve today's and tomorrow's EPG schedules using the channel's timezone.
-3. For each schedule item:
+2. For each channel, compute **today + tomorrow** in the channel's `content_timezone` (via `utils.GetLocFor`), so a channel in `Asia/Saigon` (UTC+7) doesn't accidentally query tomorrow's EPG when the server clock is in UTC.
+3. Call `prepareDate(ch, date)` which short-circuits via `HasDateInTimeline` (`ZCOUNT simlive:timeline:{ch} [dayStart, dayEnd] > 0`) and only invokes `ProcessEPGToTimeline` when the date is missing.
+4. For each schedule item inside the per-date horizon:
 * Read Stream ID (`programme.short_url`).
 * Execute `rclone cat` to read variant `m3u8` contents.
 * Compute timeline timestamps for each `.ts` file from the manifest's `#EXT-X-PTS-RANGE` (raw PTS) shifted to a **local timeline**: every segment gets `PtsOffset = MediaStart − timelineBase` (timelineBase = first segment's MediaStart, in seconds). Local offsets avoid the 2^33/90000 ≈ 95443.7s PTS wrap of huge epoch offsets.
@@ -122,7 +123,8 @@ Runs periodically (e.g., every 30-60 minutes) or at start-of-day:
 * `pts_offset` (local timeline, seconds) is what the engine rewrites each segment's PTS/DTS to (`MediaStart − timelineBase`); `nil` on legacy segments → engine falls back to `media_start`.
 
 
-5. **Redis Pipeline Batching:** Batch insert operations every 50 items to optimize Redis performance.
+6. **Redis Pipeline Batching:** Batch insert operations every 50 items to optimize Redis performance.
+7. **Per-tick bookkeeping:** `ProcessWindow` bumps `planner:cursor:{ch}` to `nowUnix + LOOKAHEAD_SECONDS`; `CleanupOldSegments` trims `simlive:timeline:{ch}` with `ZREMRANGEBYSCORE` at `nowUnix - RETENTION_SECONDS`. (The earlier `timeline:%s` key in `CleanupOldSegments` was a silent no-op — fixed.)
 
 #### **Module 2: Engine (StartSimlive - Live Engine & HLS Generator)**
 
@@ -136,6 +138,11 @@ An infinite 1-second tick loop managing playout state:
 
 4. **Segment Fetcher (Worker Pool, async):**
 * Inspect local cache directory `{TMP_DIR}/{playout_id}/`.
+* The Redis timeline window `[now−300s, now+120s]` is still queried for timeline awareness, but only the **active on-disk window** is downloaded:
+  `SIMLIVE_KEEP_BEHIND` (default 5, behind the playhead) +
+  `PlaylistWindowSize` (5, advertised to players) +
+  `SIMLIVE_DOWNLOAD_AHEAD` (default 5, pre-fetched ahead).
+  Default total = **15 `.ts` files per channel**.
 * Use a worker pool (configurable max goroutines) to run `rclone copyto` and prebuffer upcoming segments; downloads run async so the tick never blocks (window slides exactly +1 segment per ~4s).
 * Segments are stored as `seg_{sequence}.ts` in the local cache, with an in-flight dedupe map so a file is never downloaded/rewritten twice.
 
@@ -153,7 +160,7 @@ An infinite 1-second tick loop managing playout state:
 
 
 7. **Garbage Collection (Clean Up):**
-* Delete local `.ts`/`.pts` files no longer in the active window.
+* `syncLocalCacheDir` removes any `.ts`/`.pts` file whose base name is not in the active set (the bounded 15-segment window computed in step 4). Runs every tick, so leftover files from a previous run are evicted on the first tick after startup; no separate startup cleanup is required.
 * Purge expired items from Redis older than 120 seconds.
 
 
@@ -186,6 +193,8 @@ An infinite 1-second tick loop managing playout state:
 | `AdInsertionInterval` | 30 | Seconds between ad insertions |
 | `RedisExpiryHours` | 26 | Redis key expiration in hours |
 | `WindowBufferSeconds` | 120 | Lookback buffer for segment inclusion (planner) |
+| `RETENTION_SECONDS` | 7200 | Per-tick `ZREMRANGEBYSCORE` cutoff for `simlive:timeline:{ch}` |
+| `LOOKAHEAD_SECONDS` | 7200 | Per-tick cursor bump to `nowUnix + LOOKAHEAD_SECONDS` |
 
 ### 6.1 Quality Tier & Rendition Matching (SIMLIVE_QUALITY)
 
@@ -249,6 +258,9 @@ Selection logic (`internal/planner/planner.go`):
 | `TMP_DIR` | `./outputs` | Engine local segment cache (`{TMP_DIR}/{channelID}/`) |
 | `MAX_WORKERS` / `WORKER_POOL_SIZE` | 50 | Download concurrency |
 | `ENABLE_CLEAN_UP` | `false` | Cache cleanup toggle |
+| `SIMLIVE_KEEP_BEHIND` | `5` | Segments retained *before* the playlist window (active on-disk window). |
+| `SIMLIVE_DOWNLOAD_AHEAD` | `5` | Segments pre-fetched *after* the playlist window (active on-disk window). |
+| `PLANNER_INTERVAL` | `5m` | Cron sleep between planner ticks (Go duration string, e.g. `1m`, `30s`, `1h`). Zero/negative falls back to 5m. |
 | `TZ_NUM` | Configurable | Timezone offset for API queries |
 
 ---

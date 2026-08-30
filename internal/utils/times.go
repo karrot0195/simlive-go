@@ -30,3 +30,21 @@ func TimeNumToText(timeNum int64) string {
 func EndOfDay(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 999999999, t.Location())
 }
+
+// StartOfDay returns the local midnight of t (00:00:00.000000000 in t's location).
+func StartOfDay(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+}
+
+// GetLocFor returns the IANA *time.Location for tzStr, or UTC if the IANA name
+// is not recognised. Used so the planner can compute "today"/"tomorrow" in the
+// channel's content timezone (e.g. "Asia/Saigon") rather than the server's zone.
+func GetLocFor(tzStr string) *time.Location {
+	if tzStr == "" {
+		return time.UTC
+	}
+	if loc, err := time.LoadLocation(tzStr); err == nil {
+		return loc
+	}
+	return time.UTC
+}

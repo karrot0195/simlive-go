@@ -21,6 +21,17 @@ import (
 	"simlive/internal/utils"
 )
 
+const (
+	// DefaultKeepBehind is the number of segments retained *before* the
+	// playlist window so backwards seek/continuity has buffer.
+	DefaultKeepBehind = 5
+	// DefaultDownloadAhead is the number of segments pre-fetched *after* the
+	// playlist window so the next playhead step never stalls on a download.
+	DefaultDownloadAhead = 5
+	// PlaylistWindowSize is the number of segments advertised to the player.
+	PlaylistWindowSize = 5
+)
+
 type channelState struct {
 	mu          sync.Mutex
 	firstSeq    int64
@@ -38,6 +49,11 @@ type Engine struct {
 	states        map[string]*channelState
 	statesMu      sync.Mutex
 
+	// Active on-disk window controls (SIMLIVE_KEEP_BEHIND, SIMLIVE_DOWNLOAD_AHEAD).
+	// Total on-disk files per channel <= keepBehind + PlaylistWindowSize + downloadAhead.
+	keepBehind    int
+	downloadAhead int
+
 	// Prevents duplicate download/rewrite of the same file across ticks
 	inFlight   map[string]bool
 	inFlightMu sync.Mutex
@@ -52,6 +68,8 @@ func NewEngine(rdb *redis.Client, rclone *storage.RcloneService, maxWorkers int)
 		enableCleanup: utils.GetEnv("ENABLE_CLEAN_UP", "false") == "true",
 		states:        make(map[string]*channelState),
 		inFlight:      make(map[string]bool),
+		keepBehind:    utils.GetEnvInt("SIMLIVE_KEEP_BEHIND", DefaultKeepBehind),
+		downloadAhead: utils.GetEnvInt("SIMLIVE_DOWNLOAD_AHEAD", DefaultDownloadAhead),
 	}
 }
 
@@ -105,7 +123,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 				return allSegs[i].Sequence < allSegs[j].Sequence
 			})
 
-			windowSize := 5
+			playlistWindow := PlaylistWindowSize
 			var candidateSegs []models.SegmentItem
 			currentIndex := -1
 
@@ -121,8 +139,8 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			if currentIndex == -1 && len(allSegs) > 0 {
 				if nowFloat >= allSegs[len(allSegs)-1].MediaEnd {
 					// If real time passed the last segment -> play the final window
-					if len(allSegs) >= windowSize {
-						currentIndex = len(allSegs) - windowSize
+					if len(allSegs) >= playlistWindow {
+						currentIndex = len(allSegs) - playlistWindow
 					} else {
 						currentIndex = 0
 					}
@@ -142,7 +160,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 
 			// Get the segment window
 			if currentIndex != -1 {
-				endIndex := currentIndex + windowSize
+				endIndex := currentIndex + playlistWindow
 				if endIndex > len(allSegs) {
 					endIndex = len(allSegs)
 				}
@@ -150,11 +168,11 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			}
 
 			// Safe fallback when the list is too short
-			if len(candidateSegs) < windowSize {
-				if len(allSegs) <= windowSize {
+			if len(candidateSegs) < playlistWindow {
+				if len(allSegs) <= playlistWindow {
 					candidateSegs = allSegs
 				} else {
-					candidateSegs = allSegs[len(allSegs)-windowSize:]
+					candidateSegs = allSegs[len(allSegs)-playlistWindow:]
 				}
 			}
 
@@ -182,9 +200,29 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			}
 			state.mu.Unlock()
 
+			// Compute the bounded active on-disk window:
+			// [keepBehind before currentIndex] + [playlistWindow] + [downloadAhead after]
+			// Total <= keepBehind + PlaylistWindowSize + downloadAhead (default 15).
+			// currentIndex may be -1 here in edge cases (empty allSegs) -- guarded by the
+			// `len(candidateSegs) == 0` continue above, but be defensive anyway.
+			downloadSegs := allSegs
+			if currentIndex >= 0 {
+				startIdx := currentIndex - e.keepBehind
+				if startIdx < 0 {
+					startIdx = 0
+				}
+				endIdx := currentIndex + playlistWindow + e.downloadAhead - 1
+				if endIdx >= len(allSegs) {
+					endIdx = len(allSegs) - 1
+				}
+				if endIdx >= startIdx {
+					downloadSegs = allSegs[startIdx : endIdx+1]
+				}
+			}
+
 			// Sync the local cache dir and download missing .ts files (no wg.Wait() so the main tick never blocks playlist writes)
 			activeMap := make(map[string]bool)
-			for _, seg := range allSegs {
+			for _, seg := range downloadSegs {
 				activeMap[fmt.Sprintf("seg_%d.ts", seg.Sequence)] = true
 			}
 			e.syncLocalCacheDir(channelDir, activeMap)
@@ -192,7 +230,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			// Download + rewrite PTS/DTS in the background so playlist writes are never blocked
 			// (goroutines keep the 1s tick from stalling on downloads -> the window
 			// slides exactly +1 segment, avoiding 2-3 index jumps in the playlist)
-			go e.downloadAndPrepareSegments(channelDir, channelID, allSegs)
+			go e.downloadAndPrepareSegments(channelDir, channelID, downloadSegs)
 
 			// Write the playlist immediately, never blocked by downloads
 			e.generateHLSPlaylist(ctx, channelID, candidateSegs)

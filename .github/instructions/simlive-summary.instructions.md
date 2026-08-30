@@ -16,7 +16,12 @@ A simulated-live (24/7 linear) HLS playout system in Go:
 
 ## Architecture snapshot (keep in sync)
 - **Planner** → `simlive:timeline:{channelID}` Redis ZSET; score = `MediaStart`
-  (seconds), member = `SegmentItem` JSON incl. local `pts_offset`.
+  (seconds), member = `SegmentItem` JSON incl. local `pts_offset`. 24/7 cron
+  walks **today + tomorrow** in each channel's `content_timezone` per tick
+  (`PLANNER_INTERVAL`, default 5m); per-date `horizon` (EndOfDay of the parsed
+  date) lets a single `ProcessEPGToTimeline` call walk past midnight.
+  `HasDateInTimeline` (ZCOUNT `[dayStart, dayEnd] > 0`) short-circuits
+  re-prepare of a date that already has data.
 - **Engine** → window `[now−300s, now+120s]`; ffmpeg `-c copy -copyts
   -output_ts_offset` rewrite; `.pts` marker = prepared; 5-segment sliding
   `playlist.m3u8` advertises prepared segments only.
@@ -34,8 +39,25 @@ A simulated-live (24/7 linear) HLS playout system in Go:
 ## Key env vars
 `SIMLIVE_QUALITY` (auto default), `SIMLIVE_VOD_RENDITION` /
 `SIMLIVE_ADS_RENDITION` (hard overrides), `REDIS_ADDR` (6371), `TMP_DIR`
-(./outputs), `MAX_WORKERS` (50), `ENABLE_CLEAN_UP` (false). Full table in
+(./outputs), `MAX_WORKERS` (50), `ENABLE_CLEAN_UP` (false),
+`SIMLIVE_KEEP_BEHIND` (5), `SIMLIVE_DOWNLOAD_AHEAD` (5). Full table in
 `docs/specification.md` §8.
+
+## Operational Details
+- **Bounded on-disk window:** the engine keeps at most
+  `SIMLIVE_KEEP_BEHIND + 5 + SIMLIVE_DOWNLOAD_AHEAD` `.ts` files (and the same
+  number of `.pts` markers) per channel on disk (default 15). This bounded
+  storage ensures low disk usage and fast startup cleanup. The Redis timeline
+  window (`[-300s, +120s]`) is still queried for awareness, but only the
+  active window is downloaded/kept; everything else is evicted each tick.
+- **Planner dedup:** `prepareDate(ch, date)` calls `HasDateInTimeline` first;
+  the cron only re-walks EPG when `ZCOUNT simlive:timeline:{ch} [start,end]`
+  is zero. Cold start fills today + tomorrow (~1–2 min); subsequent ticks
+  skip both dates.
+
+## Tests
+- `internal/planner/horizon_rollover_test.go` — `TestIsEndOfTimeline_...` (pure
+  Go) + `TestHasDateInTimeline_...` (skipped when no Redis at `REDIS_ADDR`).
 
 ## Post-task rule
 After finishing any code change, update this summary and
