@@ -6,7 +6,7 @@
 > detach/map** (1 shared segment cache + 3 advertised rungs via master
 > playlist, with per-rung media playlists `playlist_360p.m3u8` /
 > `playlist_720p.m3u8` / `playlist_1080p.m3u8`).
-> Plan: [300826-multi-rendition-abr-ladder.md](300826-multi-rendition-abr-ladder.md).
+> Plan: [300826_0620-multi-rendition-abr-ladder.md](300826_0620-multi-rendition-abr-ladder.md).
 > For current status and
 
 ```markdown
@@ -33,10 +33,21 @@ CREATE TABLE playout_channels (
     content_timezone VARCHAR(50),        -- Timezone (e.g., "Asia/Saigon")
     channel_epg_id VARCHAR(36),          -- EPG ID fetched from API 2
     status VARCHAR(20) DEFAULT 'ACTIVE', -- Status: ACTIVE, INACTIVE, ERROR
+    is_active BOOLEAN DEFAULT TRUE,      -- Whether the planner should walk this channel
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
+
+> **`is_active` and `status` are written by three callers**:
+> 1. The planner's cron loop **reads** them (`db.Where("is_active = ?", true)`).
+> 2. The planner's breaker (`markChannelInactive` in
+>    `internal/planner/planner.go`) **writes** `is_active=false` after
+>    `failureInactivateThreshold` (5) consecutive `(channel, date)` failures.
+> 3. The REST API **writes** both columns on `PUT/PATCH /api/channels/:id`
+>    and `POST /api/channels/:id/{start,stop}` (see §3 "REST API Surface").
+>    **DELETE** is a soft delete: the row is preserved, only
+>    `is_active=false / status='INACTIVE'`.
 
 ---
 
@@ -48,6 +59,29 @@ CREATE TABLE playout_channels (
 * **Purpose:** Fetch all available playout channels to seed or synchronize the `playout_channels` database table.
 
 #### **API 2: Get Playout EPG ID**
+
+#### **REST API Surface (Local)**
+
+The `cmd/api` binary serves the following routes for playout-channel management
+(handlers in `internal/api/handler.go`, request/response types in
+`internal/models/models.go`). The planner reads the same `is_active` /
+`status` columns so manual flips take effect on the next planner tick
+(default 5m, `PLANNER_INTERVAL`).
+
+| Verb   | Path                            | Role                                                                                          |
+|--------|---------------------------------|-----------------------------------------------------------------------------------------------|
+| `POST` | `/api/channels`                 | Create / upsert. Validates `channel_id` against ESPX API 2 (`GetChannelDetailWithEPG`).       |
+| `GET`  | `/api/channels`                 | List local channels. Query params: `?page=` (1-indexed, default 1), `?page_size=` (1-100, default 20), `?status=`, `?is_active=`, `?q=` (name contains). |
+| `GET`  | `/api/channels/esp`             | List ESPX upstream channels + `registered` map (keyed by ESPX id; `true` = already in our DB). |
+| `GET`  | `/api/channels/:id`             | Read one channel. `404` if not found.                                                         |
+| `PUT`  | `/api/channels/:id`             | Full update of mutable fields. Validates `Status` enum (`ACTIVE`/`INACTIVE`; `ERROR` is planner-only). |
+| `PATCH`| `/api/channels/:id`             | Partial update — only non-nil body fields are written (pointer-field semantics on `UpdateChannelReq`). |
+| `DELETE`| `/api/channels/:id`            | **Soft** delete — flips `is_active=false / status='INACTIVE'`. Idempotent (returns 204 even on missing rows). |
+| `POST` | `/api/channels/:id/start`       | Flip `is_active=true / status='ACTIVE'` and **clear** the planner's breaker counter key `planner:failures:{id}`. |
+| `POST` | `/api/channels/:id/stop`        | Flip `is_active=false / status='INACTIVE'`. Breaker counter is preserved (StartChannel clears it again on the next start). |
+
+All `:id` routes apply a path-guard that rejects `..` and `/` with `400`
+(mirrors the HLS route guards).
 
 * **Endpoint:** `GET [https://api2.espx.cloud/api/v2/common/channel-playouts/](https://api2.espx.cloud/api/v2/common/channel-playouts/){playout_id}?$eager=[channelEpg]`
 * **Purpose:** Retrieve the associated `channelEpg.id` for each `playout_id` and update the `channel_epg_id` column.
@@ -107,6 +141,12 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
 * **Ad Insertion:** Periodically insert ad segments at configured intervals (`AdInsertionInterval` = 30 seconds); ads are placed on the same local timeline.
 * **Quality tier:** resolve `SIMLIVE_QUALITY` (`auto`|`360p`|`720p`|`1080p`) and pick the VOD/ads rendition pair matching the tier resolution (see §6.1).
 
+8. **Manual control via REST:** `POST /api/channels/:id/{start,stop}` and
+   `PUT/PATCH /api/channels/:id` flip the same `is_active` / `status`
+   columns the planner reads, so an operator flip takes effect on the
+   next planner tick (default 5m, `PLANNER_INTERVAL`). `start` also
+   deletes the `planner:failures:{id}` Redis key to reset the breaker;
+   `stop` preserves the counter. See §3 "REST API Surface".
 
 4. Push segment mappings into a **Redis Sorted Set** (`ZADD` with Epoch timestamp as score):
 * **Key:** `simlive:timeline:{playout_id}`
@@ -209,7 +249,7 @@ An infinite 1-second tick loop managing playout state:
 1. Segment start time >= current time
 2. Elapsed time since last ad >= `AdInsertionInterval` (30 seconds)
 * Ads are inserted between content segments, get the same local `PtsOffset` treatment, and increment both global time and ad offset
-* **SCTE-35 break metadata (M-SCTE35):** every ad segment in a single break is stamped with 4 `omitempty` fields on the `SegmentItem` so the engine can render `#EXT-X-DATERANGE` cue tags in the per-rung media playlist (see §6.1a below): `is_ad`, `ad_break_id` (stable ID `adbreak-<int64(breakStart)>`), `ad_break_start` (unix seconds → `START-DATE`), `ad_break_duration` (sum of pool durations, seconds → `DURATION` + SCTE-35 `BreakDuration.Duration` 90kHz ticks). Library: `github.com/Comcast/scte35-go` v1.8.0. Plan: [300826-implement-scte35-cue-markers.md](300826-implement-scte35-cue-markers.md).
+* **SCTE-35 break metadata (M-SCTE35):** every ad segment in a single break is stamped with 4 `omitempty` fields on the `SegmentItem` so the engine can render `#EXT-X-DATERANGE` cue tags in the per-rung media playlist (see §6.1a below): `is_ad`, `ad_break_id` (stable ID `adbreak-<int64(breakStart)>`), `ad_break_start` (unix seconds → `START-DATE`), `ad_break_duration` (sum of pool durations, seconds → `DURATION` + SCTE-35 `BreakDuration.Duration` 90kHz ticks). Library: `github.com/Comcast/scte35-go` v1.8.0. Plan: [300826_0616-implement-scte35-cue-markers.md](300826_0616-implement-scte35-cue-markers.md).
 
 #### 6.1a SCTE-35 cue tags in media playlists
 
@@ -296,6 +336,7 @@ Selection logic (`internal/planner/planner.go`):
 | `SIMLIVE_RENDITIONS` | unset | Reserved for M2 (true per-rung separate segments). M1.5 ignores this env var and always advertises 3 rungs via the engine's hard-coded `ActiveLadder` (or planner-written `simlive:renditions:{ch}` metadata). |
 | `SIMLIVE_VOD_RENDITION` | (empty) | Hard override: VOD rendition dir (e.g. `L_0`) |
 | `SIMLIVE_ADS_RENDITION` | (empty) | Hard override: ads rendition dir (e.g. `L2`) |
+- **REST start/stop best-effort Redis:** `POST /api/channels/:id/start` deletes the breaker counter key `planner:failures:{id}` as part of the operation. A Redis blip is logged at `[api] StartChannel: DEL ...` and the request still returns `200` — the DB flip is the durable part of the operation, the Redis clear is a "best effort" reset.
 | `DB_HOST`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` | localhost/postgres | Postgres (`playout_channels`) |
 | `REDIS_ADDR` | `localhost:6371` | Redis (note: 6371, not 6379) |
 | `ESPX_API_URL` | `https://api2.espx.cloud` | EPG API base URL |

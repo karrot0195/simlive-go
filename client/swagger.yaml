@@ -1,0 +1,560 @@
+openapi: 3.0.3
+info:
+  title: SimLive-Go REST API + HLS surface
+  version: 1.0.0
+  description: |
+    REST surface for playout-channel management plus the HLS live-streaming
+    routes served by `cmd/api` on `:8080`.
+
+    Channel CRUD + start/stop are under `/api/channels`; the per-channel HLS
+    playlists + segments are under `/live/{channelID}/`. The planner reads
+    the same `is_active` / `status` columns the REST surface writes, so a
+    manual `start` / `stop` flip takes effect on the next planner tick
+    (default 5m, `PLANNER_INTERVAL`). `start` also deletes the planner's
+    per-channel breaker counter `planner:failures:{id}` to reset the
+    per-channel failure breaker.
+
+    Implementation lives in:
+    - `internal/api/handler.go` (channel CRUD)
+    - `internal/api/espx_client.go` (ESPX upstream client)
+    - `cmd/api/main.go` (router + HLS routes + CORS)
+
+    See `docs/300826-create-rest-api-for-playout-channels-management.md`
+    for the design plan and §6 verification matrix.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server (default port)
+
+tags:
+  - name: channels
+    description: Playout-channel CRUD (DB-backed, manual start/stop).
+  - name: esp
+    description: ESPX upstream proxy (read-only, list + registered map).
+  - name: hls
+    description: HLS live-streaming surface (master + per-rung media + segments).
+
+paths:
+  # ===========================================================================
+  #  /api/channels — channel management
+  # ===========================================================================
+
+  /api/channels:
+    get:
+      tags: [channels]
+      summary: List local playout channels
+      description: |
+        Paginated, filterable list of `playout_channels` rows. Defaults to
+        `created_at DESC` ordering.
+      operationId: listChannels
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+          description: 1-indexed page number. Values < 1 are clamped to 1.
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+          description: Page size. Values > 100 are clamped to 100.
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [ACTIVE, INACTIVE, ERROR]
+          description: Exact-match status filter.
+        - in: query
+          name: is_active
+          schema: { type: boolean }
+          description: Filter by the `is_active` boolean. Unparseable values are silently ignored.
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Case-insensitive substring match against `name`.
+      responses:
+        '200':
+          description: Paginated channel list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListChannelsResp'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    post:
+      tags: [channels]
+      summary: Create or upsert a playout channel
+      description: |
+        Validates `channel_id` against the ESPX detail endpoint
+        (`GetChannelDetailWithEPG`, ESPX API 2) before persisting. Upserts
+        on primary-key conflict. The ESPX-derived fields (`name`,
+        `base_name`, `content_timezone`, `channel_epg_id`) are refreshed;
+        `is_active` is set to `true` and `status` to `'ACTIVE'`.
+      operationId: createOrUpsertChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChannelReq'
+      responses:
+        '200':
+          description: Channel created or updated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  data:    { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid request body OR channel not found in ESPX.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/channels/esp:
+    get:
+      tags: [esp]
+      summary: List ESPX upstream channels + registered map
+      description: |
+        Proxies ESPX API 1 (`GET /api/v2/common/channel-playouts`) and
+        annotates each item with a `registered` boolean (true if the
+        channel already exists in our local `playout_channels` table).
+        The `registered` map is built with a single
+        `SELECT id FROM playout_channels WHERE id IN (...)` so the cost
+        stays O(1) regardless of fleet size.
+      operationId: listESpxChannels
+      responses:
+        '200':
+          description: ESPX list + registered map.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ESpxChannelsListResp'
+        '502':
+          description: ESPX upstream call failed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/channels/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [channels]
+      summary: Read a single channel
+      operationId: getChannel
+      responses:
+        '200':
+          description: The channel row.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid channel ID (contains `..` or `/`).
+          content:
+            text/plain:
+              schema: { type: string }
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    put:
+      tags: [channels]
+      summary: Full update of a channel
+      description: |
+        Same pointer-field semantics as `PATCH`. The handler builds a
+        `gorm` `Updates(map)` with the non-nil fields, so unset fields
+        are NOT cleared. `Status` is validated against the closed set
+        `{ACTIVE, INACTIVE}` (`ERROR` is rejected — it is set by the
+        planner breaker, not the API surface).
+      operationId: updateChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateChannelReq' }
+      responses:
+        '200':
+          description: The updated channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid body, invalid path, or invalid status enum.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    patch:
+      tags: [channels]
+      summary: Partial update of a channel
+      description: |
+        Only the non-nil fields of the body are written. The
+        `UpdateChannelReq` shape is a "all pointer fields" struct so the
+        PATCH contract is mechanical — if a field is `nil` in JSON it
+        is skipped on the SQL UPDATE.
+      operationId: patchChannel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateChannelReq' }
+      responses:
+        '200':
+          description: The patched channel.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid body, invalid path, or invalid status enum.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+    delete:
+      tags: [channels]
+      summary: Soft-delete a channel
+      description: |
+        Flips `is_active=false` and `status='INACTIVE'`. The row is
+        preserved (no `DELETE FROM playout_channels` is ever issued) so
+        audit history is intact. **Idempotent** — returns `204` whether
+        the row existed or not, including for a row that was already
+        soft-deleted.
+      operationId: deleteChannel
+      responses:
+        '204':
+          description: Channel soft-deleted (or was already soft-deleted).
+        '400':
+          description: Invalid path.
+          content:
+            text/plain:
+              schema: { type: string }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/channels/{id}/start:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [channels]
+      summary: Start a playout channel
+      description: |
+        Flips `is_active=true` and `status='ACTIVE'`, then deletes the
+        planner's per-channel breaker counter `planner:failures:{id}` so
+        the re-started channel behaves like a fresh attempt regardless
+        of the counter's current value. **Redis is best-effort**: a
+        Redis blip is logged at `[api] StartChannel: DEL ...` and the
+        request still returns 200 — the DB flip is the durable part of
+        the operation. Idempotent: starting an already-active channel
+        returns 200 with the same end-state.
+      operationId: startChannel
+      responses:
+        '200':
+          description: Channel started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid path.
+          content:
+            text/plain:
+              schema: { type: string }
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/channels/{id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [channels]
+      summary: Stop a playout channel
+      description: |
+        Flips `is_active=false` and `status='INACTIVE'`. The breaker
+        counter is INTENTIONALLY preserved — a future `start` clears
+        it again, so while the channel is stopped the counter is a
+        no-op. Idempotent: stopping an already-stopped channel returns
+        200 with the same end-state.
+      operationId: stopChannel
+      responses:
+        '200':
+          description: Channel stopped.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PlayoutChannel' }
+        '400':
+          description: Invalid path.
+          content:
+            text/plain:
+              schema: { type: string }
+        '404':
+          description: Channel not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # ===========================================================================
+  #  /live/{channelID}/... — HLS surface (M1.5 multi-rendition)
+  # ===========================================================================
+
+  /live/{channel_id}/playlist.m3u8:
+    parameters:
+      - in: path
+        name: channel_id
+        required: true
+        schema: { type: string }
+        description: Channel ID. Rejected with `400` if it contains `..` or `/`.
+    get:
+      tags: [hls]
+      summary: Master HLS playlist
+      description: |
+        Returns the M1.5 master playlist (one `#EXT-X-STREAM-INF` per
+        rung: 360p / 720p / 1080p) + `#EXT-X-INDEPENDENT-SEGMENTS`.
+        Served from Redis `simlive:hls:{ch}` with a disk fallback to
+        `{TMP_DIR}/{ch}/playlist.m3u8` when Redis is cold.
+      operationId: getMasterPlaylist
+      responses:
+        '200':
+          description: Master playlist body.
+          headers:
+            Content-Type:
+              schema: { type: string, example: application/x-mpegURL }
+            Cache-Control:
+              schema: { type: string, example: no-cache }
+          content:
+            application/x-mpegURL:
+              schema: { type: string }
+        '400':
+          description: Invalid channel ID.
+        '404':
+          description: Stream not active or channel disabled.
+
+  /live/{channel_id}/playlist_{rendition}:
+    parameters:
+      - in: path
+        name: channel_id
+        required: true
+        schema: { type: string }
+        description: Channel ID. Rejected with `400` if it contains `..` or `/`.
+      - in: path
+        name: rendition
+        required: true
+        schema:
+          type: string
+          enum:
+            - 360p
+            - 720p
+            - 1080p
+            - 360p.m3u8
+            - 720p.m3u8
+            - 1080p.m3u8
+        description: |
+          Ladder rung. Gin strips the `.m3u8` suffix via the wildcard
+          literal so `playlist_360p.m3u8` → `rend="360p"`. Anything
+          outside the known ladder returns 404.
+    get:
+      tags: [hls]
+      summary: Per-rung media HLS playlist
+      description: |
+        Returns the media playlist for one rung (e.g. `360p`). The
+        playlist references the same shared `seg_N.ts` files as the
+        other rungs (M1.5 shared segment cache). Served from Redis
+        `simlive:hls:{ch}:rendition:{rend}` with a disk fallback.
+      operationId: getRungPlaylist
+      responses:
+        '200':
+          description: Media playlist body (5-segment sliding window, prepared segments only).
+          content:
+            application/x-mpegURL:
+              schema: { type: string }
+        '400':
+          description: Invalid path.
+        '404':
+          description: Unknown rendition or channel disabled.
+
+  /live/{channel_id}/{segment}:
+    parameters:
+      - in: path
+        name: channel_id
+        required: true
+        schema: { type: string }
+        description: Channel ID. Rejected with `400` if it contains `..` or `/`.
+      - in: path
+        name: segment
+        required: true
+        schema: { type: string, pattern: '^seg_[0-9]+\.ts$' }
+        description: |
+          Segment file name (e.g. `seg_117.ts`). Must end in `.ts`;
+          anything else returns 404. Served from the shared segment
+          cache at `{TMP_DIR}/{ch}/{segment}`.
+    get:
+      tags: [hls]
+      summary: Shared-cache .ts segment
+      operationId: getSegment
+      responses:
+        '200':
+          description: MPEG-TS segment bytes.
+          content:
+            video/mp2t:
+              schema: { type: string, format: binary }
+        '400':
+          description: Invalid path.
+        '404':
+          description: Invalid segment format or segment not on disk.
+
+# =============================================================================
+#  Components
+# =============================================================================
+components:
+  parameters:
+    ChannelID:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      description: |
+        Channel ID (UUID). Rejected with `400` if it contains `..` or
+        `/`. The same path-guard applies to all `:id` routes; the
+        `channelIDGuard` helper in `internal/api/handler.go` is the
+        single source of truth.
+
+  responses:
+    InternalError:
+      description: Unhandled server error.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    # ---- Error envelope ------------------------------------------------
+    Error:
+      type: object
+      properties:
+        error: { type: string, description: Human-readable error message. }
+      required: [error]
+
+    # ---- Playout channel + request/response shapes ---------------------
+    PlayoutChannel:
+      type: object
+      description: |
+        One row of the `playout_channels` table. `IsActive` and `Status`
+        are also written by the planner's breaker
+        (`markChannelInactive` in `internal/planner/planner.go`) and by
+        the REST surface (PUT/PATCH/DELETE/start/stop).
+      properties:
+        id:                { type: string, format: uuid, example: 7261da4b-9c45-4619-bfb0-a6119dc7b6e6 }
+        name:              { type: string, example: Playout 09 }
+        base_name:         { type: string, example: playout-09 }
+        content_timezone:  { type: string, example: Asia/Saigon }
+        channel_epg_id:    { type: string, format: uuid }
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE, ERROR]
+          default: ACTIVE
+        is_active:
+          type: boolean
+          default: true
+        created_at:        { type: string, format: date-time }
+        updated_at:        { type: string, format: date-time }
+      required: [id, name, status, is_active]
+
+    CreateChannelReq:
+      type: object
+      properties:
+        channel_id:
+          type: string
+          format: uuid
+          description: Channel ID to validate against ESPX API 2.
+      required: [channel_id]
+
+    UpdateChannelReq:
+      type: object
+      description: |
+        All fields are optional (pointer semantics in the Go struct).
+        PATCH skips nil fields. PUT has the same wire shape; the
+        implementation uses `gorm.Updates(map)` so unset fields are
+        NOT cleared.
+      properties:
+        name:             { type: string }
+        base_name:        { type: string }
+        content_timezone: { type: string }
+        channel_epg_id:   { type: string, format: uuid }
+        is_active:        { type: boolean }
+        status:
+          type: string
+          enum: [ACTIVE, INACTIVE]
+          description: |
+            Closed set. `ERROR` is rejected by the API surface
+            (400 Invalid status) because that value is set by the
+            planner's failure breaker, not by manual operator action.
+
+    ListChannelsResp:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/PlayoutChannel' }
+        total:
+          type: integer
+          format: int64
+          description: Total rows matching the filter (ignoring page and page_size).
+        page:
+          type: integer
+          description: 1-indexed page number actually returned (clamped to >= 1).
+        page_size:
+          type: integer
+          description: "Page size actually used (clamped to the [1, 100] range)."
+      required: [data, total, page, page_size]
+
+    # ---- ESPX list shape ----------------------------------------------
+    ESPXChannelListItem:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        name:             { type: string }
+        base_name:        { type: string }
+        content_timezone: { type: string, example: Asia/Saigon }
+      required: [id, name]
+
+    ESpxChannelsListResp:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ESPXChannelListItem' }
+        registered:
+          type: object
+          description: |
+            Map keyed by ESPX channel id; value `true` if the channel
+            already exists in our local `playout_channels` table. Built
+            with a single `SELECT id FROM playout_channels WHERE id IN (...)`
+            so the round-trip cost is O(1) regardless of fleet size.
+          additionalProperties: { type: boolean }
+      required: [data, registered]

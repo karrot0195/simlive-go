@@ -101,7 +101,7 @@ Special attention to the **known drift hotspots** (verified during the
 | M1.5 segment cache | Often still described as per-rung `{ch}/{rend}/` subdirs; the actual M1.5 model is a **shared flat `{ch}/` directory** with 3 advertised rungs via master playlist. |
 | `SIMLIVE_RENDITIONS` | Often described as "reserved for M2 / ignored"; the actual behaviour is "M1 allows exactly 1 rung, multi-rung values WARN-log once and use first". |
 | API shape | Often described as `/{ch}/{rend}/playlist.m3u8`; the actual M1.5 shape is `/{ch}/playlist_<rend>.m3u8` (Gin radix-tree wildcard conflict avoidance). |
-| Doc cross-refs | `AGENTS.md` / `docs/290826-chromium-playback-handoff.md` / `docs/290826-testing-guide.md` are referenced in older docs but do not exist on disk. Replace with the canonical triple or the actual existing plan (`docs/300826-multi-rendition-abr-ladder.md`). |
+| Doc cross-refs | `AGENTS.md` / `docs/290826-chromium-playback-handoff.md` / `docs/290826-testing-guide.md` are referenced in older docs but do not exist on disk. Replace with the canonical triple or the actual existing plan (`docs/300826_0620-multi-rendition-abr-ladder.md`). Plan filenames use the `ddMMyy_HHmm-…` pattern (UTC, date + hour + minute). |
 
 ### Step 3 — Append the session entry to `docs/memories.md`
 
@@ -187,8 +187,8 @@ Report:
 - **The `memory` tool, not `replace_string_in_file`, edits `/memories/repo/simlive-go.md`.** The memory file system lives outside the workspace tree.
 - **Do not delete or rewrite prior `docs/memories.md` entries.** Append-only by convention.
 - **The implementer agent** (`.github/agents/simlive-implementer.agent.md`) already maintains the spec + summary files during implementation. This skill is the **end-of-task reconciliation pass**, not a substitute for the implementer's per-task updates. If the implementer has already updated everything correctly, this skill is a no-op (just append the session entry).
-- **Historical plan files** (`docs/270826-…`, `docs/290826-…`) may reference the now-nonexistent `AGENTS.md`. **Do not edit historical plan files** — they are a record of what was done at the time. Only edit `docs/memories.md` going forward.
-- **`docs/300826-multi-rendition-abr-ladder.md`** is the M1.5 plan and is current — leave it alone unless explicitly asked.
+- **Historical plan files** (`docs/290826_1448-…`, `docs/300826_0213-…`, `docs/300826_0214-…`, `docs/300826_0236-…`) may reference the now-nonexistent `AGENTS.md`. **Do not edit historical plan files** — they are a record of what was done at the time. Only edit `docs/memories.md` going forward.
+- **`docs/300826_0620-multi-rendition-abr-ladder.md`** is the M1.5 plan and is current — leave it alone unless explicitly asked.
 
 ## Examples
 

@@ -47,7 +47,8 @@
 Track the work; tick as you go.
 
 - [x] Read pre-flight context (`docs/specification.md`, summary instructions,
-      previous plans `270826-…`, `290826-…`, target packages).
+      previous plans `290826_1448-…`, `300826_0213-…`, `300826_0214-…`,
+      `300826_0236-…`, target packages).
 - [x] Drafted §1–§7 below.
 - [x] Reviewed by user (critical fixes applied: stale line refs,
       `ladderCache` coexists with `rendCache`, `writeRenditionMetadata`
@@ -399,10 +400,10 @@ segments only; per-rung on-disk window ≤ 15; playback continuous at 360p.
 
 ## References
 
-- `docs/specification.md` §5 (Module 2), §6.1 (quality tiers), §7, §8 (env vars).
-- `docs/270826-implement-pts-sliding-window-logic.md` (PtsOffset + quality
+- `docs/s90826_1448-implement-pts-sliding-window-logic.md` (PtsOffset + quality
   tiers — this plan extends its rendition logic).
-- `docs/290826-implement-prepare-ts-file.md` (engine window — this plan
+- `docs/300826_0213 plan extends its rendition logic).
+- `docs/300826_0213-implement-prepare-ts-file.md` (engine window — this plan
   detaches it per rung).
 - `.github/skills/simlive-plan/references/simlive-conventions.md`
   (invariants §1–§3).

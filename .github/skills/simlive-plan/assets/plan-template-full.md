@@ -1,7 +1,8 @@
 <!--
   Full plan template for SimLive-Go feature plans.
-  The scaffolder copies this file into ./docs/ddMMyy-<purpose>.md and replaces
-  the [TODO: …] placeholders. Do not edit in place — edit the template.
+  The scaffolder copies this file into ./docs/ddMMyy_HHmm-<purpose>.md and
+  replaces the [TODO: …] placeholders. Do not edit in place — edit the
+  template.
 -->
 
 # [TODO: Feature title]
@@ -10,7 +11,7 @@
 **Date:** [TODO: YYYY-MM-DD]  
 **Author:** [TODO: name / handle]  
 **Status:** Draft · (later: Approved · Implemented · Verified)
-
+90826_1448
 > Continues / Supersedes [TODO: link to previous plan if any, e.g. `270826-…`]
 
 ---

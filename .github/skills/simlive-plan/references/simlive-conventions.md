@@ -2,9 +2,11 @@
 
 > Pulled from `docs/specification.md`,
 > `.github/instructions/simlive-summary.instructions.md`,
-> `docs/memories.md`, and the existing plans (`270826-…`, `290826-…`,
-> `300826-…`). Read this before drafting a plan so you don't re-derive
-> the rules from scratch.
+> `docs/memories.md`, and the existing plans (`290826_1448-…`,
+> `300826_0213-…`, `300826_0214-…`, `300826_0236-…`, `300826_0616-…`,
+> `300826_0620-…`, `300826_1411-…`). Read this before drafting a plan so
+> you don't re-derive the rules from scratch. Plan filenames use the
+> `ddMMyy_HHmm-…` pattern (UTC, date + hour + minute).
 
 ## Invariants — never break these
 

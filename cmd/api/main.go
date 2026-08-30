@@ -38,7 +38,7 @@ func main() {
 
 	// 3. Init Services
 	espxClient := api.NewESPXClient(settings.EspxURL)
-	channelHandler := api.NewChannelHandler(db, espxClient)
+	channelHandler := api.NewChannelHandler(db, espxClient, rdb)
 
 	// 4. HTTP REST API
 	r := gin.Default()
@@ -76,7 +76,23 @@ func main() {
 	// API routes
 	apiGroup := r.Group("/api")
 	{
-		apiGroup.POST("/channels", channelHandler.RegisterChannel)
+		// POST /api/channels — create / upsert (validates against ESPX).
+		apiGroup.POST("/channels", channelHandler.CreateOrUpsertChannel)
+		// GET /api/channels — list local playout_channels rows (paginated).
+		apiGroup.GET("/channels", channelHandler.ListChannels)
+		// GET /api/channels/esp — list ESPX upstream channels + registered
+		// map. Must be registered BEFORE the /channels/:id routes so Gin's
+		// radix tree treats `esp` as a static prefix (mirrors the
+		// playlist_:rendition ordering rule from the M1.5 plan,
+		// docs/300826-multi-rendition-abr-ladder.md §3 cmd/api/main.go).
+		apiGroup.GET("/channels/esp", channelHandler.ListESpxChannels)
+		// /channels/:id CRUD + start/stop.
+		apiGroup.GET("/channels/:id", channelHandler.GetChannel)
+		apiGroup.PUT("/channels/:id", channelHandler.UpdateChannel)
+		apiGroup.PATCH("/channels/:id", channelHandler.PatchChannel)
+		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
+		apiGroup.POST("/channels/:id/start", channelHandler.StartChannel)
+		apiGroup.POST("/channels/:id/stop", channelHandler.StopChannel)
 	}
 
 	// HLS Live Streaming routes (M1.5: shared segment cache, 3 rung playlists)

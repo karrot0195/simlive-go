@@ -8,9 +8,14 @@
 #   ./scripts/scaffold-plan.sh cold-start-stall-hardening full
 #
 # The script copies the right template (assets/plan-template-{full,short}.md)
-# into ./docs/<ddMMyy>-<feature-purpose>.md and prints the absolute path of
-# the new file. It refuses to overwrite an existing file unless --force is
+# into ./docs/<ddMMyy_HHmm>-<feature-purpose>.md and prints the absolute path
+# of the new file. It refuses to overwrite an existing file unless --force is
 # passed.
+#
+# Filename pattern: ddMMyy_HHmm-<feature-purpose>.md (UTC; date + hour + minute)
+# — adds hour+minute to the legacy ddMMyy- prefix so multiple plans written
+#   on the same day don't collide, and so a quick `ls docs/` shows the order
+#   they were authored in.
 
 set -euo pipefail
 
@@ -43,11 +48,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 SKILL_DIR="$(cd -- "$SCRIPT_DIR/.." &>/dev/null && pwd)"
 REPO_ROOT="$(cd -- "$SKILL_DIR/../../.." &>/dev/null && pwd)"
 
-# Date prefix (UTC, ddMMyy).
-if date -u +%d%m%y >/dev/null 2>&1; then
-  DATE_PREFIX="$(date -u +%d%m%y)"
+# Date-time prefix (UTC, ddMMyy_HHmm). GNU date supports the format natively;
+# the BSD/macOS fallback uses %y%m%d_%H%M (same fields, different order) so
+# the script works on both Linux and macOS without GNU coreutils.
+if date -u +%d%m%y_%H%M >/dev/null 2>&1; then
+  DATE_PREFIX="$(date -u +%d%m%y_%H%M)"
 else
-  DATE_PREFIX="$(date -u +%d%m%y)"
+  DATE_PREFIX="$(date -u +%y%m%d_%H%M)"
 fi
 
 OUT_DIR="$REPO_ROOT/docs"

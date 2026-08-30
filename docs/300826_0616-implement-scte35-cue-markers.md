@@ -21,7 +21,7 @@
 Track the work; tick as you go.
 
 - [x] Read pre-flight context (`docs/specification.md`, summary
-      instructions, `300826-multi-rendition-abr-ladder.md`,
+      instructions, `300826_0620-multi-rendition-abr-ladder.md`,
       `internal/engine/engine.go`, `internal/planner/{planner,
       segment_processor}.go`, `internal/models/models.go`, `tmp/scte35.ts`,
       `tmp/SCTE35Utils.ts`).
@@ -376,7 +376,7 @@ implementer actions per skill conventions)
   CUE-OUT/CUE-IN on all three rungs (`playlist_360p.m3u8` etc.)
   because they all reference the same shared segment cache. M2
   ("true per-rung separate segments" — see
-  `docs/300826-multi-rendition-abr-ladder.md`) would need to
+  `docs/300826_0620-multi-rendition-abr-ladder.md`) would need to
   re-evaluate whether the same break metadata is broadcast across
   variants or only the active one.
 - **Pre-roll warnings.** `tmp/scte35.ts` defines
@@ -413,11 +413,11 @@ implementer actions per skill conventions)
 - `tmp/SCTE35Utils.ts` — tag string format
   (`generateCUE_OUT` / `generateCUE_IN`) + the
   trailing-unquoted-attribute gotcha.
-- `docs/270826-implement-pts-sliding-window-logic.md` — local
+- `docs/290826_1448-implement-pts-sliding-window-logic.md` — local
   `PtsOffset` timeline; this plan does not touch it.
-- `docs/290826-planner-24h-next-day-rollover.md` — ad-insertion
+- `docs/300826_0214-planner-24h-next-day-rollover.md` — ad-insertion
   cadence and `globalRunningTime` semantics; this plan does not
   change them.
-- `docs/300826-multi-rendition-abr-ladder.md` — M1.5 shared
+- `docs/300826_0620-multi-rendition-abr-ladder.md` — M1.5 shared
   segment cache + 3 advertised rungs; the M2 follow-up is called
   out as out-of-scope here.

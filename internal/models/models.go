@@ -4,7 +4,13 @@ import (
 	"time"
 )
 
-// PlayoutChannel - PostgreSQL Single Table
+// PlayoutChannel - PostgreSQL Single Table.
+//
+// IsActive and Status are both read by the planner's cron loop
+// (`cmd/planner/main.go`: `db.Where("is_active = ?", true)`) and are now
+// also written by the REST API (manual start/stop). The breaker logic in
+// `internal/planner/planner.go` markChannelInactive also writes is_active
+// after `failureInactivateThreshold` consecutive (channel, date) failures.
 type PlayoutChannel struct {
 	ID              string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	Name            string    `gorm:"type:varchar(255);not null" json:"name"`
@@ -12,8 +18,20 @@ type PlayoutChannel struct {
 	ContentTimezone string    `gorm:"type:varchar(50)" json:"content_timezone"`
 	ChannelEpgID    string    `gorm:"type:varchar(36)" json:"channel_epg_id"`
 	Status          string    `gorm:"type:varchar(20);default:'ACTIVE'" json:"status"`
+	IsActive        bool      `gorm:"column:is_active;default:true" json:"is_active"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// ESPXChannelListItem is a single entry in the ESPX API 1 response
+// (`GET /api/v2/common/channel-playouts`). Promoted from the anonymous
+// struct inside `ESPXChannelListResp` so the new `/api/channels/esp` REST
+// route can return a stable shape independent of the upstream response.
+type ESPXChannelListItem struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	BaseName        string `json:"base_name"`
+	ContentTimezone string `json:"content_timezone"`
 }
 
 // SegmentItem - Structure stored in the Redis Sorted Set
@@ -77,12 +95,7 @@ type SegmentItem struct {
 
 // Response structs for ESPX APIs
 type ESPXChannelListResp struct {
-	Data []struct {
-		ID              string `json:"id"`
-		Name            string `json:"name"`
-		BaseName        string `json:"base_name"`
-		ContentTimezone string `json:"content_timezone"`
-	} `json:"data"`
+	Data []ESPXChannelListItem `json:"data"`
 }
 
 type ESPXChannelDetailResp struct {
@@ -130,4 +143,37 @@ type ESPXSchedulesResponse struct {
 
 type CreateChannelReq struct {
 	ChannelID string `json:"channel_id"`
+}
+
+// UpdateChannelReq is the body for PUT/PATCH /api/channels/:id. Every field
+// is a pointer so PATCH can skip zero values cleanly (PATCH only updates
+// the non-nil fields via clause.AssignmentColumns). PUT does a full replace
+// after server-side validation.
+type UpdateChannelReq struct {
+	Name            *string `json:"name,omitempty"`
+	BaseName        *string `json:"base_name,omitempty"`
+	ContentTimezone *string `json:"content_timezone,omitempty"`
+	ChannelEpgID    *string `json:"channel_epg_id,omitempty"`
+	IsActive        *bool   `json:"is_active,omitempty"`
+	Status          *string `json:"status,omitempty"`
+}
+
+// ListChannelsResp is the paginated response for GET /api/channels.
+// Page is 1-indexed; PageSize is clamped to [1, 100] in the handler
+// (defaultListPageSize=20, maxListPageSize=100).
+type ListChannelsResp struct {
+	Data     []PlayoutChannel `json:"data"`
+	Total    int64            `json:"total"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"page_size"`
+}
+
+// ESpxChannelsListResp is the response for GET /api/channels/esp. `Registered`
+// is keyed by the ESPX channel id; `true` means the channel already exists
+// in our local playout_channels table. Built with a single
+// `SELECT id FROM playout_channels WHERE id IN (...)` so the round-trip
+// stays O(1) regardless of the fleet size.
+type ESpxChannelsListResp struct {
+	Data       []ESPXChannelListItem `json:"data"`
+	Registered map[string]bool       `json:"registered"`
 }

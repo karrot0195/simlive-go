@@ -1,12 +1,16 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+
+	"simlive/internal/models"
 )
 
 // These tests exercise the path-guard logic for the M1.5 routes in
@@ -155,5 +159,215 @@ func TestGinEngine_Smoke(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK || w.Body.String() != "pong" {
 		t.Fatalf("smoke: code=%d body=%q", w.Code, w.Body.String())
+	}
+}
+
+// =========================================================================
+//   Tests for the /api/channels/* CRUD + start/stop surface added in
+//   `docs/300826-create-rest-api-for-playout-channels-management.md`.
+//   These tests are pure (no Postgres, no Redis) — they exercise the
+//   pure helpers (parsePagination, updateColumnsAndValues,
+//   assignmentMap, channelIDGuard) and the request/response model
+//   shape. The integration smoke test (DB-seeded curl matrix) lives in
+//   the plan doc §6.
+// =========================================================================
+
+// helper: build a gin context + recorder with the given query string.
+func newCtxForQuery(rawQuery string) (*gin.Context, *httptest.ResponseRecorder) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	req := httptest.NewRequest(http.MethodGet, "/?"+rawQuery, nil)
+	if rawQuery == "" {
+		req = httptest.NewRequest(http.MethodGet, "/", nil)
+	}
+	// Parse the query into req.URL so c.Query() works.
+	if rawQuery != "" {
+		v, _ := url.ParseQuery(rawQuery)
+		req.URL.RawQuery = v.Encode()
+	}
+	c.Request = req
+	return c, w
+}
+
+// --- parsePagination ----------------------------------------------------
+
+func TestParsePagination_Defaults(t *testing.T) {
+	c, _ := newCtxForQuery("")
+	page, size := parsePagination(c)
+	if page != 1 || size != defaultListPageSize {
+		t.Errorf("defaults: page=%d size=%d, want 1/%d", page, size, defaultListPageSize)
+	}
+}
+
+func TestParsePagination_ClampsPageSize(t *testing.T) {
+	c, _ := newCtxForQuery("page_size=999")
+	_, size := parsePagination(c)
+	if size != maxListPageSize {
+		t.Errorf("clamp high: size=%d, want %d", size, maxListPageSize)
+	}
+	c, _ = newCtxForQuery("page_size=0")
+	_, size = parsePagination(c)
+	if size != defaultListPageSize {
+		t.Errorf("clamp zero: size=%d, want %d", size, defaultListPageSize)
+	}
+	c, _ = newCtxForQuery("page_size=-5")
+	_, size = parsePagination(c)
+	if size != defaultListPageSize {
+		t.Errorf("clamp negative: size=%d, want %d", size, defaultListPageSize)
+	}
+}
+
+func TestParsePagination_AcceptsValid(t *testing.T) {
+	c, _ := newCtxForQuery("page=3&page_size=50")
+	page, size := parsePagination(c)
+	if page != 3 || size != 50 {
+		t.Errorf("valid: page=%d size=%d, want 3/50", page, size)
+	}
+}
+
+// --- updateColumnsAndValues + assignmentMap -----------------------------
+
+func ptrStr(s string) *string { return &s }
+func ptrBool(b bool) *bool    { return &b }
+
+func TestUpdateColumnsAndValues_SkipsZeroFields(t *testing.T) {
+	req := &models.UpdateChannelReq{Status: ptrStr("ACTIVE")}
+	cols, vals := updateColumnsAndValues(req)
+	if len(cols) != 1 || cols[0] != "status" || vals[0] != "ACTIVE" {
+		t.Errorf("single status: cols=%v vals=%v, want [status] [ACTIVE]", cols, vals)
+	}
+}
+
+func TestUpdateColumnsAndValues_AllFields(t *testing.T) {
+	req := &models.UpdateChannelReq{
+		Name:            ptrStr("New"),
+		BaseName:        ptrStr("new-base"),
+		ContentTimezone: ptrStr("Asia/Tokyo"),
+		ChannelEpgID:    ptrStr("epg-2"),
+		IsActive:        ptrBool(false),
+		Status:          ptrStr("INACTIVE"),
+	}
+	cols, vals := updateColumnsAndValues(req)
+	if len(cols) != 6 {
+		t.Errorf("all fields: got %d cols (%v), want 6", len(cols), cols)
+	}
+	m := assignmentMap(cols, vals)
+	want := map[string]interface{}{
+		"name":             "New",
+		"base_name":        "new-base",
+		"content_timezone": "Asia/Tokyo",
+		"channel_epg_id":   "epg-2",
+		"is_active":        false,
+		"status":           "INACTIVE",
+	}
+	for k, v := range want {
+		if m[k] != v {
+			t.Errorf("map[%q] = %v, want %v", k, m[k], v)
+		}
+	}
+}
+
+func TestUpdateColumnsAndValues_Empty(t *testing.T) {
+	req := &models.UpdateChannelReq{}
+	cols, vals := updateColumnsAndValues(req)
+	if len(cols) != 0 || len(vals) != 0 {
+		t.Errorf("empty: cols=%v vals=%v, want both empty", cols, vals)
+	}
+}
+
+// --- channelIDGuard -----------------------------------------------------
+
+func TestChannelIDGuard_AcceptsValid(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Params = gin.Params{{Key: "id", Value: "ch-abc_123"}}
+	if !channelIDGuard(c, "ch-abc_123") {
+		t.Errorf("valid id rejected")
+	}
+}
+
+func TestChannelIDGuard_RejectsDotDot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	if channelIDGuard(c, "../etc") {
+		t.Errorf("dotdot accepted")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("dotdot code=%d, want 400", w.Code)
+	}
+}
+
+func TestChannelIDGuard_RejectsSlash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	if channelIDGuard(c, "ch/abc") {
+		t.Errorf("slash accepted")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("slash code=%d, want 400", w.Code)
+	}
+}
+
+// --- Breaker key prefix contract ----------------------------------------
+//
+// The planner and the api handler both pin the same string. If a future
+// refactor renames one but not the other, the test catches it.
+
+func TestBreakerKeyPrefix_MatchesPlanner(t *testing.T) {
+	if breakerKeyPrefix != "planner:failures:" {
+		t.Errorf("handler breakerKeyPrefix = %q, want %q", breakerKeyPrefix, "planner:failures:")
+	}
+	want := breakerKeyPrefix + "ch-abc"
+	if want != "planner:failures:ch-abc" {
+		t.Errorf("format: %q, want %q", want, "planner:failures:ch-abc")
+	}
+}
+
+// --- Status enum validation --------------------------------------------
+
+func TestAllowedStatuses(t *testing.T) {
+	for _, ok := range []string{"ACTIVE", "INACTIVE"} {
+		if !allowedStatuses[ok] {
+			t.Errorf("%q should be allowed", ok)
+		}
+	}
+	for _, bad := range []string{"FOO", "active", "ERROR"} {
+		if allowedStatuses[bad] {
+			t.Errorf("%q should be rejected (ERROR is set by the planner, not the API)", bad)
+		}
+	}
+}
+
+// --- UpdateChannelReq round-trip ---------------------------------------
+//
+// Pointer fields must round-trip through JSON correctly. Ensures
+// the JSON tags are not accidentally changed to non-pointer fields.
+
+func TestUpdateChannelReq_RoundTrip(t *testing.T) {
+	original := models.UpdateChannelReq{
+		Name:     ptrStr("Renamed"),
+		IsActive: ptrBool(true),
+	}
+	// Unmarshal a partial body — only `name` and `is_active` set.
+	body := `{"name":"Renamed","is_active":true}`
+	var got models.UpdateChannelReq
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Name == nil || *got.Name != *original.Name {
+		t.Errorf("name: got %v, want %q", got.Name, *original.Name)
+	}
+	if got.IsActive == nil || *got.IsActive != *original.IsActive {
+		t.Errorf("is_active: got %v, want %v", got.IsActive, *original.IsActive)
+	}
+	// Unset fields stay nil after a round-trip on a partial body.
+	if got.Status != nil {
+		t.Errorf("status: got %v, want nil", got.Status)
+	}
+	if got.BaseName != nil {
+		t.Errorf("base_name: got %v, want nil", got.BaseName)
 	}
 }

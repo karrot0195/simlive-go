@@ -6,7 +6,7 @@ Based on the provided code and the requirement for 24/7 continuous operation, th
 - **Potential duplication**: If the loop were uncommented and run again, duplicate segments would be added.
 
 > **Status (2026-08-30):** Sections **1, 2, 3, 5, 6** are ✅ implemented (see
-> [`docs/290826-planner-24h-next-day-rollover.md`](290826-planner-24h-next-day-rollover.md)).
+> [`docs/300826_0214-planner-24h-next-day-rollover.md`](300826_0214-planner-24h-next-day-rollover.md)).
 > Sections **4 (worker pool)** and **7 (retry / metrics / failure breaker)** were
 > implemented in the same change set. Original design notes are kept below
 > for reference.
@@ -156,7 +156,7 @@ The changes can be implemented incrementally, starting with the cleanup and then
 All seven sections above are now implemented. Reference points:
 
 ### §1–§3, §5–§6 — Continuous processing, cleanup, multi-day, env vars
-See [`docs/290826-planner-24h-next-day-rollover.md`](290826-planner-24h-next-day-rollover.md)
+See [`docs/300826_0214-planner-24h-next-day-rollover.md`](300826_0214-planner-24h-next-day-rollover.md)
 for the per-date `horizon`, `HasDateInTimeline` ZCOUNT-dedup, today+tomorrow
 cron, retention cleanup, and the `PLANNER_INTERVAL` / `RETENTION_SECONDS` /
 `LOOKAHEAD_SECONDS` env vars.

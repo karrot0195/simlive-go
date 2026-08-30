@@ -36,6 +36,21 @@ func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
 	return &result, err
 }
 
+// ListESpxChannels is a thin wrapper over GetChannels that returns the
+// items directly (rather than the wrapped response). Used by the new
+// GET /api/channels/esp REST route — keeps the upstream URL constant
+// in one place so a future endpoint rename is a one-line change.
+func (c *ESPXClient) ListESpxChannels() ([]models.ESPXChannelListItem, error) {
+	resp, err := c.GetChannels()
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return []models.ESPXChannelListItem{}, nil
+	}
+	return resp.Data, nil
+}
+
 // API 2: Get Playout Detail to extract channelEpg.id
 func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]", c.baseURL, playoutID)
@@ -71,9 +86,6 @@ func (c *ESPXClient) GetSchedules(epgID, date, tz string) (*models.ESPXSchedules
 
 	u.RawQuery = q.Encode()
 	reqURL := u.String()
-
-	// reqURL will yield:
-	// https://api2.espx.cloud/api/v2/common/channel-epg/.../schedules?$date=2026-08-23&$eager=%5Bprogramme%2Cprogramme.programmeStreams%2Cprogramme.pods%5D&$limit=30000&$skip=0&tz=%2B07%3A00
 
 	log.Printf("[HTTP] Request URL: %s", reqURL)
 	resp, err := c.httpClient.Get(reqURL)

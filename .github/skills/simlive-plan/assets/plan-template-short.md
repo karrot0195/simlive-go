@@ -1,6 +1,6 @@
 <!--
   Short plan template for trivial SimLive-Go changes.
-  The scaffolder copies this file into ./docs/ddMMyy-<purpose>.md.
+  The scaffolder copies this file into ./docs/ddMMyy_HHmm-<purpose>.md.
 -->
 
 # [TODO: Feature title]

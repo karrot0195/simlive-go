@@ -1,6 +1,6 @@
 ---
 name: simlive-plan
-description: 'Generate a dated, well-structured feature plan file (./docs/ddMMyy-<purpose>.md) for the SimLive-Go HLS playout system. Use when the user asks to plan, scope, design, or break down a new feature/fix/refactor in the planner, engine, API, models, or storage layers. Triggers: plan, planning, plan file, ddMMyy, design doc, breakdown, scope, RFC, simlive plan, planner change, engine change.'
+description: 'Generate a dated, well-structured feature plan file (./docs/ddMMyy_HHmm-<purpose>.md) for the SimLive-Go HLS playout system. Use when the user asks to plan, scope, design, or break down a new feature/fix/refactor in the planner, engine, API, models, or storage layers. Triggers: plan, planning, plan file, ddMMyy, design doc, breakdown, scope, RFC, simlive plan, planner change, engine change.'
 argument-hint: '<feature-purpose> [--short]'
 user-invocable: true
 disable-model-invocation: false
@@ -35,15 +35,23 @@ tool with the two questions in §1 of the procedure.
 
 ## Outputs
 
-A single file: **`./docs/ddMMyy-<feature-purpose>.md`** (date in UTC, today's
-date if not specified), starting with a `## 0. Progress` checklist that the
+A single file: **`./docs/ddMMyy_HHmm-<feature-purpose>.md`** (UTC, today's
+date + hour + minute), starting with a `## 0. Progress` checklist that the
 implementer ticks off as the plan is executed.
+
+> **Why the `_HHmm` suffix?** Multiple plans are often written in the same
+> day; the `HHmm` (hour + minute) component makes the filename unique
+> without forcing a `--short` or a counter, and a plain `ls docs/` shows the
+> order they were authored in. The legacy `ddMMyy-` (no time) format is
+> still tolerated by the scaffolder for backward compatibility but new
+> plans should always use `ddMMyy_HHmm-`.
 
 Templates are bundled as one-level references:
 
 - [Full plan template](./assets/plan-template-full.md) — 6 sections
   (Overview → Problem → Solution → File changes → Data flow → Verification →
-  Known gaps), matches the existing `270826-…` and `290826-…` plans.
+  Known gaps), matches the existing `300826_0214-…`, `300826_0620-…`, and
+  `300826_1411-…` plans.
 - [Short checklist template](./assets/plan-template-short.md) — 1-page
   problem + todo list + verification, for trivial changes.
 
@@ -53,7 +61,8 @@ Templates are bundled as one-level references:
    - If `feature-purpose` and shape (full/short) are not in the prompt, ask:
      - Q1: "What's the feature slug?" (e.g. `cold-start-stall-hardening`)
      - Q2: "Full plan or short checklist?" (full / short)
-   - Confirm output path: `./docs/$(date -u +%d%m%y)-<feature-purpose>.md`
+   - Confirm output path: `./docs/$(date -u Names match the new
+     `ddMMyy_HHmm-…` pattern. +%d%m%y)-<feature-purpose>.md`
      (default to UTC date; warn if a file with that name already exists).
 
 2. **Pre-flight context (read in parallel).**
@@ -75,8 +84,10 @@ Templates are bundled as one-level references:
    ./scripts/scaffold-plan.sh <feature-purpose> [full|short]
    ```
 
-   The script prints the absolute path of the created file so the agent can
-   follow up with `insert_edit_into_file` for the body.
+   The script picks the current UTC `ddMMyy_HHmm` and writes to
+   `./docs/ddMMyy_HHmm-<feature-purpose>.md`. It prints the absolute path of
+   the created file so the agent can follow up with `insert_edit_into_file`
+   for the body.
 
 5. **Fill in the body.** Replace each `[TODO: …]` placeholder with content
    derived from the files read in step 2. Be **specific**:
@@ -84,7 +95,7 @@ Templates are bundled as one-level references:
    - Cite line numbers from existing code (use `path#Lstart-Lend`).
    - Reference [references/simlive-conventions.md](./references/simlive-conventions.md)
      for invariants (VOD↔ads resolution match, local `PtsOffset`, bounded
-     active window, etc.).
+     active window, etc.90826_1448
    - Cross-link to the previous plans when the change continues their work
      (e.g. "continues `270826-…pts-sliding-window-logic`").
 
@@ -115,8 +126,8 @@ the existing plans and the summary instructions; full detail lives in
   table format from the existing plans).
 - **Always cite the invariant** if the change touches rendition matching, the
   `PtsOffset` timeline, or the on-disk active window.
-- **Filename pattern:** `./docs/ddMMyy-<feature-purpose>.md`
-  (UTC date, kebab-case slug).
+- **Filename pattern:** `./docs/ddMMyy_HHmm-<feature-purpose>.md`
+  (UTC date + hour + minute, kebab-case slug).
 - **No code blocks for "where to put it"** — name the file and line range
   instead.
 

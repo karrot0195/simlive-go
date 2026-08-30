@@ -13,7 +13,7 @@ applyTo: "**/*.go"
 A simulated-live (24/7 linear) HLS playout system in Go:
 **Planner** (ESPX EPG schedules + `rclone` manifests → Redis timeline) →
 **Engine** (1s tick → download + PTS/DTS rewrite → sliding HLS playlist) →
-**API** (serves the playlist/segments at `http://localhost:8080/live/{channelID}/`).
+**API** (serves the playlist/segments at `http://localhost:8080/live/{channelID}/` and the playout-channel CRUD + start/stop surface at `http://localhost:8080/api/channels[/...]` — handlers in `internal/api/handler.go`). The planner reads the same `is_active` / `status` columns, so a manual `start` / `stop` flip takes effect on the next planner tick (default 5m, `PLANNER_INTERVAL`). `start` also deletes the breaker counter key `planner:failures:{id}` to reset the per-channel failure breaker.
 
 ## Architecture snapshot (keep in sync)
 - **Planner** → `simlive:timeline:{channelID}` Redis ZSET; score = `MediaStart`
@@ -58,7 +58,7 @@ A simulated-live (24/7 linear) HLS playout system in Go:
     `buildSpliceInsert`, `buildCueOutLine`, `buildCueInLine`,
     `buildMediaPlaylistBody`, `adBreakEventID`, `formatBreakStartDate`,
     `formatBreakDuration`). Plan:
-    [300826-implement-scte35-cue-markers.md](../docs/300826-implement-scte35-cue-markers.md).
+    [300826_0616-implement-scte35-cue-markers.md](../docs/300826_0616-implement-scte35-cue-markers.md).
 - **Invariants:** VOD↔ads must resolve to the SAME resolution; `PtsOffset`
   stays local (`MediaStart − timelineBase`) to avoid the 2^33/90000 ≈
   95443.7s epoch PTS wrap.
@@ -162,5 +162,5 @@ constants, architecture, quality tiers) — and nothing else.
 - **Worker pool:** active channels are processed in parallel by `PLANNER_WORKERS` goroutines (semaphore + WaitGroup) — bounded so a 50-channel fleet doesn't open 50 simultaneous EPG fetches.
 - **Concurrency caveat (NOT YET SAFE):** `Planner` carries shared mutable state across calls (`globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID`) without a mutex. Setting `PLANNER_WORKERS > 1` will race two concurrent `ProcessEPGToTimeline` calls on the same `*Planner` instance and produce corrupt timelines. Keep `PLANNER_WORKERS=1` (the default is 4 — see `internal/planner/planner.go` NOTE block; the parallel loop is wired but the underlying state isn't safe until per-call state is moved onto `SegmentProcessor`).
 - **Retry/backoff:** `ProcessEPGToTimelineWithRetry` wraps the raw EPG walk; schedule is `base * 2^(i-1)` capped at `PREPARE_RETRY_MAX_MS`, attempts = `MAX_PREPARE_RETRIES`. On final failure the channel's `planner:failures:{id}` counter is incremented via `HandlePrepareResultForChannel`.
-- **Breaker:** once the counter ≥ `failureInactivateThreshold` (5) the channel is set `is_active=false`. A successful prepare (or a "date already prepared" short-circuit) resets the counter to 0.
+- **Breaker:** once the counter ≥ `failureInactivateThreshold` (5) the channel is set `is_active=false`. A successful prepare (or a "date already prepared" short-circuit) resets the counter to 0. The breaker key `planner:failures:{id}` can also be reset manually via `POST /api/channels/:id/start` (best-effort on Redis errors — DB flip is the durable part).
 - **Metrics:** each tick logs `[METRIC] channel={id} name=... zset_size={n} cursor={ts}` per active channel (via `TimelineSize` + `LastProcessedCursor`); greppable for Loki/etc.
