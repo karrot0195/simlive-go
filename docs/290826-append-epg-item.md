@@ -5,6 +5,12 @@ Based on the provided code and the requirement for 24/7 continuous operation, th
 - **No handover to next day**: When the end of day is reached, no new segments are added, causing a gap for engines.
 - **Potential duplication**: If the loop were uncommented and run again, duplicate segments would be added.
 
+> **Status (2026-08-30):** Sections **1, 2, 3, 5, 6** are ✅ implemented (see
+> [`docs/290826-planner-24h-next-day-rollover.md`](290826-planner-24h-next-day-rollover.md)).
+> Sections **4 (worker pool)** and **7 (retry / metrics / failure breaker)** were
+> implemented in the same change set. Original design notes are kept below
+> for reference.
+
 Below is a comprehensive plan to make the planner robust for 24/7 operation.
 
 ---
@@ -142,3 +148,55 @@ This plan ensures:
 - **Seamless transition** between days.
 
 The changes can be implemented incrementally, starting with the cleanup and then refactoring the processing logic to be incremental.
+
+---
+
+## 8. Implementation Notes (2026-08-30)
+
+All seven sections above are now implemented. Reference points:
+
+### §1–§3, §5–§6 — Continuous processing, cleanup, multi-day, env vars
+See [`docs/290826-planner-24h-next-day-rollover.md`](290826-planner-24h-next-day-rollover.md)
+for the per-date `horizon`, `HasDateInTimeline` ZCOUNT-dedup, today+tomorrow
+cron, retention cleanup, and the `PLANNER_INTERVAL` / `RETENTION_SECONDS` /
+`LOOKAHEAD_SECONDS` env vars.
+
+### §4 — Concurrency
+- **Where:** [`cmd/planner/main.go`](cmd/planner/main.go) cron loop.
+- **What:** bounded worker pool (semaphore + `sync.WaitGroup`) with
+  `PLANNER_WORKERS` (default `4`) goroutines processing active channels in
+  parallel per tick.
+- **Redis pipelining:** unchanged — `ProcessEPGToTimeline` still uses one
+  `p.rdb.Pipeline()` per call; parallelisation is across channels, not within
+  a single channel's date.
+- **EPG response caching:** not implemented. Same-date fetches are avoided by
+  `HasDateInTimeline` short-circuit (which makes the cache unnecessary at the
+  cron loop level).
+
+### §7 — Error handling & monitoring
+- **Retry with backoff** in [`internal/planner/planner.go`](internal/planner/planner.go):
+  `ProcessEPGToTimelineWithRetry` — schedule
+  `base * 2^(i-1)` capped at `PREPARE_RETRY_MAX_MS`, total attempts
+  `MAX_PREPARE_RETRIES`. Pure schedule is in `retryBackoffDelay`.
+- **Per-channel consecutive-failure counter:** Redis key
+  `planner:failures:{channelID}` (24h TTL) managed by `incrFailureCounter` /
+  `resetFailureCounter` / `getFailureCounter`. Threshold = 5.
+- **Auto-deactivation:** `markChannelInactive` flips `is_active=false` once
+  the threshold is crossed, so a broken upstream stops burning CPU/EPG
+  bandwidth on every tick. `cmd/planner` re-queries the DB each tick so the
+  deactivation takes effect immediately.
+- **Metrics:** `logMetrics` in `cmd/planner/main.go` emits one
+  `[METRIC] channel={id} name=... zset_size={n} cursor={ts}` line per active
+  channel per tick — backed by `TimelineSize` (`ZCARD`) and
+  `LastProcessedCursor` (`GET planner:cursor:{id}`). Greppable for Loki / a
+  simple Promtail pipeline; no Prometheus client dependency yet.
+
+### Tests added
+- [`internal/planner/retry_breaker_test.go`](internal/planner/retry_breaker_test.go):
+  - `TestFailureCounter_SuccessResetsZero` — Redis-backed counter increments
+    on failure and resets on success.
+  - `TestRetryBackoffDelay_Schedule` — pure-Go verification of the
+    exponential schedule + cap + defensive `i ≤ 0` → 0.
+  - `TestMarkChannelInactive_RespectsDB` — confirms `markChannelInactive`
+    short-circuits cleanly with a nil `*gorm.DB` (so the breaker can't crash
+    unit tests that wire a partial `Planner`).

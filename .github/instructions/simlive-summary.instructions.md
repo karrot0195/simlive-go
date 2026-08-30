@@ -4,9 +4,10 @@ applyTo: "**/*.go"
 ---
 # SimLive-Go Project Summary
 
-> Canonical details live in `docs/specification.md` and `AGENTS.md` — do not
-> duplicate them here; keep this page as a concise snapshot that is always in
-> sync with the code.
+> Canonical details live in `docs/specification.md` — do not duplicate
+> them here; keep this page as a concise snapshot that is always in sync
+> with the code. (`AGENTS.md` does not exist at the repo root; this file is
+> the single canonical agent instruction.)
 
 ## What this is
 A simulated-live (24/7 linear) HLS playout system in Go:
@@ -58,6 +59,9 @@ A simulated-live (24/7 linear) HLS playout system in Go:
 ## Tests
 - `internal/planner/horizon_rollover_test.go` — `TestIsEndOfTimeline_...` (pure
   Go) + `TestHasDateInTimeline_...` (skipped when no Redis at `REDIS_ADDR`).
+- `internal/planner/retry_breaker_test.go` — `TestFailureCounter_SuccessResetsZero`
+  (Redis), `TestRetryBackoffDelay_Schedule` (pure), `TestMarkChannelInactive_RespectsDB`
+  (pure, nil-db no-op).
 
 ## Post-task rule
 After finishing any code change, update this summary and
@@ -65,5 +69,14 @@ After finishing any code change, update this summary and
 constants, architecture, quality tiers) — and nothing else.
 
 ## Additional env vars
-- `PLANNER_INTERVAL` (default 5m), `RETENTION_SECONDS` (7200), `LOOKAHEAD_SECONDS` (7200) — 24/7 continuous cursor + cleanup.
+- `PLANNER_INTERVAL` (default 5m), `PLANNER_WORKERS` (default 4) — cron loop + per-tick channel concurrency.
+- `RETENTION_SECONDS` (7200), `LOOKAHEAD_SECONDS` (7200) — 24/7 continuous cursor + cleanup.
+- `MAX_PREPARE_RETRIES` (3), `PREPARE_RETRY_BASE_MS` (500), `PREPARE_RETRY_MAX_MS` (8000) — bounded exponential backoff for `ProcessEPGToTimeline`.
 - Cursor: `planner:cursor:{channelID}`; cleanup: `ZREMRANGEBYSCORE` with `RETENTION_SECONDS`.
+- Per-channel consecutive-failure counter: `planner:failures:{channelID}` (TTL 24h). After 5 consecutive `(channel, date)` failures the channel is flipped to `is_active=false` by the cron loop so a broken upstream stops burning CPU/EPG bandwidth.
+
+## Resilience & observability (planner)
+- **Worker pool:** active channels are processed in parallel by `PLANNER_WORKERS` goroutines (semaphore + WaitGroup) — bounded so a 50-channel fleet doesn't open 50 simultaneous EPG fetches.
+- **Retry/backoff:** `ProcessEPGToTimelineWithRetry` wraps the raw EPG walk; schedule is `base * 2^(i-1)` capped at `PREPARE_RETRY_MAX_MS`, attempts = `MAX_PREPARE_RETRIES`. On final failure the channel's `planner:failures:{id}` counter is incremented via `HandlePrepareResultForChannel`.
+- **Breaker:** once the counter ≥ `failureInactivateThreshold` (5) the channel is set `is_active=false`. A successful prepare (or a "date already prepared" short-circuit) resets the counter to 0.
+- **Metrics:** each tick logs `[METRIC] channel={id} name=... zset_size={n} cursor={ts}` per active channel (via `TimelineSize` + `LastProcessedCursor`); greppable for Loki/etc.

@@ -261,6 +261,10 @@ Selection logic (`internal/planner/planner.go`):
 | `SIMLIVE_KEEP_BEHIND` | `5` | Segments retained *before* the playlist window (active on-disk window). |
 | `SIMLIVE_DOWNLOAD_AHEAD` | `5` | Segments pre-fetched *after* the playlist window (active on-disk window). |
 | `PLANNER_INTERVAL` | `5m` | Cron sleep between planner ticks (Go duration string, e.g. `1m`, `30s`, `1h`). Zero/negative falls back to 5m. |
+| `PLANNER_WORKERS` | `4` | Max active channels processed in parallel per tick (semaphore-bounded goroutine pool). |
+| `MAX_PREPARE_RETRIES` | `3` | Total attempts for `ProcessEPGToTimelineWithRetry` per (channel, date) before giving up. |
+| `PREPARE_RETRY_BASE_MS` | `500` | Initial backoff delay (ms). Doubled each attempt up to the cap. |
+| `PREPARE_RETRY_MAX_MS` | `8000` | Maximum backoff delay (ms). |
 | `TZ_NUM` | Configurable | Timezone offset for API queries |
 
 ---
@@ -274,6 +278,9 @@ Selection logic (`internal/planner/planner.go`):
 - **Batch Flush Failures:** Individual batch failures are logged; system continues
 - **Redis Empty Windows:** Fallback to slate (handled by player-side fallback)
 - **End of Timeline Check:** Prevents processing beyond the configured day
+- **EPG Fetch Failure (Planner):** `ProcessEPGToTimelineWithRetry` retries with bounded exponential backoff (`base * 2^(i-1)`, capped at `PREPARE_RETRY_MAX_MS`, `MAX_PREPARE_RETRIES` total attempts). Final failure increments `planner:failures:{channelID}` (TTL 24h).
+- **Repeated Channel Failures:** After `failureInactivateThreshold` (5) consecutive `(channel, date)` failures the channel is marked `is_active=false` via `markChannelInactive` — the cron loop skips it on subsequent ticks. A successful prepare or a "date already prepared" short-circuit resets the counter.
+- **Cron Loop Concurrency:** Per-tick channel processing is parallelised by a `PLANNER_WORKERS`-bounded goroutine pool (semaphore + WaitGroup); metrics for each active channel (`zset_size`, `cursor`) are emitted once per tick as `[METRIC] channel=...` log lines for scraping by external observability tooling.
 ```
 
 # summary.md (Updated)

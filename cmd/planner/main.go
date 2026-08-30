@@ -38,27 +38,27 @@ func plannerInterval() time.Duration {
 	return d
 }
 
-// prepareDate runs EPG -> timeline for one (channel, date) pair unless
-// HasDateInTimeline reports the date is already prepared. "today" and
-// "tomorrow" are computed in the channel's content timezone, not the
-// server's local zone, so a channel in Asia/Saigon (UTC+7) doesn't
-// accidentally query tomorrow's EPG when the server is in UTC.
-func prepareDate(ctx context.Context, p *planner.Planner, ch models.PlayoutChannel, date time.Time) {
-	loc := utils.GetLocFor(ch.ContentTimezone)
-	day := date.In(loc)
-	dayStart := utils.StartOfDay(day)
-	dayEnd := utils.EndOfDay(day)
+// plannerWorkerCount returns the number of goroutines that process active
+// channels in parallel on each tick. Override via PLANNER_WORKERS (default 4).
+// A non-positive value falls back to the default.
+func plannerWorkerCount() int {
+	return utils.GetEnvInt("PLANNER_WORKERS", 4)
+}
 
-	has, err := p.HasDateInTimeline(ctx, ch.ID, dayStart, dayEnd)
-	if err != nil {
-		log.Printf("[Planner] HasDateInTimeline(%s, %s) error: %v (will re-prepare)", ch.ID, dayStart.Format("2006-01-02"), err)
-	} else if has {
-		log.Printf("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format("2006-01-02"))
-		return
-	}
-
-	if err := p.ProcessEPGToTimeline(ctx, ch, dayStart.Format("2006-01-02")); err != nil {
-		log.Printf("[Planner] ProcessEPGToTimeline(%s, %s) error: %v", ch.ID, dayStart.Format("2006-01-02"), err)
+// logMetrics emits one structured log line per channel with the current
+// Redis ZSET size, last-processed cursor, and consecutive-failure counter.
+// Designed to be greppable + cheap so an external scraper (Loki, etcd, …)
+// can pick it up; no Prometheus client added yet.
+func logMetrics(ctx context.Context, p *planner.Planner, channels []models.PlayoutChannel) {
+	for _, ch := range channels {
+		size := p.TimelineSize(ctx, ch.ID)
+		cursor := p.LastProcessedCursor(ctx, ch.ID)
+		cursorStr := "none"
+		if cursor > 0 {
+			cursorStr = time.Unix(cursor, 0).UTC().Format("2006-01-02T15:04:05Z")
+		}
+		log.Printf("[METRIC] channel=%s name=%q zset_size=%d cursor=%s",
+			ch.ID, ch.Name, size, cursorStr)
 	}
 }
 
@@ -93,38 +93,88 @@ func main() {
 	wg.Add(1)
 	// 4. Planner Cron Loop: today + tomorrow, per-channel content timezone.
 	//    Each tick short-circuits dates that HasDateInTimeline already covers.
+	//    Channels are processed concurrently by a bounded worker pool
+	//    (PLANNER_WORKERS); per-(channel,date) EPG fetches use bounded
+	//    exponential backoff via ProcessEPGToTimelineWithRetry.
 	go func() {
 		defer wg.Done()
 		interval := plannerInterval()
-		log.Printf("[Planner] cron started, interval=%s", interval)
+		workers := plannerWorkerCount()
+		log.Printf("[Planner] cron started, interval=%s workers=%d", interval, workers)
 
 		for {
 			var activeChannels []models.PlayoutChannel
 			db.Where("is_active = ?", true).Find(&activeChannels)
 
+			log.Printf("[Planner] tick: %d active channel(s)", len(activeChannels))
+
+			// §7 — emit per-channel metrics for the previous tick window.
+			logMetrics(ctx, plannerSvc, activeChannels)
+
+			// §4 — bounded worker pool: at most `workers` channels processed
+			// in parallel. A semaphore channel caps concurrency; a WaitGroup
+			// joins all workers before the tick sleeps.
+			sem := make(chan struct{}, workers)
+			var tickWG sync.WaitGroup
 			for _, ch := range activeChannels {
-				loc := utils.GetLocFor(ch.ContentTimezone)
-				nowInCh := time.Now().In(loc)
-				today := utils.StartOfDay(nowInCh)
-				tomorrow := today.Add(24 * time.Hour)
+				tickWG.Add(1)
+				sem <- struct{}{}
+				go func(ch models.PlayoutChannel) {
+					defer tickWG.Done()
+					defer func() { <-sem }()
 
-				log.Printf("[Planner] Processing active channel: %s (%s), today=%s tomorrow=%s",
-					ch.Name, ch.ID, today.Format("2006-01-02"), tomorrow.Format("2006-01-02"))
+					loc := utils.GetLocFor(ch.ContentTimezone)
+					nowInCh := time.Now().In(loc)
+					today := utils.StartOfDay(nowInCh)
+					tomorrow := today.Add(24 * time.Hour)
 
-				prepareDate(ctx, plannerSvc, ch, today)
-				prepareDate(ctx, plannerSvc, ch, tomorrow)
+					log.Printf("[Planner] Processing active channel: %s (%s), today=%s tomorrow=%s",
+						ch.Name, ch.ID, today.Format("2006-01-02"), tomorrow.Format("2006-01-02"))
 
-				// Bump the per-channel cursor to the engine's lookahead horizon
-				// and trim the ZSET to RETENTION_SECONDS.
-				if err := plannerSvc.ProcessWindow(ctx, ch); err != nil {
-					log.Printf("[Planner] ProcessWindow(%s) error: %v", ch.ID, err)
-				}
-				plannerSvc.CleanupOldSegments(ctx, ch.ID)
+					// prepareDateWithRetry wraps prepareDate with retry/backoff
+					// and records success/failure into the per-channel counter.
+					prepareDateWithRetry(ctx, plannerSvc, ch, today)
+					prepareDateWithRetry(ctx, plannerSvc, ch, tomorrow)
+
+					// Bump the per-channel cursor to the engine's lookahead
+					// horizon and trim the ZSET to RETENTION_SECONDS.
+					if err := plannerSvc.ProcessWindow(ctx, ch); err != nil {
+						log.Printf("[Planner] ProcessWindow(%s) error: %v", ch.ID, err)
+					}
+					plannerSvc.CleanupOldSegments(ctx, ch.ID)
+				}(ch)
 			}
+			tickWG.Wait()
 
 			time.Sleep(interval)
 		}
 	}()
 
 	wg.Wait()
+}
+
+// prepareDateWithRetry is the retry-aware version of prepareDate. It uses
+// ProcessEPGToTimelineWithRetry for bounded exponential backoff, and feeds
+// each attempt's outcome into Planner.handlePrepareResult so the inactivity
+// breaker (§7) can deactivate consistently-failing channels.
+func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.PlayoutChannel, date time.Time) {
+	loc := utils.GetLocFor(ch.ContentTimezone)
+	day := date.In(loc)
+	dayStart := utils.StartOfDay(day)
+	dayEnd := utils.EndOfDay(day)
+
+	has, err := p.HasDateInTimeline(ctx, ch.ID, dayStart, dayEnd)
+	if err != nil {
+		log.Printf("[Planner] HasDateInTimeline(%s, %s) error: %v (will re-prepare)", ch.ID, dayStart.Format("2006-01-02"), err)
+	} else if has {
+		log.Printf("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format("2006-01-02"))
+		p.ResetFailureCounterForChannel(ctx, ch.ID)
+		return
+	}
+
+	prepErr := p.ProcessEPGToTimelineWithRetry(ctx, ch, dayStart.Format("2006-01-02"))
+	if prepErr != nil {
+		log.Printf("[Planner] ProcessEPGToTimeline(%s, %s) error after retries: %v", ch.ID, dayStart.Format("2006-01-02"), prepErr)
+	}
+	p.HandlePrepareResultForChannel(ctx, ch.ID, prepErr)
 }

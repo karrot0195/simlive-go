@@ -30,7 +30,33 @@ const (
 	WindowBufferSeconds = 120
 	RETENTION_SECONDS   = 7200
 	LOOKAHEAD_SECONDS   = 7200
+
+	// §7 retry/backoff config. Overridable via MAX_PREPARE_RETRIES,
+	// PREPARE_RETRY_BASE_MS, PREPARE_RETRY_MAX_MS.
+	defaultMaxPrepareRetries = 3
+	defaultPrepareRetryBase  = 500  // ms
+	defaultPrepareRetryMax   = 8000 // ms
+
+	// §7 failure tracking. After FAILURE_INACTIVATE_THRESHOLD consecutive
+	// per-date ProcessEPGToTimeline failures, mark the channel inactive.
+	// The counter resets to 0 on the first success.
+	failureInactivateThreshold = 5
+
+	// Per-channel failure counter Redis key prefix; the value is the
+	// number of consecutive failed (channel, date) attempts since the last
+	// success. Cleared by a successful prepareDate().
+	failureCounterKey = "planner:failures:%s"
 )
+
+func maxPrepareRetries() int {
+	return utils.GetEnvInt("MAX_PREPARE_RETRIES", defaultMaxPrepareRetries)
+}
+func prepareRetryBaseMs() int {
+	return utils.GetEnvInt("PREPARE_RETRY_BASE_MS", defaultPrepareRetryBase)
+}
+func prepareRetryMaxMs() int {
+	return utils.GetEnvInt("PREPARE_RETRY_MAX_MS", defaultPrepareRetryMax)
+}
 
 // Possible renditions for VOD and ads. Priority from lowest to highest
 // (prefer pairs with equal resolution, as high as possible).
@@ -595,6 +621,101 @@ func (p *Planner) setCursor(ctx context.Context, channelID string, ts int64) {
 	p.rdb.Set(ctx, fmt.Sprintf("planner:cursor:%s", channelID), ts, 0)
 }
 
+// ---------------------------------------------------------------------------
+// Failure tracking (§7)
+// ---------------------------------------------------------------------------
+// Each channel keeps a counter "planner:failures:{channelID}" of the number
+// of consecutive failed (channel, date) prepares since the last success.
+// When the counter crosses failureInactivateThreshold the channel is flipped
+// to is_active = false so it stops burning CPU/EPG bandwidth on a broken
+// upstream. A successful prepareDate resets the counter to 0.
+//
+// The counter is keyed per-channel (not per-date) so one broken date does not
+// by itself trip the breaker — a channel that fails today AND tomorrow's
+// prepares repeatedly will be deactivated.
+
+func (p *Planner) incrFailureCounter(ctx context.Context, channelID string) int64 {
+	key := fmt.Sprintf(failureCounterKey, channelID)
+	n, err := p.rdb.Incr(ctx, key).Result()
+	if err != nil {
+		log.Printf("[Planner] INCR(%s) error: %v", key, err)
+		return 0
+	}
+	// 24h TTL so a forgotten counter eventually self-cleans.
+	p.rdb.Expire(ctx, key, 24*time.Hour)
+	return n
+}
+
+func (p *Planner) resetFailureCounter(ctx context.Context, channelID string) {
+	key := fmt.Sprintf(failureCounterKey, channelID)
+	if err := p.rdb.Del(ctx, key).Err(); err != nil {
+		log.Printf("[Planner] DEL(%s) error: %v", key, err)
+	}
+}
+
+func (p *Planner) getFailureCounter(ctx context.Context, channelID string) int64 {
+	key := fmt.Sprintf(failureCounterKey, channelID)
+	v, err := p.rdb.Get(ctx, key).Int64()
+	if err != nil {
+		if err != redis.Nil {
+			log.Printf("[Planner] GET(%s) error: %v", key, err)
+		}
+		return 0
+	}
+	return v
+}
+
+// markChannelInactive flips is_active=false on the given channel so the cron
+// loop skips it on subsequent ticks. Returns the new row count (0 means the
+// channel no longer exists / nothing was updated).
+func (p *Planner) markChannelInactive(channelID string) error {
+	if p.db == nil {
+		return nil
+	}
+	res := p.db.Model(&models.PlayoutChannel{}).
+		Where("id = ?", channelID).
+		Update("is_active", false)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("[Planner] channel=%s marked INACTIVE after %d consecutive failures",
+			channelID, failureInactivateThreshold)
+	}
+	return nil
+}
+
+// handlePrepareResult records success/failure for a single (channel, date)
+// prepare attempt and trips the inactivity breaker once the failure threshold
+// is crossed. Idempotent: a successful run resets the counter to 0.
+func (p *Planner) handlePrepareResult(ctx context.Context, channelID string, err error) {
+	if err == nil {
+		p.resetFailureCounter(ctx, channelID)
+		return
+	}
+	count := p.incrFailureCounter(ctx, channelID)
+	if count >= int64(failureInactivateThreshold) {
+		if dbErr := p.markChannelInactive(channelID); dbErr != nil {
+			log.Printf("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)
+		}
+	}
+}
+
+// HandlePrepareResultForChannel is a thin alias used by the cron entrypoint
+// to keep call-sites short and avoid duplicating the "ctx, channelID, err"
+// argument list. Equivalent to (*Planner).handlePrepareResult. Exported so
+// cmd/planner can call it without an in-package wrapper.
+func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID string, err error) {
+	p.handlePrepareResult(ctx, channelID, err)
+}
+
+// ResetFailureCounterForChannel clears the per-channel consecutive-failure
+// counter. Exported so cmd/planner can call it from a "date already prepared"
+// short-circuit without an in-package wrapper.
+func (p *Planner) ResetFailureCounterForChannel(ctx context.Context, channelID string) {
+	p.resetFailureCounter(ctx, channelID)
+}
+
 func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) error {
 	cursor := p.getCursor(ctx, ch.ID)
 	nowUnix := int64(time.Now().Unix())
@@ -613,4 +734,74 @@ func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
 	// real simlive:timeline:{channelID} ZSET used by the engine + dedup.
 	key := fmt.Sprintf("simlive:timeline:%s", channelID)
 	p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff))
+}
+
+// retryBackoffDelay returns the wait duration for the i-th retry attempt
+// (1-indexed: i=1 is the first retry, i.e. the second try overall).
+// Schedule: base * 2^(i-1), capped at maxDelay. Pure function — exposed
+// (lowercase) so tests can verify the schedule without spinning real sleeps.
+func retryBackoffDelay(i int, base, maxDelay time.Duration) time.Duration {
+	if i < 1 {
+		return 0
+	}
+	delay := base * (1 << (i - 1))
+	if delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay
+}
+
+// ProcessEPGToTimelineWithRetry wraps ProcessEPGToTimeline with bounded
+// exponential backoff. Returns the last error if all attempts fail.
+// Backoff is "delay = base * 2^(attempt-1)" capped at maxDelay; bounded by
+// maxAttempts (default from MAX_PREPARE_RETRIES).
+func (p *Planner) ProcessEPGToTimelineWithRetry(ctx context.Context, ch models.PlayoutChannel, dateStr string) error {
+	attempts := maxPrepareRetries()
+	if attempts < 1 {
+		attempts = 1
+	}
+	base := time.Duration(prepareRetryBaseMs()) * time.Millisecond
+	maxDelay := time.Duration(prepareRetryMaxMs()) * time.Millisecond
+
+	var lastErr error
+	for i := 1; i <= attempts; i++ {
+		lastErr = p.ProcessEPGToTimeline(ctx, ch, dateStr)
+		if lastErr == nil {
+			return nil
+		}
+		if i == attempts {
+			break
+		}
+		delay := retryBackoffDelay(i, base, maxDelay)
+		log.Printf("[Planner] channel=%s date=%s attempt=%d/%d failed: %v (sleeping %s)",
+			ch.ID, dateStr, i, attempts, lastErr, delay)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return lastErr
+}
+
+// TimelineSize returns the current ZSET cardinality for a channel. Used by
+// the metrics reporter to surface Redis pressure to logs/operators.
+// Returns 0 on error so a transient Redis blip doesn't crash the cron loop.
+func (p *Planner) TimelineSize(ctx context.Context, channelID string) int64 {
+	if p.rdb == nil {
+		return 0
+	}
+	key := fmt.Sprintf("simlive:timeline:%s", channelID)
+	n, err := p.rdb.ZCard(ctx, key).Result()
+	if err != nil {
+		log.Printf("[Planner] ZCARD(%s) error: %v", channelID, err)
+		return 0
+	}
+	return n
+}
+
+// LastProcessedCursor returns the unix timestamp the planner last wrote for
+// the channel (cursor), or 0 if none is set / Redis errors out.
+func (p *Planner) LastProcessedCursor(ctx context.Context, channelID string) int64 {
+	return p.getCursor(ctx, channelID)
 }
