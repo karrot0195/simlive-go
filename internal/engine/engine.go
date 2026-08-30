@@ -510,15 +510,10 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID, rendition s
 	}
 	targetDuration := int(math.Ceil(maxDuration))
 
-	playlist := "#EXTM3U\n"
-	playlist += "#EXT-X-VERSION:3\n"
-	playlist += fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", targetDuration)
-	playlist += "#EXT-X-START:TIME-OFFSET=0\n"
-	playlist += fmt.Sprintf("#EXT-X-MEDIA-SEQUENCE:%d\n\n", segments[0].Sequence)
-
-	for _, seg := range segments {
-		playlist += fmt.Sprintf("#EXTINF:%.3f,\n", seg.Duration)
-		playlist += fmt.Sprintf("seg_%d.ts\n", seg.Sequence)
+	playlist, err := buildMediaPlaylistBody(segments, targetDuration)
+	if err != nil {
+		log.Printf("[Engine] channel=%s rung=%s buildMediaPlaylistBody: %v", channelID, rendition, err)
+		return
 	}
 
 	playlistPath := filepath.Join(chRoot, rungPlaylistFilename(rendition))

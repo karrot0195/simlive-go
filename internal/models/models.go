@@ -45,6 +45,34 @@ type SegmentItem struct {
 	// rescues it to DefaultRendition ("360p"). Omitted from JSON when empty
 	// so members written before M1 round-trip unchanged.
 	Rendition string `json:"rendition,omitempty"`
+
+	// --- SCTE-35 ad-break markers (see docs/300826-implement-scte35-cue-markers.md) ---
+	//
+	// IsAd marks this member as belonging to a planner-injected ad break
+	// (storage path is the ads-v3 bucket). The engine uses the edge between
+	// IsAd=false -> IsAd=true (CUE-OUT) and IsAd=true -> IsAd=false
+	// (CUE-IN) to emit #EXT-X-DATERANGE tags with SCTE35-OUT/IN payloads.
+	//
+	// AdBreakID is the stable identifier for the whole break
+	// (e.g. "adbreak-1725014400"); the same id is written on every ad
+	// segment in the break, so the engine emits a single matching CUE-OUT
+	// / CUE-IN pair. Derived from the break's start second so the id is
+	// stable across planner replans.
+	//
+	// AdBreakStart is the break's start on the local timeline (unix
+	// seconds). The engine formats it as RFC3339 UTC for the DATERANGE
+	// START-DATE attribute. AdBreakDuration is the break's length in
+	// seconds; used both for the DATERANGE DURATION attribute and as the
+	// SCTE-35 splice_insert BreakDuration (multiplied by 90000 for the
+	// 90kHz tick field).
+	//
+	// All four fields are omitempty so VOD members (the >95% case)
+	// round-trip to JSON unchanged and pre-existing timeline members
+	// remain valid without a flush.
+	IsAd            bool    `json:"is_ad,omitempty"`
+	AdBreakID       string  `json:"ad_break_id,omitempty"`
+	AdBreakStart    float64 `json:"ad_break_start,omitempty"`
+	AdBreakDuration float64 `json:"ad_break_duration,omitempty"`
 }
 
 // Response structs for ESPX APIs

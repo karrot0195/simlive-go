@@ -17,8 +17,10 @@ A simulated-live (24/7 linear) HLS playout system in Go:
 
 ## Architecture snapshot (keep in sync)
 - **Planner** → `simlive:timeline:{channelID}` Redis ZSET; score = `MediaStart`
-  (seconds), member = `SegmentItem` JSON incl. local `pts_offset` and
-  `rendition` (omitempty). 24/7 cron walks **today + tomorrow** in each
+  (seconds), member = `SegmentItem` JSON incl. local `pts_offset`, `rendition`
+  (omitempty), and the four ad-break fields `is_ad / ad_break_id /
+  ad_break_start / ad_break_duration` (all omitempty so legacy VOD members
+  round-trip unchanged). 24/7 cron walks **today + tomorrow** in each
   channel's `content_timezone` per tick (`PLANNER_INTERVAL`, default 5m);
   per-date `horizon` (EndOfDay of the parsed date) lets a single
   `ProcessEPGToTimeline` call walk past midnight. `HasDateInTimeline` (ZCOUNT
@@ -45,6 +47,18 @@ A simulated-live (24/7 linear) HLS playout system in Go:
   per-channel ladder is resolved via `activeRungMeta` (planner metadata
   → hard-coded `ActiveLadder` fallback) so the master always lists 3
   rungs even before the planner has run.
+  - **SCTE-35 cue tags:** per-rung media playlists also emit
+    `#EXT-X-DATERANGE` lines on VOD<->ad transitions (CUE-OUT before the
+    first ad EXTINF; CUE-IN before the first VOD EXTINF after the break).
+    Tag format mirrors `tmp/SCTE35Utils.ts`; DURATION is unquoted and
+    trailing (threefive TagParser gotcha) and capped at 3 decimal places
+    (matches `#EXTINF:%.3f`; FP-noise tails like `20.019999999999996`
+    are rounded to `20.02`). The base64 `SpliceInfoSection` is built in
+    Go with the `Comcast/scte35-go` library (`internal/engine/scte35.go`:
+    `buildSpliceInsert`, `buildCueOutLine`, `buildCueInLine`,
+    `buildMediaPlaylistBody`, `adBreakEventID`, `formatBreakStartDate`,
+    `formatBreakDuration`). Plan:
+    [300826-implement-scte35-cue-markers.md](../docs/300826-implement-scte35-cue-markers.md).
 - **Invariants:** VOD↔ads must resolve to the SAME resolution; `PtsOffset`
   stays local (`MediaStart − timelineBase`) to avoid the 2^33/90000 ≈
   95443.7s epoch PTS wrap.
@@ -90,6 +104,33 @@ ONE shared segment cache and always advertises 3 rungs via `ActiveLadder`),
   `TestHasLegacyTimeline_ReportsAndSkips` (Redis).
 - `internal/models/models_test.go` — `TestSegmentItem_Rendition_...` (pure):
   omitempty, roundtrip, legacy-unmarshal rescue, multi-rung isolation.
+  `internal/models/scte35_fields_test.go` — `TestSegmentItem_AdFields_...`
+  (pure): omitempty for the four ad-break fields, roundtrip, legacy rescue.
+- `internal/planner/scte35_stamping_test.go` — `TestAdBreakIDFor_...` (pure:
+  format / stability / distinctness of `adbreak-<int64(breakStart)>`),
+  `TestTotalBreakDuration_...` (pure: empty / 5×6s pool / fractional),
+  `TestStampAdBreak_OnSegmentItem_LocksContract` (pure: every ad in the
+  break carries the same 4 stamped fields), `TestStampedSegmentItem_JSONRoundTrip`
+  (pure: marshal/unmarshal preserves the 4 fields), and
+  `TestInsertAdsIfNeeded_StampsAllAdsWithBreakMetadata` (Redis-gated:
+  drives real `insertAdsIfNeeded` against `*redis.Client`, ZRANGEs the
+  ZSET back, asserts every member carries the break metadata).
+- `internal/engine/scte35_test.go` — `TestBuildSpliceInsert_Out/In/Duration`
+  (pure; round-trips through `scte35.DecodeBase64` and asserts
+  `OutOfNetworkIndicator`, `SpliceImmediateFlag`, `BreakDuration`,
+  90kHz ticks, CRC32, `Tier:4095`), `TestAdBreakEventID_Stable`,
+  `TestDecodeSpliceInsert_BadInput`, `TestBuildCueOutLine_Format` /
+  `TestBuildCueInLine_Format` (lock in the exact DATERANGE line shape),
+  `TestFormatBreakDuration_PrecisionCappedAt3` / `_NeverMoreThan3Decimals`
+  (lock the DURATION precision at 3 decimal places so FP noise like
+  `20.019999999999996` never reaches the playlist; trailing zeros
+  + lone dot are stripped for clean output like `DURATION=30` /
+  `DURATION=20.02` / `DURATION=0.3`).
+- `internal/engine/cue_tag_test.go` — `TestBuildMediaPlaylistBody_...`
+  (pure): no-ads shape, CUE-OUT before first ad EXTINF, CUE-IN between
+  last ad and first post-ad VOD, cold-start with ad as first segment,
+  multiple breaks, empty input error, trailing-unquoted-attr gotcha,
+  SegmentItem roundtrip.
 - `internal/engine/master_playlist_test.go` — `TestBuildMasterPlaylist_...`
   + `TestBuildMasterPlaylist_ThreeRungs` (pure),
   `TestActiveLadder_HasThreeRungs` (pure),

@@ -185,31 +185,36 @@ detach/map is the exact seam M2 expands — no structural change.
 | `SegmentProcessor` | New field `currentRendition string`, set from `sp.planner.activeRenditions()[0]` at the top of `processStreamSegments` (actual `#L43`); the processor then calls `sp.planner.resolveRenditionsFor(streamID, sp.currentRendition)` (not `resolveRenditions(streamID)`) so `ladderCache` keys on the active tier |
 | `processSegment` (`#L140` → actual `#L128`) | Set `Rendition: sp.currentRendition` on the member |
 | `insertAdsIfNeeded` (`#L175` → actual `#L161`) | Ad members inherit `Rendition: sp.currentRendition` (ads dir already comes from the tier via `resolveAdsRenditionForTier`) |
-| Legacy timeline flush | First planner tick after M1 ships must retag (or evict) members in `simlive:timeline:{ch}` that lack `Rendition`. Simplest: `prepareDate` calls a new `hasLegacyTimeline(ch)` (one-line check on the first ZSET member's `Rendition` field); if true, `DEL simlive:timeline:{ch}` and let `ProcessEPGToTimeline` repopulate with tags. Matches the spirit of "planner rebuild flushes Redis" already in AGENTS.md |
+| Legacy timeline flush | First planner tick after M1 ships must retag (or evict) members in `simlive:timeline:{ch}` that lack `Rendition`. Simplest: `prepareDate` calls a new `hasLegacyTimeline(ch)` (one-line check on the first ZSET member's `Rendition` field); if true, `DeleteTimeline(ch)` (exported wrapper) `DEL`s the key and lets `ProcessEPGToTimeline` repopulate with tags. Matches the spirit of the "planner rebuild flushes Redis" caveat documented in the summary instructions' post-task rule |
 
 ### `internal/engine/engine.go`
 
 | Area | Change |
 |------|--------|
 | Const | `DefaultRendition = "360p"` |
-| `Engine` fields | `renditions []string` (from `SIMLIVE_RENDITIONS`, single in M1); `rendMeta map[string]map[string]RenditionMeta` (channel → rung → meta) loaded from Redis `simlive:renditions:{ch}` on first tick; synth a default meta (360p, `L_0`/`L2`, estimate bandwidth) if the key is absent (legacy timeline) |
-| `channelState` key | `states` map keyed `channelID + ":" + rendition` (M1: `{ch}:360p`) |
-| `StartPlayoutLoop` | After unmarshal + sort: `groupSegsByRendition(allSegs)` (empty `Rendition` → `DefaultRendition`); for each active rung run the existing window/candidate/download/cleanup/playlist logic against `{channelDir}/{rend}/` |
-| `downloadAndPrepareSegments` / `prepareSegment` | Callers pass the per-rung dir (`channelDir` is already a parameter); `inFlight`/marker keys stay full paths → naturally per-rung |
-| `generateHLSPlaylist` | Signature → `(ctx, channelID, rendition, segments)`; the `.pts` marker filter checks `{channelDir}/{rend}/seg_N.ts.pts` per rung, so each rung's `PlaylistWindowSize=5` advertised window is independent (NOT shared); writes `{channelDir}/{rend}/playlist.m3u8` + Redis `simlive:hls:{ch}:{rend}` (24h TTL) |
-| `generateMasterPlaylist(ctx, channelID)` | Called every tick after the per-rung loop; **always writes** `{channelDir}/playlist.m3u8` + Redis `simlive:hls:{ch}` even when the candidate window is empty (so a player reload doesn't 404 — uses last-known rung metadata). Rungs with `width=0` or `bandwidth=0` are skipped. Includes `#EXT-X-INDEPENDENT-SEGMENTS` (free; helps hls.js variant switching — promoted from M2 to M1) |
-| `syncLocalCacheDir` | **Per-rung call**: `syncLocalCacheDir(channelDir/{rend}, activeMapForRung)`. `os.ReadDir(channelDir/{rend})` is non-recursive, so do NOT call the old channel-root variant (it would skip subdirs and miss per-rung GC). Each rung's `activeMap` is keyed on `seg_N.ts` (filenames are rung-local because of `{rend}/` isolation). `inFlight` keys (full dest path) stay naturally per-rung — no extra keying needed |
+| `Engine` fields | `rendMetaCache map[string][]RenditionMeta` (channel → 3-rung list) loaded lazily from Redis `simlive:renditions:{ch}` on first encounter; `rendMetaMu` guards the cache. NO per-engine `renditions []string` — the engine uses the hard-coded `ActiveLadder` (360p/720p/1080p) when the Redis key is absent (cold start before the planner has run) |
+| `channelState` key | `states` map keyed `channelID` only (M1.5 shared segment cache = single state per channel; the M1 `{ch}:{rend}` keying was reverted because one set of files = one window) |
+| `StartPlayoutLoop` | M1.5 SHARED CACHE: after unmarshal + sort, walks the FULL flat segment list once (no per-rung split). `groupSegsByRendition` is still called for legacy `Rendition` rescue (empty → `DefaultRendition = "360p"`) but the actual download/GC/playlist emission is a single pass against the channel root. `activeRungMeta(ctx, chID)` returns the ladder (planner metadata → `ActiveLadder` fallback) and drives the 3 per-rung media playlist emissions + the master |
+| `downloadAndPrepareSegments` / `prepareSegment` | Called ONCE per tick with the channel-level `downloadSegs` (single set of `seg_N.ts` for all 3 rungs). `inFlight` keys are still full paths but the path is just `{channelDir}/seg_N.ts` (no `{rend}/` subdir). `prepareSegment` now also does a `MkdirAll` of `channelDir` (defensive) + a post-`CopyTo` `Stat` verify to close a race where `syncLocalCacheDir` from the next tick could GC the file between Stat and ffmpeg |
+| `generateHLSPlaylist` | Signature → `(ctx, channelID, rendition, segments)`; the `.pts` marker filter checks `{channelDir}/seg_N.ts.pts` (channel root, NOT a `{rend}/` subdir — all rungs share the same markers). Writes `{channelDir}/playlist_<rend>.m3u8` (e.g. `playlist_360p.m3u8`) + Redis `simlive:hls:{ch}:rendition:{rend}` (24h TTL). Each playlist references the SAME `seg_N.ts` files |
+| `generateMasterPlaylist(ctx, channelID, meta)` | Called every tick AFTER the per-rung playlist loop; **always writes** `{channelDir}/playlist.m3u8` + Redis `simlive:hls:{ch}` even when the candidate window is empty (player reload never 404s — uses the supplied `meta` list as the ladder source). Rungs with `width=0` or `bandwidth=0` are skipped. Includes `#EXT-X-INDEPENDENT-SEGMENTS` (free; helps hls.js variant switching — promoted from M2 to M1) |
+| `syncLocalCacheDir` | FREE FUNCTION (not a method) called ONCE per tick on the channel root: `syncLocalCacheDir(channelDir, activeMap)`. Preserves `playlist.m3u8` + `playlist_<rend>.m3u8` files (they're not `.ts`/`.ts.pts`); GC's stale `seg_N.ts` + `.pts` markers. The active set is keyed on `seg_N.ts` (no rung prefix). `inFlight` keys (full dest path) are channel-rooted, so per-rung dedupe is no longer needed |
 
 ### `cmd/api/main.go`
 
 | Area | Change |
 |------|--------|
-| `GET /live/:channel_id/playlist.m3u8` (`#L58`) | Unchanged route — now serves the **master** playlist (engine writes `simlive:hls:{ch}` as master) |
-| New route | `GET /live/:channel_id/:rendition/playlist.m3u8` → Redis `simlive:hls:{ch}:{rend}`, fallback disk `{TMP_DIR}/{ch}/{rend}/playlist.m3u8`; same `..`/`/` guards on **both** params; **explicitly reject `rendition == "playlist"` with `400`** to keep route shapes unambiguous |
-| New route | `GET /live/:channel_id/:rendition/:segment` → `filepath.Join(tmpDir, chID, rend, segment)`; only `.ts`, same guards on both params |
+| `GET /live/:channel_id/playlist.m3u8` (`#L58`) | Unchanged route — now serves the **master** playlist (engine writes `simlive:hls:{ch}` as master). Falls back to on-disk `{TMP_DIR}/{ch}/playlist.m3u8` when Redis is cold |
+| New route | `GET /live/:channel_id/playlist_:rendition` → Redis `simlive:hls:{ch}:rendition:{rend}`, fallback disk `{TMP_DIR}/{ch}/playlist_{rend}.m3u8`; same `..`/`/` guards on **both** params; the `:rendition` Gin wildcard captures the value BEFORE the literal `.m3u8` suffix (e.g. `playlist_360p.m3u8` → `rend="360p"` after `strings.TrimSuffix(".m3u8")`); reject any `rend` that isn't `360p`/`720p`/`1080p` with `404` (NOT `400` — typo'd rung names return "Unknown rendition" not "Invalid path") |
+| Segment route | `GET /live/:channel_id/:segment` (M0 2-param, unchanged shape) serves `seg_N.ts` from the channel root. No per-rung subdir under M1.5. The M1 3-param `/:rendition/:segment` was removed because the shared cache means all rungs reference the same files |
 
-No gin route conflicts: the 2-param routes and the 3-param routes live at
-different depths; `{rendition}/playlist.m3u8` has a static final segment.
+**Gin radix-tree note:** the rung-playlist route is registered BEFORE the
+2-param segment route in `cmd/api/main.go` so it takes precedence. The
+`playlist_:rendition` shape (wildcard before the `.m3u8` literal) is the
+M1.5 alternative to `/{ch}/{rend}/playlist.m3u8`, which would conflict
+with `/{ch}/{segment}` at depth 2 (Gin refuses two distinct wildcard
+names at the same depth). The `playlist_` prefix also removes the need
+for the `rendition == "playlist"` reject that the M1 design needed.
 
 ### Docs (post-task, §7)
 

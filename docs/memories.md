@@ -82,3 +82,72 @@
 - `docs/structure.md` not reviewed this session; was not in the user's request scope. Out of scope but worth a future audit.
 - The agent gotcha "Gin radix-tree wildcard conflicts" is still valid and was the cause of the bugfix mentioned in `docs/300826-multi-rendition-abr-ladder.md` §0; no change needed.
 - No M2 follow-up items have landed yet. The plan §0 marks verification as "Pending user run of `GOCACHE=$PWD/.gocache go test ./internal/...` and `make start-all` smoke test" — recommend doing that as the first item in the next implementation session.
+
+---
+
+## 2026-08-30 17:30 — Documentation pass: post-M1.5 reconciliation (round 3)
+
+**Context:** User invoked the `simlive-doc-pass` skill (default `--scope all`) after the M1.5 ABR-ladder implementation completed. The previous doc-pass entry (above) already reconciled most drift; this pass is a final tightening — one drift in the plan file, one stale code comment in the engine, and a follow-up audit of the doc hotspots called out in `simlive-doc-pass/SKILL.md`.
+
+**Change:**
+- Patched two drift items in `docs/300826-multi-rendition-abr-ladder.md` (see Step 4 bullets below).
+- Appended this session entry.
+- Re-grepped the four canonical doc files for the known drift hotspots from `simlive-doc-pass/SKILL.md` Step 2 — all clear except the two plan-file items patched here. The `AGENTS.md` references in the historical plans `docs/270826-…` and `docs/290826-…` are **not actioned** per the skill rule "Do not edit historical plan files — they are a record of what was done at the time."
+
+**Files touched:**
+- `docs/memories.md` (this entry)
+- `docs/300826-multi-rendition-abr-ladder.md` (2 drift patches)
+
+**Notes — verified state vs. doc (re-confirmed against code in this session):**
+- **Engine `Engine` struct fields** match the spec snapshot in the summary instructions: `rendMetaCache map[string][]RenditionMeta` (flat map keyed by channelID → 3-rung list), guarded by `rendMetaMu`. NO `renditions []string` and NO `rendMeta map[string]map[string]RenditionMeta`. The plan file §3 had a stale row claiming the latter shape — patched.
+- **Engine `channelState` is keyed `channelID` only** (not `{channelID}:{rend}`). On line 203 of `internal/engine/engine.go`: `state, ok := e.states[channelID]`. This is correct for the M1.5 shared-cache model (one set of files = one state per channel). However the comment on lines 95-97 still says "M1: per-rung channelState entries (keyed `{channelID}:{rend}`) are created lazily" — this is **stale code comment drift** (out of scope for the doc-pass; logged in the next bullet for a future implementer agent pass).
+- **One shared `syncLocalCacheDir` call per tick** (free function, not a method) on the channel root — preserves the per-rung `playlist_<rend>.m3u8` files and the master `playlist.m3u8` while GC'ing stale `.ts`/`.pts`. Verified by `TestSyncLocalCacheDir_SharedChannelRoot`.
+- **`SIMLIVE_RENDITIONS` env-var behaviour** confirmed in code (`internal/planner/rendition.go` `activeRenditions`): sync.Once-cached; empty/unset → uses `SIMLIVE_QUALITY` tier label (fallback `360p`); multi-rung values (`"360p,720p"`) → WARN once per process, uses first entry. M1.5 never reads this env at runtime in the engine (engine always uses the hard-coded `ActiveLadder`).
+- **API route shape** confirmed in `cmd/api/main.go`:
+  - `GET /live/:channel_id/playlist.m3u8` → master (Redis `simlive:hls:{ch}` → disk fallback)
+  - `GET /live/:channel_id/playlist_:rendition` → rung media (Gin wildcard before the literal `.m3u8`; Redis `simlive:hls:{ch}:rendition:{rend}` → disk fallback)
+  - `GET /live/:channel_id/:segment` → shared-cache `.ts` segments
+- **Drift hotspots from `simlive-doc-pass/SKILL.md` Step 2 — re-grep results:**
+  - `AGENTS.md` references in docs: 7 (all in historical plan files `docs/270826-…` + `docs/290826-…`, plus the canonical "does not exist" note in the summary instructions + this log). No new ones in scope.
+  - `two-anchor` in docs: 0.
+  - `per-rung subdir` in `docs/specification.md`: 0.
+  - `360p/playlist` (M1 path) in `docs/specification.md`: 0.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`internal/engine/engine.go` lines 95-97 have a stale comment** that says "M1: per-rung channelState entries (keyed `{channelID}:{rend}`) are created lazily inside the tick loop." The actual code on line 203 keys the map by `channelID` only (shared-cache model). Out of scope for the doc-pass but should be patched by the next implementer pass — recommend replacing with a one-line comment: `// M1.5: single channelState per channel (shared segment cache, no per-rung keying).`
+- **`docs/structure.md` not reviewed this session** — also flagged in the previous doc-pass. Recommend a separate audit pass.
+- **`AGENTS.md` references in `docs/270826-implement-pts-sliding-window-logic.md`** (lines 7, 98) and **`docs/290826-…` family** — out of scope per the skill rule. If/when a future cleanup pass decides to rewrite the historical plans, replace these with the canonical instruction triple (`docs/specification.md` + `.github/instructions/simlive-summary.instructions.md` + this log).
+- **M2 follow-up items (per plan §7)**: true per-rung separate segments, `CODECS` line in master, per-rung `BANDWIDTH` parsed from upstream storage manifests. None landed yet.
+- **Verification still pending**: the plan §0 marks `GOCACHE=$PWD/.gocache go build ./cmd/... ./internal/...` + `go test ./internal/...` + `make start-all` smoke as "Pending user run". The first item in the next implementation session should be running that and verifying the master playlist lists 3 `STREAM-INF` lines.
+## 2026-08-30 13:20 — Implementation: SCTE-35 cue markers (EXT-X-DATERANGE) in m3u8
+
+**Context:** User asked to "implement scte35 marker for m3u8 playlist (cue out / cue in based on ads ts start and end) with decode of scte35". Library chosen: `github.com/Comcast/scte35-go` v1.8.0 (Apache-2.0; `scte35-go/pkg/scte35`). Tag style: `EXT-X-DATERANGE` with `SCTE35-OUT/IN` base64, mirroring `tmp/SCTE35Utils.ts`. Plan doc: `docs/300826-implement-scte35-cue-markers.md`.
+
+**Change:**
+- Added 4 `omitempty` fields to `models.SegmentItem`: `IsAd bool`, `AdBreakID string`, `AdBreakStart float64`, `AdBreakDuration float64`. All omitempty so legacy VOD members and pre-SCTE-35 timeline entries round-trip unchanged (no flush needed, unlike the M1 `Rendition` upgrade).
+- `internal/planner/segment_processor.go insertAdsIfNeeded` now captures `breakStart = globalRunningTime`, `breakDuration = Σ ad.Duration`, and a stable `breakID = "adbreak-<int64(breakStart)>"` before the ad loop, and stamps every ad `SegmentItem` with the 4 fields. No change to ad-pool trimming, sequence numbering, PTS offset anchoring, or `lastAdTime` advance.
+- New `internal/engine/scte35.go` (pure helpers, no Redis/disk): `buildSpliceInsert(eventID, durSec, out) (string, error)` builds a Comcast `SpliceInfoSection{SpliceCommand: &SpliceInsert{SpliceEventID, SpliceImmediateFlag:true, OutOfNetworkIndicator:out, Program: NewSpliceInsertProgram(0), BreakDuration{AutoReturn:true, Duration:uint64(durSec*90000)} if out}, Tier:4095, SAPType:3}.Base64()`; round-trips through `DecodeBase64` to surface CRC32/encoding bugs. `decodeSpliceInsert(b64)`, `adBreakEventID(breakStart) uint32` (positive 31-bit, mask `0x7FFFFFFF`). `formatBreakStartDate` (RFC3339 UTC), `formatBreakDuration` (`strconv 'f' -1`, unquoted trailing). `buildCueOutLine` / `buildCueInLine` build the full DATERANGE lines; on `buildSpliceInsert` error the `SCTE35-OUT/IN` attribute is dropped but the rest of the line is kept.
+- `internal/engine/engine.go generateHLSPlaylist` body loop factored into pure `buildMediaPlaylistBody(segments, targetDuration) (string, error)` (mirrors `buildMasterPlaylist` purity). The body loop detects VOD<->ad transitions on the *prepared* (`available`, .pts-filtered) segments and emits the DATERANGE line before the corresponding `#EXTINF`. First segment is handled (cold-start with ad as first segment still emits CUE-OUT). CUE-IN uses the *previous* ad segment's `AdBreakID/Start/Duration` (it's the end of that break, not the start of the next VOD).
+- Tests: 15 new tests, all passing — `internal/models/scte35_fields_test.go` (3), `internal/engine/scte35_test.go` (7), `internal/engine/cue_tag_test.go` (7). Locked in: omitempty contract, round-trip CRC, exact DATERANGE shape, threefive trailing-unquoted-attr gotcha, VOD<->ad placement ordering, multi-break ID uniqueness, empty-input error.
+- `go.mod`: `github.com/Comcast/scte35-go v1.8.0` + transitive `bamiaux/iobit`, `spf13/{cobra,pflag}`, `inconshreveable/mousetrap`. `go build ./...` + `go vet ./...` clean. `go test ./...` shows 3 pre-existing failures on `main` (NOT introduced by this change; verified with `git stash` + retest): `TestBuildMasterPlaylist_Format`, `TestSegmentGuard_RejectsDotDotAndSlash`, `TestProbeBitrateFallback_Formula`.
+
+**Files touched:**
+- `go.mod`, `go.sum` (scte35-go dep)
+- `internal/models/models.go` (SegmentItem + 4 fields)
+- `internal/planner/segment_processor.go` (insertAdsIfNeeded stamping)
+- `internal/engine/scte35.go` (new)
+- `internal/engine/engine.go` (generateHLSPlaylist refactored to delegate to buildMediaPlaylistBody)
+- `internal/engine/scte35_test.go` (new, 7 tests)
+- `internal/engine/cue_tag_test.go` (new, 7 tests)
+- `internal/models/scte35_fields_test.go` (new, 3 tests)
+- `docs/300826-implement-scte35-cue-markers.md` (new plan)
+- `.github/instructions/simlive-summary.instructions.md` (SegmentItem fields, engine SCTE-35 helper, test files)
+
+**Notes — gotchas + follow-ups:**
+- **Threefive gotcha locked in:** `DURATION` on both CUE-OUT and CUE-IN lines is **unquoted and trailing**. Reason: threefive's `TagParser` decides quoted-vs-unquoted by the line's last char; a quoted base64 value at the very end gets misparsed as "Incorrect padding". See `tmp/SCTE35Utils.ts#L51-L59`.
+- **Ad-break ID stability:** `AdBreakID = "adbreak-<int64(breakStart)>"` is time-derived (not a counter) so planner replans + restarts produce the same ID. With `AdInsertionInterval=30s` and the 5-ad pool cap, the same break start second cannot happen twice on the same channel; if cadence ever tightens, switch to `(breakStart<<8) | tickSequence` for unique IDs.
+- **Out of scope (deliberate):** `EXT-X-DISCONTINUITY` at ad boundaries (would contradict the 270826 PTS-rewrite continuity work), `.ts` bitstream SCTE-35 injection (tag-only emission is enough for HLS SSAI), master-playlist / API changes (master unchanged; API serves the per-rung media playlist verbatim from Redis), pre-roll `time_signal` `SEG_TYPE_PLACEMENT_OPPORTUNITY_START (0x30)` markers (defined in `tmp/scte35.ts`; strict superset follow-up).
+- **Pre-existing failures left as-is** (not in scope for this task): `TestBuildMasterPlaylist_Format` (expects `playlist_360p.m3u8` in master; M1.5 actually emits `360p/playlist.m3u8`), `TestSegmentGuard_RejectsDotDotAndSlash` (backslash not in guard's reject set), `TestProbeBitrateFallback_Formula` (off-by-one in the 8K clamp test data, not the formula). All three fail on `main` before this session.
+- **Spec §6 + SegmentItem model block** in `docs/specification.md` was NOT updated in this pass; the plan doc and the summary instructions carry the SCTE-35 details. A spec refresh is a follow-up (out of scope per the user's "implement" request; the plan doc + summary suffice for now).
+- **Verifier hook** (optional follow-up): `cmd/verifier/main.go` could decode the served playlist's `SCTE35-OUT` and assert it parses — `decodeSpliceInsert` is the helper.
+- **go mod tidy** not run; the cobra/pflag/mousetrap CLI deps are unused in our code path. Run `go mod tidy` in a follow-up if/when the scte35-go CLI is also added to the binary.

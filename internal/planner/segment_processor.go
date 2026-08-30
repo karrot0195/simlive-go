@@ -198,6 +198,17 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 	}
 
 	// Insert the ad segment block into the timeline
+	//
+	// SCTE-35 break stamping (see docs/300826-implement-scte35-cue-markers.md):
+	// every ad segment in this break shares a stable AdBreakID derived from
+	// the break's start second, plus the AdBreakStart and AdBreakDuration
+	// the engine needs to render #EXT-X-DATERANGE / splice_insert
+	// payloads. breakDuration is the sum of the pool's individual ad
+	// segment durations (the same pool trimmed to 5 by loadAdSegments).
+	breakStart := sp.planner.globalRunningTime
+	breakDuration := totalBreakDuration(sp.adSegments)
+	breakID := adBreakIDFor(breakStart)
+
 	for _, adSeg := range sp.adSegments {
 		if sp.planner.isEndOfTimeline(sp.planner.globalRunningTime) {
 			return ErrEndOfTimeline
@@ -215,6 +226,13 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		ptsOffset := sp.setTimelineBase(adItem.MediaStart)
 		adItem.PtsOffset = &ptsOffset
 
+		// Stamp the SCTE-35 break metadata (engine reads these to render
+		// the CUE-OUT / CUE-IN DATERANGE pair on the VOD<>ad edges).
+		adItem.IsAd = true
+		adItem.AdBreakID = breakID
+		adItem.AdBreakStart = breakStart
+		adItem.AdBreakDuration = breakDuration
+
 		if err := sp.planner.addSegmentToRedis(sp.pipe, sp.ctx, adItem.MediaStart, adItem); err != nil {
 			return err
 		}
@@ -227,4 +245,34 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 	// Update the last ad insertion marker so the next insertion triggers after 30 more seconds
 	sp.lastAdTime = sp.planner.globalRunningTime
 	return nil
+}
+
+// adBreakIDFor returns the SCTE-35 stable break identifier for a
+// given break-start second. The format matches the engine's
+// `buildCueOutLine` / `buildCueInLine` so the planner and the
+// engine agree on the ID byte-for-byte. The function is pure so
+// the test can lock the contract without a Planner / Redis.
+//
+// Time-derived (not a counter) so planner replans and restarts
+// produce the same ID. With AdInsertionInterval=30s + the 5-ad
+// pool cap, two breaks cannot start at the same unix second on
+// the same channel; if cadence ever tightens, switch to
+// (breakStart<<8) | tickSequence for unique IDs.
+//
+// See docs/300826-implement-scte35-cue-markers.md §6 "Known Gaps".
+func adBreakIDFor(breakStart float64) string {
+	return fmt.Sprintf("adbreak-%d", int64(breakStart))
+}
+
+// totalBreakDuration returns the SCTE-35 break length in seconds,
+// summed across every ad segment in the pool. Mirrors the
+// "Σ ad[i].Duration" inline computation that previously lived in
+// insertAdsIfNeeded; lifted to a pure helper so the unit test can
+// assert it without a Planner. An empty pool returns 0.
+func totalBreakDuration(ads []models.SegmentItem) float64 {
+	total := 0.0
+	for _, a := range ads {
+		total += a.Duration
+	}
+	return total
 }
