@@ -187,7 +187,14 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		}
 	}
 
-	return p.flushRedisPipeline(processor.pipe)
+	if err := p.flushRedisPipeline(processor.pipe); err != nil {
+		return err
+	}
+	// Persist the resolved ladder metadata so the engine can build the master
+	// playlist without probing at runtime. Best-effort: a failure here logs
+	// inside writeRenditionMetadata and does not block the planner tick.
+	p.writeRenditionMetadata(ctx, channel.ID)
+	return nil
 }
 
 // resolveQualityTier reads SIMLIVE_QUALITY: auto (default) | 360p | 720p | 1080p.
@@ -609,6 +616,23 @@ func (p *Planner) HasDateInTimeline(ctx context.Context, channelID string, daySt
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// HasLegacyTimeline is the exported wrapper for hasLegacyTimeline so the
+// planner main can call it from outside the package. Used by the first-tick
+// post-M1 legacy flush in cmd/planner/main.go.
+func (p *Planner) HasLegacyTimeline(ctx context.Context, channelID string) (bool, error) {
+	return p.hasLegacyTimeline(ctx, channelID)
+}
+
+// DeleteTimeline deletes the ZSET simlive:timeline:{channelID}. Used by the
+// legacy-timeline flush in cmd/planner/main.go. Best-effort -- a missing
+// key is not an error.
+func (p *Planner) DeleteTimeline(ctx context.Context, channelID string) error {
+	if p.rdb == nil {
+		return nil
+	}
+	return p.rdb.Del(ctx, fmt.Sprintf("simlive:timeline:%s", channelID)).Err()
 }
 
 func (p *Planner) flushBatch(pipe redis.Pipeliner, ctx context.Context) error {

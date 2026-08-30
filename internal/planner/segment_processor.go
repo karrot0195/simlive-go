@@ -27,6 +27,13 @@ type SegmentProcessor struct {
 	// Local timeline anchor: MediaStart of the first segment in the timeline.
 	// Every segment gets PtsOffset = MediaStart - timelineBase (local seconds).
 	timelineBase float64
+
+	// currentRendition is the active rung label (e.g. "360p") for this
+	// processor instance, set from sp.planner.activeRenditions()[0] at the
+	// top of processStreamSegments. Every member (VOD + ads) written by this
+	// processor carries this tag so the engine can dispatch it to the right
+	// per-rung directory. See docs/300826-multi-rendition-abr-ladder.md §3.
+	currentRendition string
 }
 
 func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
@@ -60,6 +67,16 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 }
 
 func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
+	// M1: pin the active rung at the top of the stream walk so every member
+	// (VOD + ads) gets the same rendition tag and lands in the same per-rung
+	// directory on the engine side. activeRenditions() is sync.Once-cached so
+	// this is a slice index, not a re-parse per stream.
+	rungs := sp.planner.activeRenditions()
+	if len(rungs) == 0 {
+		rungs = []string{DefaultRendition}
+	}
+	sp.currentRendition = rungs[0]
+
 	pair := sp.planner.resolveRenditions(streamID)
 	m3u8Path := fmt.Sprintf("%s/%s/%s/vod.m3u8", sp.planner.bucketName, streamID, pair.vod)
 	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
@@ -148,6 +165,7 @@ func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, durati
 		MediaStart:  mediaStart,
 		MediaEnd:    mediaEnd,
 		PtsOffset:   &ptsOffset,
+		Rendition:   sp.currentRendition, // M1: engine dispatches by tag.
 	}
 
 	if mediaStart >= (sp.nowUnix - WindowBufferSeconds) {
@@ -188,6 +206,7 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		sp.sequenceCounter++ // Standard +1 sequence bump
 		adItem := adSeg
 		adItem.Sequence = sp.sequenceCounter
+		adItem.Rendition = sp.currentRendition // M1: tag ad with the same rung as the VOD it follows.
 
 		// Map the ad right after the current globalRunningTime
 		adItem.MediaStart = sp.planner.globalRunningTime

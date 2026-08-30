@@ -167,9 +167,21 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	if err != nil {
 		log.Printf("[Planner] HasDateInTimeline(%s, %s) error: %v (will re-prepare)", ch.ID, dayStart.Format("2006-01-02"), err)
 	} else if has {
-		log.Printf("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format("2006-01-02"))
-		p.ResetFailureCounterForChannel(ctx, ch.ID)
-		return
+		// M1 upgrade guard: if the ZSET already has data but it lacks the
+		// "rendition" tag (pre-M1 timeline), DEL and re-prepare so members
+		// are written with the new field. See
+		// docs/300826-multi-rendition-abr-ladder.md §3 "Legacy timeline flush".
+		if legacy, lerr := p.HasLegacyTimeline(ctx, ch.ID); lerr == nil && legacy {
+			log.Printf("[Planner] channel=%s date=%s has legacy timeline (no rendition tag), flushing for M1 upgrade",
+				ch.ID, dayStart.Format("2006-01-02"))
+			if delErr := p.DeleteTimeline(ctx, ch.ID); delErr != nil {
+				log.Printf("[Planner] DEL legacy timeline(%s) error: %v", ch.ID, delErr)
+			}
+		} else {
+			log.Printf("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format("2006-01-02"))
+			p.ResetFailureCounterForChannel(ctx, ch.ID)
+			return
+		}
 	}
 
 	prepErr := p.ProcessEPGToTimelineWithRetry(ctx, ch, dayStart.Format("2006-01-02"))

@@ -1,8 +1,13 @@
 # specification.md (Updated)
 
-> Status: reflects the **implemented** system as of 2026-08-27 — 3-tier quality
+> Status: reflects the **implemented** system as of 2026-08-30 — 3-tier quality
 > selection (`SIMLIVE_QUALITY`), VOD↔ads rendition matching, local `PtsOffset`
-> timeline, and ffmpeg PTS/DTS rewrite in the engine. For current status and
+> timeline, ffmpeg PTS/DTS rewrite in the engine, and the **M1.5 multi-rendition
+> detach/map** (1 shared segment cache + 3 advertised rungs via master
+> playlist, with per-rung media playlists `playlist_360p.m3u8` /
+> `playlist_720p.m3u8` / `playlist_1080p.m3u8`).
+> Plan: [300826-multi-rendition-abr-ladder.md](300826-multi-rendition-abr-ladder.md).
+> For current status and
 
 ```markdown
 ## 🇬🇧 English Version: SimLive Project Specification & Architecture (Updated)
@@ -134,10 +139,11 @@ An infinite 1-second tick loop managing playout state:
 2. **Clock Sync:** Check current system epoch timestamp (`currentTime`).
 3. **Sliding Window Selector:**
 * Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`).
+* **M1.5 (shared segment cache):** The engine keeps ONE flat set of `seg_N.ts` files in `{TMP_DIR}/{ch}/` and serves them under 3 rung labels. The active rung's VOD dir is the single source the engine downloads from. The master playlist `playlist.m3u8` advertises all 3 rungs via `#EXT-X-STREAM-INF` (360p/720p/1080p); per-rung media playlists `playlist_360p.m3u8` / `playlist_720p.m3u8` / `playlist_1080p.m3u8` all reference the SAME `seg_N.ts` files. `groupSegsByRendition` rescues empty `Rendition` to `DefaultRendition` (`360p`) for legacy timeline members.
 
 
 4. **Segment Fetcher (Worker Pool, async):**
-* Inspect local cache directory `{TMP_DIR}/{playout_id}/`.
+* Inspect local cache directory `{TMP_DIR}/{playout_id}/` — **M1.5 shared segment cache**: ONE flat set of `seg_N.ts` files is downloaded from the active rung's VOD dir and shared across all 3 rung media playlists. There is no per-rung subdir; the engine keeps a single `channelState` per channel.
 * The Redis timeline window `[now−300s, now+120s]` is still queried for timeline awareness, but only the **active on-disk window** is downloaded:
   `SIMLIVE_KEEP_BEHIND` (default 5, behind the playhead) +
   `PlaylistWindowSize` (5, advertised to players) +
@@ -174,8 +180,27 @@ An infinite 1-second tick loop managing playout state:
 * **Key:** `simlive:timeline:{channel_id}`
 * **Type:** Sorted Set
 * **Score:** `MediaStart` (segment start on the local timeline, seconds)
-* **Member:** JSON-encoded `SegmentItem`
+* **Member:** JSON-encoded `SegmentItem` (with `rendition` field; omitempty)
 * **Expiry:** 26 hours
+
+* **Key:** `simlive:renditions:{channel_id}` (M1.5)
+* **Type:** String (JSON)
+* **Value:** Array of `RenditionMeta` for **all 3 rungs** (360p / 720p / 1080p) regardless of `SIMLIVE_QUALITY`
+* **Expiry:** 24 hours
+* **Producer:** Planner (`writeRenditionMetadata` after each pipeline flush)
+* **Consumer:** Engine (`loadRenditionMeta` → `activeRungMeta` → `generateMasterPlaylist`)
+
+* **Key:** `simlive:hls:{channel_id}` (M1.5 — semantics change)
+* **Type:** String
+* **Value:** **Master** HLS playlist (`#EXTM3U` + 3 × `#EXT-X-STREAM-INF` + `#EXT-X-INDEPENDENT-SEGMENTS`)
+* **Expiry:** 24 hours
+* **Consumer:** API `GET /live/{channel_id}/playlist.m3u8`
+
+* **Key:** `simlive:hls:{channel_id}:rendition:{rendition}` (M1.5)
+* **Type:** String
+* **Value:** Per-rung media HLS playlist (5-segment sliding window, prepared segments only; references the same shared `seg_N.ts` files for all 3 rungs)
+* **Expiry:** 24 hours
+* **Consumer:** API `GET /live/{channel_id}/playlist_{rendition}.m3u8`
 
 #### **Ad Insertion Logic**
 
@@ -250,6 +275,7 @@ Selection logic (`internal/planner/planner.go`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIMLIVE_QUALITY` | `auto` | `360p`/`720p`/`1080p` quality tier (currently `360p` in `.env`) |
+| `SIMLIVE_RENDITIONS` | unset | Reserved for M2 (true per-rung separate segments). M1.5 ignores this env var and always advertises 3 rungs via the engine's hard-coded `ActiveLadder` (or planner-written `simlive:renditions:{ch}` metadata). |
 | `SIMLIVE_VOD_RENDITION` | (empty) | Hard override: VOD rendition dir (e.g. `L_0`) |
 | `SIMLIVE_ADS_RENDITION` | (empty) | Hard override: ads rendition dir (e.g. `L2`) |
 | `DB_HOST`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` | localhost/postgres | Postgres (`playout_channels`) |

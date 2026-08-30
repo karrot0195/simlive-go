@@ -1,0 +1,413 @@
+@import "tailwindcss";
+
+
+/* ------------------------------------------------------------------ */
+/* Player surface (fills the wrapper, supports fullscreen)             */
+/* ------------------------------------------------------------------ */
+
+.player-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: black;
+  border-radius: 12px;
+}
+
+.video-player {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.video-player media-container {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: black;
+}
+
+/* When the media element goes fullscreen, fill the entire screen. */
+.video-player:fullscreen,
+.video-player:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+}
+
+.video-player:fullscreen media-container,
+.video-player:-webkit-full-screen media-container {
+  width: 100vw;
+  height: 100vh;
+  border-radius: 0;
+}
+
+.video-media {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ------------------------------------------------------------------ */
+/* Controls surface (auto-show / auto-hide)                             */
+/* ------------------------------------------------------------------ */
+
+.controls-host {
+  position: absolute;
+  inset: 0;
+}
+
+.controls-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.25) 30%,
+    transparent 60%
+  );
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+.controls-backdrop:not([data-visible]) {
+  opacity: 0;
+}
+
+.controls-content {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px;
+  color: white;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+
+.controls-content:not([data-visible]) {
+  opacity: 0;
+}
+
+.controls-top,
+.controls-bottom {
+  pointer-events: auto;
+}
+
+.controls-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.controls-top-left,
+.controls-top-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.controls-title {
+  font-size: 14px;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.controls-bottom {
+  display: grid;
+  gap: 6px;
+}
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ctrl-spacer {
+  flex: 1;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                             */
+/* ------------------------------------------------------------------ */
+
+.ctrl-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 14px;
+  color: white;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+  backdrop-filter: blur(8px);
+  transition: background-color 0.15s ease;
+}
+
+.ctrl-button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* Play / pause label swap */
+.ctrl-play .paused,
+.ctrl-play .playing {
+  display: none;
+}
+.ctrl-play[data-paused] .paused {
+  display: inline;
+}
+.ctrl-play:not([data-paused]) .playing {
+  display: inline;
+}
+
+/* Mute / unmute label swap */
+.ctrl-mute .muted,
+.ctrl-mute .unmuted {
+  display: none;
+}
+.ctrl-mute[data-muted] .muted {
+  display: inline;
+}
+.ctrl-mute:not([data-muted]) .unmuted {
+  display: inline;
+}
+
+/* Fullscreen enter / exit label swap */
+.ctrl-fullscreen .enter,
+.ctrl-fullscreen .exit {
+  display: none;
+}
+.ctrl-fullscreen:not([data-fullscreen]) .enter {
+  display: inline;
+}
+.ctrl-fullscreen[data-fullscreen] .exit {
+  display: inline;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sliders                                                             */
+/* ------------------------------------------------------------------ */
+
+.ctrl-time-slider {
+  --media-slider-track-width: 6px;
+  --media-slider-track-height: 6px;
+  --media-slider-thumb-size: 14px;
+  width: 100%;
+  color: white;
+  cursor: pointer;
+}
+
+.ctrl-volume-slider {
+  --media-slider-track-width: 6px;
+  --media-slider-track-height: 6px;
+  --media-slider-thumb-size: 12px;
+  width: 110px;
+  color: white;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ */
+/* Time display                                                        */
+/* ------------------------------------------------------------------ */
+
+.ctrl-time {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.time-divider {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings menu                                                       */
+/* ------------------------------------------------------------------ */
+
+.menu-bar {
+  position: relative;
+  display: inline-block;
+}
+
+.settings-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+  color: white;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+  backdrop-filter: blur(8px);
+  transition: background-color 0.15s ease;
+}
+
+.settings-trigger:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ------------------------------------------------------------------ */
+/* Menu shell + submenu transitions                                    */
+/* ------------------------------------------------------------------ */
+
+.menu {
+  --media-menu-side-offset: 8px;
+  --menu-transition-duration: 220ms;
+  box-sizing: border-box;
+  width: var(--media-menu-width);
+  min-width: 200px;
+  max-width: var(
+    --media-menu-available-width,
+    var(--media-popover-available-width, none)
+  );
+  height: var(--media-menu-height);
+  max-height: var(
+    --media-menu-available-height,
+    var(--media-popover-available-height, none)
+  );
+  padding: 6px;
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-size: 14px;
+  color: white;
+  background: rgba(0, 0, 0, 0.88);
+  border-radius: 10px;
+  backdrop-filter: blur(10px);
+  transition-timing-function: ease-in-out;
+  transition-duration: var(--menu-transition-duration);
+  transition-property: width, height, opacity, filter;
+}
+
+.menu-content,
+.menu-panel {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+  overflow: auto;
+  overscroll-behavior: none;
+  outline: none;
+  translate: 0 0;
+  transition-timing-function: ease-in-out;
+  transition-duration: var(--menu-transition-duration);
+  transition-property: translate, filter;
+}
+
+.menu-content[data-child-open] {
+  filter: blur(8px);
+  translate: -100% 0;
+}
+
+.menu-panel[data-submenu] {
+  z-index: 1;
+}
+
+.menu-panel[data-submenu][data-starting-style],
+.menu-panel[data-submenu][data-ending-style] {
+  overflow: hidden;
+  pointer-events: none;
+  filter: blur(8px);
+  translate: 100% 0;
+}
+
+.menu-group {
+  display: grid;
+  gap: 2px;
+}
+
+.menu-item,
+.menu-back {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+}
+
+.menu-item[data-highlighted],
+.menu-back:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.menu-item[data-availability="unavailable"] {
+  display: none;
+}
+
+.menu-value {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.menu-value [aria-hidden] {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.menu-back {
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.menu-back [aria-hidden] {
+  font-size: 18px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.menu-tier {
+  margin-left: 2px;
+  font-size: 10px;
+}
+
+.menu-badge {
+  margin-left: auto;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.menu-indicator {
+  opacity: 0;
+}
+
+media-menu-radio-item[aria-checked="true"] .menu-indicator {
+  opacity: 1;
+}
+
+/* Hide quality settings entry when only one rendition is available */
+.menu-bar:has(media-quality-radio-group[data-availability="unavailable"]) {
+  /* still allow access to other settings (speed/audio/captions) */
+}

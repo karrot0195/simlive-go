@@ -1,8 +1,10 @@
 # SimLive-Go Conventions (for plan authors)
 
-> Pulled from `AGENTS.md`, `docs/specification.md`, and the existing plans
-> (`270826-…`, `290826-…`). Read this before drafting a plan so you don't
-> re-derive the rules from scratch.
+> Pulled from `docs/specification.md`,
+> `.github/instructions/simlive-summary.instructions.md`,
+> `docs/memories.md`, and the existing plans (`270826-…`, `290826-…`,
+> `300826-…`). Read this before drafting a plan so you don't re-derive
+> the rules from scratch.
 
 ## Invariants — never break these
 
@@ -94,5 +96,5 @@ When the plan moves to implementation, the implementer must:
 4. Ask the user to run
    `GOCACHE=$PWD/.gocache go build ./cmd/... ./internal/...` (the agent must
    **not** run terminal commands itself).
-5. For planner/engine changes, mentally trace the AGENTS.md verification
-   workflow before declaring done.
+5. For planner/engine changes, mentally trace the `docs/specification.md`
+   §5 verification workflow before declaring done.

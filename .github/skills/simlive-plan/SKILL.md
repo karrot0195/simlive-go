@@ -16,7 +16,9 @@ behaviour tweak, an API endpoint, a model field, a rendition/tier change, a
 verification harness update, or a refactor across `internal/**` and `cmd/**`.
 
 Do **not** use this skill for:
-- Questions about the codebase (read `AGENTS.md` + `docs/specification.md`).
+- Questions about the codebase (read `docs/specification.md` +
+  `.github/instructions/simlive-summary.instructions.md` +
+  `docs/memories.md`).
 - Direct implementation tasks (use the default agent or the
   `simlive-summary.instructions.md` workflow).
 - Quick fixes / single-line edits (no plan needed).
