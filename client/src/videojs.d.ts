@@ -25,6 +25,8 @@ declare module 'vue' {
     'media-menu-item-indicator': import('vue').DefineComponent<{}>
     'session-info-panel': import('vue').DefineComponent<{}>
     'hls-inspector': import('vue').DefineComponent<{}>
+    'channel-tabs': import('vue').DefineComponent<{}>
+    'channel-list-panel': import('vue').DefineComponent<{}>
   }
 }
 

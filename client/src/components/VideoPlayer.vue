@@ -7,8 +7,9 @@ import "@videojs/html/live-video/ui";
 import '@videojs/html/ui/menu';
 import '@videojs/html/ui/quality-radio-group';
 import "@videojs/html/ui/mute-button";
-import SessionInfoPanel from './SessionInfoPanel.vue';
+import ChannelTabs from './ChannelTabs.vue';
 import HlsInspector from './HlsInspector.vue';
+import { activeHlsUrl, channelStore } from './channelStore.ts';
 
 // Extend the live-video preset with stream-type + quality so the controller
 // exposes the current stream type (live vs. vod) and the quality menu has
@@ -25,8 +26,18 @@ if (!customElements.get(LiveStreamPlayerElement.tagName)) {
   customElements.define(LiveStreamPlayerElement.tagName, LiveStreamPlayerElement);
 }
 
-const hlsUrl =
-  "http://localhost:8080/live/7261da4b-9c45-4619-bfb0-a6119dc7b6e6/playlist.m3u8";
+// --- Active channel / HLS URL ------------------------------------------
+//
+// `channelStore.activeChannelId` is the single source of truth for what's
+// playing. `activeHlsUrl()` returns the master playlist URL for the active
+// channel, or null when nothing is selected (the player renders a
+// placeholder in that case).
+
+const hlsUrl = computed<string | null>(() => activeHlsUrl());
+const hasActiveChannel = computed<boolean>(() => hlsUrl.value !== null);
+const activeChannelName = computed<string>(
+  () => channelStore.activeChannel?.name ?? "",
+);
 
 // --- Resizable sidebar ---
 //
@@ -114,7 +125,7 @@ const splitterStyle = computed(() => ({
 <template>
   <div class="w-screen h-screen overflow-hidden flex flex-row bg-black text-white select-none">
     <live-stream-player class="contents">
-      <!-- Session 1: stream info panel (resizable + collapsible) -->
+      <!-- Session 1: tabbed sidebar (Channels + Session Info) — resizable + collapsible -->
       <aside
         class="relative h-full bg-slate-950 border-r border-slate-800 flex flex-col transition-[width] duration-150"
         :class="{ 'duration-0': isDragging }"
@@ -128,7 +139,7 @@ const splitterStyle = computed(() => ({
             v-if="!isCollapsed"
             class="text-[10px] uppercase tracking-widest text-slate-400 font-semibold"
           >
-            Session 1 · Info
+            Session 1
           </span>
           <button
             type="button"
@@ -172,13 +183,13 @@ const splitterStyle = computed(() => ({
           class="flex-1 flex flex-col items-center pt-4 gap-4"
         >
           <div class="text-[10px] tracking-widest text-slate-500 [writing-mode:vertical-rl] rotate-180 uppercase">
-            Info
+            Sidebar
           </div>
         </div>
 
         <!-- Expanded panel -->
         <div v-else class="flex-1 min-h-0">
-          <SessionInfoPanel />
+          <ChannelTabs />
         </div>
 
         <!-- Drag handle -->
@@ -200,19 +211,69 @@ const splitterStyle = computed(() => ({
       <!-- Session 2: live HLS video with mute + live + quality menu -->
       <main class="flex-1 min-w-0 h-full">
         <media-container class="relative block w-full h-full">
-          <hlsjs-video
-            :src="hlsUrl"
-            autoplay
-            muted
-            playsinline
-            class="block w-full h-full object-contain bg-black"
-          ></hlsjs-video>
+          <!-- Active channel: real player + HLS inspector -->
+          <template v-if="hasActiveChannel">
+            <hlsjs-video
+              :key="channelStore.changeToken"
+              :src="hlsUrl ?? ''"
+              autoplay
+              muted
+              playsinline
+              class="block w-full h-full object-contain bg-black"
+            ></hlsjs-video>
 
-          <!-- Hidden inspector: bridges the hls.js engine into the shared store -->
-          <HlsInspector />
+            <!-- Hidden inspector: bridges the hls.js engine into the shared store -->
+            <HlsInspector />
+          </template>
 
-          <!-- Top-left: mute / volume -->
-          <div class="absolute top-3 left-3 z-10">
+          <!-- No channel selected: empty-state placeholder -->
+          <div
+            v-else
+            class="absolute inset-0 flex flex-col items-center justify-center text-center px-6 bg-gradient-to-b from-black via-slate-950 to-black"
+            role="status"
+            aria-live="polite"
+          >
+            <div
+              class="w-16 h-16 rounded-full bg-slate-900/80 border border-slate-800 flex items-center justify-center mb-4"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                class="w-8 h-8 text-slate-500"
+                aria-hidden="true"
+              >
+                <rect x="2" y="6" width="14" height="12" rx="2" />
+                <path d="m22 8-6 4 6 4V8Z" />
+              </svg>
+            </div>
+            <h2 class="text-lg font-semibold text-slate-200">
+              No channel selected
+            </h2>
+            <p class="mt-1 text-sm text-slate-500 max-w-sm">
+              Open the <strong class="text-slate-300">Channels</strong> tab on
+              the left and pick a playout channel to start watching.
+            </p>
+          </div>
+
+          <!-- Top-left: currently-playing label (only when playing) -->
+          <div
+            v-if="hasActiveChannel"
+            class="absolute top-3 left-3 z-20 pointer-events-none"
+          >
+            <div
+              class="px-3 py-1.5 text-xs font-semibold text-slate-100 bg-slate-900/70 border border-white/20 rounded-full backdrop-blur-md shadow-lg shadow-black/30"
+            >
+              {{ activeChannelName }}
+            </div>
+          </div>
+
+          <!-- Top-left: mute / volume (only when playing) -->
+          <div v-if="hasActiveChannel" class="absolute top-3 left-3 z-10">
             <media-mute-button
               class="px-3 py-2 inline-flex items-center gap-2 text-sm font-medium text-white bg-slate-900/70 border border-white/20 rounded-full backdrop-blur-md hover:bg-slate-800/90 transition shadow-lg shadow-black/30 cursor-pointer"
             >
@@ -253,8 +314,8 @@ const splitterStyle = computed(() => ({
             </media-mute-button>
           </div>
 
-          <!-- Top-right: quality menu -->
-          <div class="absolute top-3 right-3 z-10 flex gap-2">
+          <!-- Top-right: quality menu (only when playing) -->
+          <div v-if="hasActiveChannel" class="absolute top-3 right-3 z-10 flex gap-2">
             <button
               type="button"
               commandfor="quality-menu"
@@ -288,8 +349,8 @@ const splitterStyle = computed(() => ({
             </media-menu>
           </div>
 
-          <!-- Bottom-left: live badge -->
-          <div class="absolute bottom-3 left-3 z-10">
+          <!-- Bottom-left: live badge (only when playing) -->
+          <div v-if="hasActiveChannel" class="absolute bottom-3 left-3 z-10">
             <media-live-button></media-live-button>
           </div>
         </media-container>

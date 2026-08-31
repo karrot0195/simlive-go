@@ -17,6 +17,8 @@ const videoJsElements = new Set([
   'media-menu-item-indicator',
   'session-info-panel',
   'hls-inspector',
+  'channel-tabs',
+  'channel-list-panel',
 ])
 
 // https://vite.dev/config/
@@ -42,6 +44,13 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // Proxy /live/* -> backend during development
         '/live': {
+          target: apiBase,
+          changeOrigin: true,
+          secure: false
+        },
+        // Proxy /api/* -> backend during development (REST surface for
+        // channel CRUD + start/stop + ESPX list).
+        '/api': {
           target: apiBase,
           changeOrigin: true,
           secure: false
