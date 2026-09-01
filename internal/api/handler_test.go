@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 
 	"simlive/internal/models"
 )
@@ -232,10 +236,10 @@ func ptrStr(s string) *string { return &s }
 func ptrBool(b bool) *bool    { return &b }
 
 func TestUpdateColumnsAndValues_SkipsZeroFields(t *testing.T) {
-	req := &models.UpdateChannelReq{Status: ptrStr("ACTIVE")}
+	req := &models.UpdateChannelReq{Status: ptrStr("PREPARE")}
 	cols, vals := updateColumnsAndValues(req)
-	if len(cols) != 1 || cols[0] != "status" || vals[0] != "ACTIVE" {
-		t.Errorf("single status: cols=%v vals=%v, want [status] [ACTIVE]", cols, vals)
+	if len(cols) != 1 || cols[0] != "status" || vals[0] != "PREPARE" {
+		t.Errorf("single status: cols=%v vals=%v, want [status] [PREPARE]", cols, vals)
 	}
 }
 
@@ -329,14 +333,14 @@ func TestBreakerKeyPrefix_MatchesPlanner(t *testing.T) {
 // --- Status enum validation --------------------------------------------
 
 func TestAllowedStatuses(t *testing.T) {
-	for _, ok := range []string{"ACTIVE", "INACTIVE"} {
+	for _, ok := range []string{"PREPARE", "LIVE", "INACTIVE"} {
 		if !allowedStatuses[ok] {
 			t.Errorf("%q should be allowed", ok)
 		}
 	}
-	for _, bad := range []string{"FOO", "active", "ERROR"} {
+	for _, bad := range []string{"FOO", "active", "ERROR", "ACTIVE"} {
 		if allowedStatuses[bad] {
-			t.Errorf("%q should be rejected (ERROR is set by the planner, not the API)", bad)
+			t.Errorf("%q should be rejected (ERROR is planner-only, ACTIVE was removed from the lifecycle)", bad)
 		}
 	}
 }
@@ -371,3 +375,169 @@ func TestUpdateChannelReq_RoundTrip(t *testing.T) {
 		t.Errorf("base_name: got %v, want nil", got.BaseName)
 	}
 }
+
+// =========================================================================
+//   Tests for purgeChannelRedisData (Stop / Delete behavior).
+//
+// These tests are REDIS-gated: they require a live Redis at REDIS_ADDR
+// (default localhost:6371, see internal/utils/envs.go). If no Redis is
+// reachable the tests SKIP themselves, mirroring the pattern in
+// internal/planner/horizon_rollover_test.go.
+//
+// The test seeds each of the 6 key families for a synthetic channel
+// id, calls purgeChannelRedisData, and asserts:
+//
+//   1. The 5 purged keys (hls + timeline + renditions + cursor) are
+//      absent afterwards.
+//   2. The breaker key (planner:failures:{ch}) is INTENTIONALLY
+//      PRESERVED — this is the documented contract with StartChannel.
+//   3. An unrelated channel's data is not touched (the purge is
+//      scoped to the given id, not a wildcard).
+//   4. A second purge (the idempotent stop path) is a no-op.
+//   5. A nil redis client is a safe no-op (no panic).
+// =========================================================================
+
+func TestPurgeChannelRedisData_RemovesAllKeyFamiliesExceptBreaker(t *testing.T) {
+	rdb := purgeTestRedis(t)
+	h := &ChannelHandler{rdb: rdb}
+	id := "purge-test-ch-1"
+
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	// Seed every key family the planner + engine write for this id.
+	seed := map[string]string{
+		hlsRedisKeyPrefix + id:                      "MASTER",
+		hlsRedisKeyPrefix + id + ":rendition:360p":  "360P",
+		hlsRedisKeyPrefix + id + ":rendition:720p":  "720P",
+		hlsRedisKeyPrefix + id + ":rendition:1080p": "1080P",
+		timelineRedisKeyPrefix + id:                 `{"sequence":1}`,
+		renditionsRedisKeyPrefix + id:               `[{"rendition":"360p"}]`,
+		cursorRedisKeyPrefix + id:                   "1700000000",
+		breakerKeyPrefix + id:                       "3",
+	}
+	for k, v := range seed {
+		if err := rdb.Set(ctx, k, v, 0).Err(); err != nil {
+			t.Fatalf("seed %s: %v", k, err)
+		}
+	}
+
+	h.purgeChannelRedisData(id)
+
+	// 1. The 7 purged keys are gone.
+	for _, k := range []string{
+		hlsRedisKeyPrefix + id,
+		hlsRedisKeyPrefix + id + ":rendition:360p",
+		hlsRedisKeyPrefix + id + ":rendition:720p",
+		hlsRedisKeyPrefix + id + ":rendition:1080p",
+		timelineRedisKeyPrefix + id,
+		renditionsRedisKeyPrefix + id,
+		cursorRedisKeyPrefix + id,
+	} {
+		exists, err := rdb.Exists(ctx, k).Result()
+		if err != nil {
+			t.Fatalf("EXISTS %s: %v", k, err)
+		}
+		if exists != 0 {
+			t.Errorf("key %q still present after purge (exists=%d), want 0", k, exists)
+		}
+	}
+
+	// 2. The breaker is preserved across the purge.
+	got, err := rdb.Get(ctx, breakerKeyPrefix+id).Result()
+	if err != nil {
+		t.Fatalf("GET breaker: %v", err)
+	}
+	if got != "3" {
+		t.Errorf("breaker = %q, want %q (must be preserved across stop)", got, "3")
+	}
+}
+
+func TestPurgeChannelRedisData_DoesNotTouchOtherChannels(t *testing.T) {
+	rdb := purgeTestRedis(t)
+	h := &ChannelHandler{rdb: rdb}
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+
+	for _, id := range []string{"keep-ch", "drop-ch"} {
+		rdb.Set(ctx, hlsRedisKeyPrefix+id, "M", 0)
+		rdb.Set(ctx, timelineRedisKeyPrefix+id, "T", 0)
+	}
+
+	h.purgeChannelRedisData("drop-ch")
+
+	if e, _ := rdb.Exists(ctx, hlsRedisKeyPrefix+"drop-ch").Result(); e != 0 {
+		t.Error("drop-ch hls key still present")
+	}
+	if e, _ := rdb.Exists(ctx, timelineRedisKeyPrefix+"drop-ch").Result(); e != 0 {
+		t.Error("drop-ch timeline still present")
+	}
+	if e, _ := rdb.Exists(ctx, hlsRedisKeyPrefix+"keep-ch").Result(); e != 1 {
+		t.Error("keep-ch hls key was incorrectly purged")
+	}
+	if e, _ := rdb.Exists(ctx, timelineRedisKeyPrefix+"keep-ch").Result(); e != 1 {
+		t.Error("keep-ch timeline was incorrectly purged")
+	}
+}
+
+func TestPurgeChannelRedisData_Idempotent(t *testing.T) {
+	rdb := purgeTestRedis(t)
+	h := &ChannelHandler{rdb: rdb}
+	id := "idem-ch"
+
+	ctx, cancel := contextWithTimeout(5 * time.Second)
+	defer cancel()
+	rdb.Set(ctx, hlsRedisKeyPrefix+id, "M", 0)
+
+	h.purgeChannelRedisData(id)
+	h.purgeChannelRedisData(id) // DEL of absent keys must not error
+
+	if e, _ := rdb.Exists(ctx, hlsRedisKeyPrefix+id).Result(); e != 0 {
+		t.Error("hls key still present after double purge")
+	}
+}
+
+func TestPurgeChannelRedisData_NilRedisIsNoOp(t *testing.T) {
+	h := &ChannelHandler{rdb: nil}
+	// Must not panic.
+	h.purgeChannelRedisData("any-id")
+}
+
+// --- shared Redis test fixture ------------------------------------------
+
+func purgeTestRedis(t *testing.T) *redis.Client {
+	t.Helper()
+	addr := redisAddr()
+	rdb := redis.NewClient(&redis.Options{Addr: addr, DB: 15})
+	ctx, cancel := contextWithTimeout(2 * time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		_ = rdb.Close()
+		t.Skipf("no Redis at %s: %v", addr, err)
+	}
+	if err := rdb.FlushDB(ctx).Err(); err != nil {
+		_ = rdb.Close()
+		t.Fatalf("FlushDB: %v", err)
+	}
+	return rdb
+}
+
+func redisAddr() string {
+	if v := envGet("REDIS_ADDR"); v != "" {
+		return v
+	}
+	return "localhost:6371"
+}
+
+// contextWithTimeout is a thin helper that mirrors the production
+// handler's `context.WithTimeout(context.Background(), d)` pattern.
+// Using context.Background() (not the gin request context) ensures
+// the Redis call survives a client-side cancellation, which is the
+// same contract production code honours.
+func contextWithTimeout(d time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), d)
+}
+
+// envGet is a tiny wrapper around os.Getenv so the test file's
+// import block stays small.
+func envGet(k string) string { return os.Getenv(k) }

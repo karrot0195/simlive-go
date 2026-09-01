@@ -5,7 +5,7 @@
 // is configured to the `/live` path prefix in dev/prod). For the REST surface
 // we strip the trailing `/live` so the same env var drives both HLS and REST.
 
-export type ChannelStatus = "ACTIVE" | "INACTIVE" | "ERROR";
+export type ChannelStatus = "PREPARE" | "LIVE" | "INACTIVE" | "ERROR";
 
 export interface PlayoutChannel {
   id: string;
@@ -184,6 +184,10 @@ export function createChannel(req: CreateChannelReq): Promise<{
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+export function deleteChannel(id: string): Promise<void> {
+  return apiFetch<void>(`/api/channels/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
 // --- HLS URL helper ------------------------------------------------------

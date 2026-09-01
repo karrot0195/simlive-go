@@ -293,22 +293,22 @@ func TestInsertAdsIfNeeded_StampsAllAdsWithBreakMetadata(t *testing.T) {
 			rendCache:  map[string]renditionPair{},
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
-			channelID:  chID,
 		},
 		pipe:            rdb.Pipeline(),
 		ctx:             ctx,
 		sequenceCounter: 100, // arbitrary starting sequence
 		adSegments:      ads,
+		channelID:       chID,
 		// nowUnix in the past so actualStartTime >= nowUnix + 30s guard passes.
 		nowUnix: 1.0,
 		// lastAdTime far in the past so (actualStartTime - lastAdTime) >=
 		// AdInsertionInterval is satisfied.
 		lastAdTime: 1.0,
 	}
-	// Pin the global running time + horizon so the break happens at a
+	// Pin the per-processor running time + horizon so the break happens at a
 	// known second and isEndOfTimeline returns false.
-	sp.planner.globalRunningTime = breakStart
-	sp.planner.horizon = time.Time{} // zero => no horizon => isEndOfTimeline is no-op
+	sp.runningTime = breakStart
+	sp.horizon = time.Time{} // zero => no horizon => isEndOfTimeline is no-op
 
 	if err := sp.insertAdsIfNeeded(breakStart); err != nil {
 		t.Fatalf("insertAdsIfNeeded: %v", err)

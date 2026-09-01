@@ -32,22 +32,42 @@ CREATE TABLE playout_channels (
     base_name VARCHAR(255),               -- Base name (e.g., "playout-09")
     content_timezone VARCHAR(50),        -- Timezone (e.g., "Asia/Saigon")
     channel_epg_id VARCHAR(36),          -- EPG ID fetched from API 2
-    status VARCHAR(20) DEFAULT 'ACTIVE', -- Status: ACTIVE, INACTIVE, ERROR
+    status VARCHAR(20) DEFAULT 'PREPARE', -- Status: PREPARE, LIVE, INACTIVE (ERROR planner-only)
     is_active BOOLEAN DEFAULT TRUE,      -- Whether the planner should walk this channel
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-> **`is_active` and `status` are written by three callers**:
+> **`is_active` and `status` are written by four callers**:
 > 1. The planner's cron loop **reads** them (`db.Where("is_active = ?", true)`).
 > 2. The planner's breaker (`markChannelInactive` in
 >    `internal/planner/planner.go`) **writes** `is_active=false` after
->    `failureInactivateThreshold` (5) consecutive `(channel, date)` failures.
-> 3. The REST API **writes** both columns on `PUT/PATCH /api/channels/:id`
->    and `POST /api/channels/:id/{start,stop}` (see §3 "REST API Surface").
->    **DELETE** is a soft delete: the row is preserved, only
->    `is_active=false / status='INACTIVE'`.
+>    `failureInactivateThreshold` (5) consecutive `(channel, date)` failures
+>    (the status column is untouched).
+> 3. The planner **writes** `status='LIVE'` (`markChannelLive` /
+>    `MarkChannelLiveForChannel`) on a successful prepare or a "date
+>    already prepared" short-circuit — it is the SINGLE writer of 'LIVE',
+>    and the engine gates on it.
+> 4. The REST API **writes** `status='PREPARE'` (register + start) and
+>    `status='INACTIVE'` (stop + soft delete) via `PUT/PATCH
+>    /api/channels/:id` and `POST /api/channels/:id/{start,stop}` (see §3
+>    "REST API Surface"). **DELETE** is a soft delete: the row is
+>    preserved, only `is_active=false / status='INACTIVE'`.
+>
+> **Redis purge on stop/delete.** `POST /api/channels/:id/stop` and
+> `DELETE /api/channels/:id` both call `purgeChannelRedisData(id)` (in
+> `internal/api/handler.go`), which DELs every per-channel Redis key:
+> `simlive:hls:{ch}` (master), `simlive:hls:{ch}:rendition:{rung}` (×3),
+> `simlive:timeline:{ch}` (planner ZSET), `simlive:renditions:{ch}`
+> (per-channel ladder metadata), and `planner:cursor:{ch}` (per-channel
+> cursor). The breaker counter `planner:failures:{ch}` is INTENTIONALLY
+> PRESERVED across the purge — `StartChannel` clears it on the next
+> start, so a stop → start cycle always behaves like a fresh attempt.
+> Disk cache (`{TMP_DIR}/{ch}/`) is recovered by the engine reconciler
+> cancelling the per-channel goroutine within ~5s of the stop; the
+> goroutine's last `syncLocalCacheDir` pass evicts the bounded active
+> window.
 
 ---
 
@@ -70,14 +90,14 @@ The `cmd/api` binary serves the following routes for playout-channel management
 
 | Verb   | Path                            | Role                                                                                          |
 |--------|---------------------------------|-----------------------------------------------------------------------------------------------|
-| `POST` | `/api/channels`                 | Create / upsert. Validates `channel_id` against ESPX API 2 (`GetChannelDetailWithEPG`).       |
+| `POST` | `/api/channels`                 | Create / upsert. Validates `channel_id` against ESPX API 2 (`GetChannelDetailWithEPG`). Status starts at `'PREPARE'` (the planner flips it to `'LIVE'` on the next tick once timeline data is in Redis). |
 | `GET`  | `/api/channels`                 | List local channels. Query params: `?page=` (1-indexed, default 1), `?page_size=` (1-100, default 20), `?status=`, `?is_active=`, `?q=` (name contains). |
 | `GET`  | `/api/channels/esp`             | List ESPX upstream channels + `registered` map (keyed by ESPX id; `true` = already in our DB). |
 | `GET`  | `/api/channels/:id`             | Read one channel. `404` if not found.                                                         |
-| `PUT`  | `/api/channels/:id`             | Full update of mutable fields. Validates `Status` enum (`ACTIVE`/`INACTIVE`; `ERROR` is planner-only). |
+| `PUT`  | `/api/channels/:id`             | Full update of mutable fields. Validates `Status` enum (`PREPARE`/`LIVE`/`INACTIVE`; `ERROR` is planner-only). |
 | `PATCH`| `/api/channels/:id`             | Partial update — only non-nil body fields are written (pointer-field semantics on `UpdateChannelReq`). |
 | `DELETE`| `/api/channels/:id`            | **Soft** delete — flips `is_active=false / status='INACTIVE'`. Idempotent (returns 204 even on missing rows). |
-| `POST` | `/api/channels/:id/start`       | Flip `is_active=true / status='ACTIVE'` and **clear** the planner's breaker counter key `planner:failures:{id}`. |
+| `POST` | `/api/channels/:id/start`       | Flip `is_active=true / status='PREPARE'` (engine starts playout loop immediately on PREPARE; planner flips to `'LIVE'` on the next tick once timeline data is in Redis) and **clear** the planner's breaker counter key `planner:failures:{id}`. |
 | `POST` | `/api/channels/:id/stop`        | Flip `is_active=false / status='INACTIVE'`. Breaker counter is preserved (StartChannel clears it again on the next start). |
 
 All `:id` routes apply a path-guard that rejects `..` and `/` with `400`
@@ -144,9 +164,12 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
 8. **Manual control via REST:** `POST /api/channels/:id/{start,stop}` and
    `PUT/PATCH /api/channels/:id` flip the same `is_active` / `status`
    columns the planner reads, so an operator flip takes effect on the
-   next planner tick (default 5m, `PLANNER_INTERVAL`). `start` also
-   deletes the `planner:failures:{id}` Redis key to reset the breaker;
-   `stop` preserves the counter. See §3 "REST API Surface".
+   next planner tick (default 5m, `PLANNER_INTERVAL`). `start` sets
+   `status='PREPARE'` — the planner is the SINGLE writer of `'LIVE'` and
+   flips it once timeline data is in Redis; the engine only streams
+   `is_active` AND `status='LIVE'` channels. `start` also deletes the
+   `planner:failures:{id}` Redis key to reset the breaker; `stop`
+   preserves the counter. See §3 "REST API Surface".
 
 4. Push segment mappings into a **Redis Sorted Set** (`ZADD` with Epoch timestamp as score):
 * **Key:** `simlive:timeline:{playout_id}`
@@ -175,7 +198,31 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
 
 An infinite 1-second tick loop managing playout state:
 
-1. **Clean Channel State:** On startup, delete the local cache directory (`TMP_DIR`) while preserving the Redis timeline; also deletes `.ts`/`.pts` files that leave the active window.
+0. **Reconciler gate (`cmd/engines/main.go`, 5s cadence):** the engine
+   starts playout loops for channels matching
+   `is_active = true AND status != 'INACTIVE'` (i.e. PREPARE or LIVE).
+   A channel registered/started via the REST surface gets `status='PREPARE'`
+   and the engine begins its playout loop IMMEDIATELY — it does NOT wait
+   for the planner to flip to 'LIVE'. The loop will idle (no segments to
+   serve) until the planner writes timeline data to Redis. The planner is
+   the SINGLE writer of 'LIVE' (it flips the channel on its next tick once
+   timeline data is in Redis). The engine never writes status; it only
+   gates on it. Legacy rows stuck in the removed 'ACTIVE' state self-heal
+   on the next planner tick.
+
+1. **Clean Channel State (warm-start by default):** By default, on
+   startup the engine **preserves** the local cache directory
+   (`{TMP_DIR}/{ch}/`) so a restarted engine can resume immediately
+   on whatever the previous run had already downloaded. The first
+   tick's `syncLocalCacheDir` pass evicts any segments that no longer
+   fit the new active window. To force a cold start (e.g. after a
+   storage change or in CI), set `ENABLE_CLEAN_UP=true` — the engine
+   then `os.RemoveAll(tmpDir)` on startup as before. The Redis
+   timeline + renditions + cursor keys are NOT touched here; they
+   survive engine restarts by design. (The planner's `PrepareEnv`
+   similarly defaults to a scoped wipe of just `simlive:timeline:*`
+   and only falls back to a full `FlushAll + os.RemoveAll` when
+   `ENABLE_CLEAN_UP=true`.)
 2. **Clock Sync:** Check current system epoch timestamp (`currentTime`).
 3. **Sliding Window Selector:**
 * Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`).
@@ -342,11 +389,11 @@ Selection logic (`internal/planner/planner.go`):
 | `ESPX_API_URL` | `https://api2.espx.cloud` | EPG API base URL |
 | `TMP_DIR` | `./outputs` | Engine local segment cache (`{TMP_DIR}/{channelID}/`) |
 | `MAX_WORKERS` / `WORKER_POOL_SIZE` | 50 | Download concurrency |
-| `ENABLE_CLEAN_UP` | `false` | Cache cleanup toggle |
+| `ENABLE_CLEAN_UP` | `false` | Startup cleanup toggle. When `true`, the engine `os.RemoveAll`s the `{TMP_DIR}` on startup and the planner `FlushAll`s Redis + `os.RemoveAll`s `{TMP_DIR}`. Default (`false`) preserves the on-disk cache across restarts (engine) and scopes the Redis wipe to `simlive:timeline:*` only (planner), so a restarted engine can resume immediately on whatever the previous run had downloaded. |
 | `SIMLIVE_KEEP_BEHIND` | `5` | Segments retained *before* the playlist window (active on-disk window). |
 | `SIMLIVE_DOWNLOAD_AHEAD` | `5` | Segments pre-fetched *after* the playlist window (active on-disk window). |
 | `PLANNER_INTERVAL` | `5m` | Cron sleep between planner ticks (Go duration string, e.g. `1m`, `30s`, `1h`). Zero/negative falls back to 5m. |
-| `PLANNER_WORKERS` | `4` | Max active channels processed in parallel per tick (semaphore-bounded goroutine pool). **CAVEAT:** `Planner` mutates shared state (`globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID`) without a mutex; values > 1 race two concurrent `ProcessEPGToTimeline` calls and produce corrupt timelines. Keep at 1 until per-call state is moved onto `SegmentProcessor`. |
+| `PLANNER_WORKERS` | `4` | Max active channels processed in parallel per tick (semaphore-bounded goroutine pool, floored at 1). Safe to set > 1 because per-call walk state (`runningTime`, `totalSegmentsAdded`, `channelID`, `horizon`) lives on the `SegmentProcessor` created per call, not on the shared `Planner` (see NOTE in `internal/planner/planner.go`). Different channels therefore run concurrently; the `cmd/planner` in-flight guard still prevents overlapping ticks for the same channel. **History:** the state used to live on the shared `Planner` unlocked, which raced under parallel calls (2 active channels → only 1 had data). A stopgap `epgMu` mutex + clamp-to-1 fixed the race but serialized whole cold-start walks, so channel #2 had no data for the entire window; that stopgap was removed in favour of the per-call-state refactor. `rclone cat`/`copyto` run under hard timeouts (30s/60s) so a hung remote cannot wedge a worker. |
 | `MAX_PREPARE_RETRIES` | `3` | Total attempts for `ProcessEPGToTimelineWithRetry` per (channel, date) before giving up. |
 | `PREPARE_RETRY_BASE_MS` | `500` | Initial backoff delay (ms). Doubled each attempt up to the cap. |
 | `PREPARE_RETRY_MAX_MS` | `8000` | Maximum backoff delay (ms). |
@@ -364,8 +411,8 @@ Selection logic (`internal/planner/planner.go`):
 - **Redis Empty Windows:** Fallback to slate (handled by player-side fallback)
 - **End of Timeline Check:** Prevents processing beyond the configured day
 - **EPG Fetch Failure (Planner):** `ProcessEPGToTimelineWithRetry` retries with bounded exponential backoff (`base * 2^(i-1)`, capped at `PREPARE_RETRY_MAX_MS`, `MAX_PREPARE_RETRIES` total attempts). Final failure increments `planner:failures:{channelID}` (TTL 24h).
-- **Repeated Channel Failures:** After `failureInactivateThreshold` (5) consecutive `(channel, date)` failures the channel is marked `is_active=false` via `markChannelInactive` — the cron loop skips it on subsequent ticks. A successful prepare or a "date already prepared" short-circuit resets the counter.
-- **Cron Loop Concurrency:** Per-tick channel processing is parallelised by a `PLANNER_WORKERS`-bounded goroutine pool (semaphore + WaitGroup); metrics for each active channel (`zset_size`, `cursor`) are emitted once per tick as `[METRIC] channel=...` log lines for scraping by external observability tooling. **CAVEAT:** the parallel loop is wired but `Planner` shared state (`globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID`) is currently unlocked; `PLANNER_WORKERS` must stay at 1 to avoid inter-channel races (see `internal/planner/planner.go` NOTE block).
+- **Repeated Channel Failures:** After `failureInactivateThreshold` (5) consecutive `(channel, date)` failures the channel is marked `is_active=false` via `markChannelInactive` — the cron loop skips it on subsequent ticks. A successful prepare or a "date already prepared" short-circuit resets the counter and flips `status` to `'LIVE'` (`markChannelLive`).
+- **Cron Loop Concurrency:** Per-tick channel processing is parallelised by a `PLANNER_WORKERS`-bounded goroutine pool (semaphore + WaitGroup); metrics for each active channel (`zset_size`, `cursor`) are emitted once per tick as `[METRIC] channel=...` log lines for scraping by external observability tooling. Default `PLANNER_WORKERS=4` (floored at 1 by `cmd/planner plannerWorkerCount()`). Different channels run concurrently because per-call walk state (`runningTime`, `totalSegmentsAdded`, `channelID`, `horizon`) is owned by the `SegmentProcessor` created per `ProcessEPGToTimeline` call; the shared `Planner` holds only connection handles and `rendMu`-guarded caches. A per-channel in-flight registry prevents overlapping ticks for the same channel. **History:** the planner used to hold per-call state on the shared `Planner` unlocked, which produced a classic race: with 2 active channels, the two parallel `ProcessEPGToTimeline` calls would clobber each other's `globalRunningTime` / `processDate` / `horizon` / `channelID` mid-walk, resulting in a corrupt timeline (typically: one channel's segments landing in the other's ZSET, or the EPG walk stopping early). Symptom: 2 active channels → only 1 had data. A stopgap `epgMu` mutex + clamping to 1 fixed the race but serialized whole cold-start walks (~30s–2min per date; rclone had no timeouts), so channel #2 had no data for the entire window; that stopgap was removed in favour of the per-call-state refactor.
 ```
 
 # summary.md (Updated)

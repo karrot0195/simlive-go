@@ -6,18 +6,35 @@ import (
 
 // PlayoutChannel - PostgreSQL Single Table.
 //
-// IsActive and Status are both read by the planner's cron loop
-// (`cmd/planner/main.go`: `db.Where("is_active = ?", true)`) and are now
-// also written by the REST API (manual start/stop). The breaker logic in
-// `internal/planner/planner.go` markChannelInactive also writes is_active
-// after `failureInactivateThreshold` consecutive (channel, date) failures.
+// Status lifecycle (PREPARE → LIVE → INACTIVE):
+//   - PREPARE  — written by the REST API on register (POST /api/channels)
+//     and start (POST /api/channels/:id/start). The channel is active
+//     (is_active=true) but has no timeline data yet; the engine does NOT
+//     stream it.
+//   - LIVE     — written ONLY by the planner (markChannelLive /
+//     MarkChannelLiveForChannel in internal/planner/planner.go) once it
+//     has written timeline data to Redis for the channel (or found a date
+//     already prepared). The engine's reconciler gates on `is_active` AND
+//     `status='LIVE'` and starts a playout loop only for these channels.
+//   - INACTIVE — written by the REST API on stop (POST
+//     /api/channels/:id/stop) and soft delete (DELETE /api/channels/:id).
+//
+// 'ACTIVE' was removed from the enum; legacy rows self-heal on the next
+// planner tick (a successful prepare or a "date already prepared"
+// short-circuit flips them to 'LIVE'). 'ERROR' is planner-only and is
+// rejected by the API surface.
+//
+// IsActive is read by both the planner's and the engine's cron loops and
+// is written by the REST API (manual start/stop) plus the planner's
+// breaker (markChannelInactive), which flips is_active=false after
+// `failureInactivateThreshold` consecutive (channel, date) failures.
 type PlayoutChannel struct {
 	ID              string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	Name            string    `gorm:"type:varchar(255);not null" json:"name"`
 	BaseName        string    `gorm:"type:varchar(255)" json:"base_name"`
 	ContentTimezone string    `gorm:"type:varchar(50)" json:"content_timezone"`
 	ChannelEpgID    string    `gorm:"type:varchar(36)" json:"channel_epg_id"`
-	Status          string    `gorm:"type:varchar(20);default:'ACTIVE'" json:"status"`
+	Status          string    `gorm:"type:varchar(20);default:'PREPARE'" json:"status"`
 	IsActive        bool      `gorm:"column:is_active;default:true" json:"is_active"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`

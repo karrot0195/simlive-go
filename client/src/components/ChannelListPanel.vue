@@ -17,6 +17,7 @@ import {
   listESpxChannels,
   startChannel,
   stopChannel,
+  deleteChannel,
   type ESpxChannelsListResp,
   type ListChannelsResp,
   type PlayoutChannel,
@@ -27,6 +28,7 @@ import {
   pendingChannelFromUrl,
   selectChannel,
   setActiveChannelId,
+  activeHlsUrl,
 } from "./channelStore.ts";
 
 const REFRESH_MS = 10_000;
@@ -54,7 +56,9 @@ let refreshHandle: ReturnType<typeof setInterval> | null = null;
 
 function statusPillClass(status: PlayoutChannel["status"]): string {
   switch (status) {
-    case "ACTIVE":
+    case "PREPARE":
+      return "bg-amber-500/20 text-amber-300 border-amber-500/40";
+    case "LIVE":
       return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
     case "INACTIVE":
       return "bg-slate-700/50 text-slate-300 border-slate-600";
@@ -162,7 +166,7 @@ async function onStart(ch: PlayoutChannel): Promise<void> {
   if (idx >= 0) {
     localChannels.value[idx] = {
       ...ch,
-      status: "ACTIVE",
+      status: "PREPARE",
       is_active: true,
     };
   }
@@ -296,14 +300,8 @@ watch(
 // --- Computed views ------------------------------------------------------
 
 const sortedLocal = computed(() => {
-  // Keep the active selection at the top, then sort by name.
-  const arr = localChannels.value.slice();
-  arr.sort((a, b) => {
-    if (a.id === channelStore.activeChannelId) return -1;
-    if (b.id === channelStore.activeChannelId) return 1;
-    return a.name.localeCompare(b.name);
-  });
-  return arr;
+  // Sort by name only; selection does not change order.
+  return localChannels.value.slice().sort((a, b) => a.name.localeCompare(b.name));
 });
 
 const espxRows = computed(() => {
@@ -488,6 +486,12 @@ onBeforeUnmount(() => {
 
             <div class="mt-2 flex items-center gap-1.5">
               <button
+                type="button"
+                class="px-2 py-1 text-[11px] font-semibold rounded-md bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+                @click="() => { const url = activeHlsUrl(); if (url && typeof window !== 'undefined' && window.navigator?.clipboard) window.navigator.clipboard.writeText(url); }"
+                title="Copy master m3u8 URL"
+              >Copy URL</button>
+              <button
                 v-if="!ch.is_active"
                 type="button"
                 class="px-2 py-1 text-[11px] font-semibold rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-500/40 transition disabled:opacity-50 disabled:cursor-wait"
@@ -530,6 +534,13 @@ onBeforeUnmount(() => {
                 </span>
                 <span v-else>Select</span>
               </button>
+              <button
+                v-if="!ch.is_active"
+                type="button"
+                class="px-2 py-1 text-[11px] font-semibold rounded-md bg-amber-600/20 hover:bg-amber-600/30 text-amber-200 border border-amber-600/40 transition"
+                @click="async () => { if (channelStore.activeChannelId === ch.id) clearActiveChannel(); await withPending(ch.id, 'unregister', () => deleteChannel(ch.id)).then(() => { localChannels.value = localChannels.value.filter(c => c.id !== ch.id); showToast('success', 'Unregistered ' + ch.name); }).catch(() => {}); }"
+                title="Unregister / remove channel"
+              >Unregister</button>
             </div>
           </li>
         </ul>

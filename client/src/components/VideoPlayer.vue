@@ -263,7 +263,7 @@ const splitterStyle = computed(() => ({
           <!-- Top-left: currently-playing label (only when playing) -->
           <div
             v-if="hasActiveChannel"
-            class="absolute top-3 left-3 z-20 pointer-events-none"
+            class="absolute top-3 left-3 z-30 pointer-events-none"
           >
             <div
               class="px-3 py-1.5 text-xs font-semibold text-slate-100 bg-slate-900/70 border border-white/20 rounded-full backdrop-blur-md shadow-lg shadow-black/30"
@@ -273,7 +273,7 @@ const splitterStyle = computed(() => ({
           </div>
 
           <!-- Top-left: mute / volume (only when playing) -->
-          <div v-if="hasActiveChannel" class="absolute top-3 left-3 z-10">
+          <div v-if="hasActiveChannel" class="absolute bottom-3 right-3 z-10">
             <media-mute-button
               class="px-3 py-2 inline-flex items-center gap-2 text-sm font-medium text-white bg-slate-900/70 border border-white/20 rounded-full backdrop-blur-md hover:bg-slate-800/90 transition shadow-lg shadow-black/30 cursor-pointer"
             >

@@ -47,6 +47,19 @@ var (
 	activeRenditionsList []string
 )
 
+// adsRenditionOnce guards the process-global ads rendition resolution so it
+// runs exactly once, even when multiple channels are being prepared
+// concurrently. The ads pool (bucket + rung dirs) is shared across all
+// streams AND all channels, so the result is process-global. It used to be
+// cached on the Planner (adsRend/adsRendSet) which raced without a lock when
+// two channels walked in parallel — same sync.Once pattern as
+// activeRenditionsOnce above. The resolved value lives in
+// resolveAdsRendition (planner.go).
+var (
+	adsRenditionOnce sync.Once
+	adsRendition     string
+)
+
 // activeRenditions reads SIMLIVE_RENDITIONS (comma list) and returns the
 // list of active rung labels for M1. Semantics:
 //   - Unset / empty -> single rung derived from SIMLIVE_QUALITY (fallback "360p").

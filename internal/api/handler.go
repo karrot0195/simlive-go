@@ -8,6 +8,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -39,14 +40,116 @@ const (
 // that keeps them in sync.
 const breakerKeyPrefix = "planner:failures:"
 
+// hlsRedisKeyPrefix is the common prefix for the HLS playlist keys
+// written by the engine (master + per-rung media playlists). The shape
+// is:
+//
+//	simlive:hls:{ch}                          <- master playlist
+//	simlive:hls:{ch}:rendition:{360p|720p|1080p}  <- media playlist per rung
+//
+// We pin the prefix here (and the known ladder set) instead of importing
+// the helpers from internal/engine, because the api package is a
+// dependency of neither the planner nor the engine and we don't want to
+// invert the layering. If the ladder grows, update hlsRungs here and in
+// internal/engine/rendition.go.
+const hlsRedisKeyPrefix = "simlive:hls:"
+
+// timelineRedisKeyPrefix, renditionsRedisKeyPrefix, and cursorRedisKeyPrefix
+// mirror the prefixes the planner writes. Purge-on-stop needs to know
+// all of them so a stopped channel leaves no stale state behind.
+// The breaker counter key (breakerKeyPrefix above) is INTENTIONALLY
+// preserved across stop — see StartChannel for the rationale.
+const (
+	timelineRedisKeyPrefix   = "simlive:timeline:"
+	renditionsRedisKeyPrefix = "simlive:renditions:"
+	cursorRedisKeyPrefix     = "planner:cursor:"
+)
+
+var hlsRungs = []string{"360p", "720p", "1080p"}
+
+// plannerTickHint reads `PLANNER_INTERVAL` (same env var the
+// `cmd/planner` binary honours) and returns a short human-readable
+// hint string for the `[api] channel=... started` log line. Falls
+// back to "5m" if the env var is unset or unparseable — the planner
+// does the same in `cmd/planner/main.go plannerInterval()`. We
+// intentionally duplicate the parse rather than call into the planner
+// (the api package is a dependency of neither the planner nor the
+// engine, and the two-line string-parsing logic is not worth a new
+// shared package).
+func plannerTickHint() string {
+	raw := os.Getenv("PLANNER_INTERVAL")
+	if raw == "" {
+		return "5m (default)"
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return raw
+	}
+	return raw + " (unparseable; planner will use 5m default)"
+}
+
+// purgeChannelRedisData DELs every per-channel Redis key the planner +
+// engine write for `id`, so a stopped / soft-deleted channel leaves
+// no stale data behind. The keys purged are:
+//
+//	simlive:hls:{ch}                              (engine master playlist)
+//	simlive:hls:{ch}:rendition:{360p|720p|1080p}  (engine per-rung media playlists)
+//	simlive:timeline:{ch}                         (planner ZSET — full day timeline)
+//	simlive:renditions:{ch}                       (planner per-channel ladder metadata)
+//	planner:cursor:{ch}                           (planner per-channel lookahead cursor)
+//
+// INTENTIONALLY PRESERVED:
+//
+//	planner:failures:{ch}  — the per-channel failure-breaker counter.
+//	StartChannel DELs this on the next start, so a stop → start cycle
+//	always behaves like a fresh attempt. Preserving it across stop
+//	means an operator who inspects the counter via `redis-cli GET
+//	planner:failures:{ch}` sees the same value as before the stop.
+//
+// Best-effort, same shape as the breaker DEL in StartChannel: a Redis
+// blip is logged at `[api]` but the DB flip is the durable part of
+// the operation and the call still returns success. The next planner
+// tick on a re-started channel will repopulate the timeline +
+// renditions + cursor keys; the engine will repopulate the HLS keys
+// on its first tick. If the channel stays stopped, no writer touches
+// the keys, so a stale key can't persist.
+//
+// Disk cache note: the `{TMP_DIR}/{ch}/` directory is NOT touched
+// here. The engine reconciler cancels the per-channel goroutine
+// within ~5s of `stop` and the goroutine's last `syncLocalCacheDir`
+// pass evicts the bounded active window on shutdown. Disk space is
+// recovered within that window; the on-disk `.ts` files vanish too.
+func (h *ChannelHandler) purgeChannelRedisData(id string) {
+	if h.rdb == nil {
+		return
+	}
+	keys := make([]string, 0, 1+len(hlsRungs)+3)
+	keys = append(keys, hlsRedisKeyPrefix+id)
+	for _, r := range hlsRungs {
+		keys = append(keys, hlsRedisKeyPrefix+id+":rendition:"+r)
+	}
+	keys = append(keys,
+		timelineRedisKeyPrefix+id,
+		renditionsRedisKeyPrefix+id,
+		cursorRedisKeyPrefix+id,
+	)
+	// Fresh context so a client-side cancellation on the HTTP request
+	// doesn't abort the Redis call (same pattern as StartChannel).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := h.rdb.Del(ctx, keys...).Err(); err != nil {
+		log.Printf("[api] purgeChannelRedisData(%s): DEL %v error: %v", id, keys, err)
+	}
+}
+
 // allowedStatuses is the closed set of Status values the API will accept
-// on PUT/PATCH. The planner may set Status='ERROR' via its own breaker
-// (markChannelInactive writes is_active=false only; the status column is
-// not touched by the planner today), but the manual surface rejects it
-// so a bad operator click cannot masquerade as a planner-determined
-// error state.
+// on PUT/PATCH. The planner may set Status='ERROR' via its own breaker,
+// but the manual surface rejects it so a bad operator click cannot
+// masquerade as a planner-determined error state. The lifecycle is:
+// PREPARE (started, waiting for first planner data) → LIVE (timeline in
+// Redis, engine serving) → INACTIVE (stopped).
 var allowedStatuses = map[string]bool{
-	"ACTIVE":   true,
+	"PREPARE":  true,
+	"LIVE":     true,
 	"INACTIVE": true,
 }
 
@@ -105,14 +208,16 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 	// 2. Map data for DB storage. IsActive defaults to true via the GORM
 	// column default; we set it explicitly so the upsert is deterministic
 	// when the row already exists and is_active was previously false
-	// (e.g. the operator POST'd to revive a stopped channel).
+	// (e.g. the operator POST'd to revive a stopped channel). Status
+	// starts at 'PREPARE' — the planner flips it to 'LIVE' on the next
+	// tick once timeline data is in Redis.
 	channel := models.PlayoutChannel{
 		ID:              detail.ID,
 		Name:            detail.Name,
 		BaseName:        detail.BaseName,
 		ContentTimezone: detail.ContentTimezone,
 		ChannelEpgID:    detail.ChannelEpg.ID,
-		Status:          "ACTIVE",
+		Status:          "PREPARE",
 		IsActive:        true,
 		UpdatedAt:       time.Now(),
 	}
@@ -289,7 +394,7 @@ func (h *ChannelHandler) UpdateChannel(c *gin.Context) {
 		return
 	}
 	if req.Status != nil && !allowedStatuses[*req.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be ACTIVE, INACTIVE, or ERROR)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be PREPARE, LIVE, or INACTIVE)"})
 		return
 	}
 
@@ -340,7 +445,7 @@ func (h *ChannelHandler) PatchChannel(c *gin.Context) {
 		return
 	}
 	if req.Status != nil && !allowedStatuses[*req.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be ACTIVE, INACTIVE, or ERROR)"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be PREPARE, LIVE, or INACTIVE)"})
 		return
 	}
 
@@ -419,7 +524,9 @@ func assignmentMap(cols []string, vals []interface{}) map[string]interface{} {
 
 // ----- DELETE /api/channels/:id (soft delete) ---------------------------
 
-// DeleteChannel is a soft delete: flip is_active=false, status='INACTIVE'.
+// DeleteChannel is a soft delete: flip is_active=false, status='INACTIVE'
+// and best-effort DEL the channel's HLS playlist keys in Redis so a
+// soft-deleted channel's stale playlists are not served by /live/*.
 // The row is preserved in the DB so audit history is intact. Idempotent
 // — a second DELETE on an already-soft-deleted row returns 204 (not 404).
 func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
@@ -438,6 +545,10 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete channel"})
 		return
 	}
+	// Purge the channel's Redis data regardless of RowsAffected — a
+	// soft-deleted row (or a re-DELETE on one) should not leave stale
+	// HLS playlists, timeline, renditions metadata, or cursor behind.
+	h.purgeChannelRedisData(id)
 	// 204 whether the row existed or not (idempotent). RowsAffected can
 	// be 0 both for "not found" and for "row exists but already
 	// is_active=false"; we deliberately do not distinguish.
@@ -446,11 +557,28 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 
 // ----- POST /api/channels/:id/start -------------------------------------
 
-// StartChannel flips is_active=true and status='ACTIVE', and clears the
+// StartChannel flips is_active=true and status='PREPARE', and clears the
 // planner's per-channel breaker counter so a re-started channel behaves
 // like a fresh one (the breaker is otherwise sticky until the next
 // successful prepare or a manual reset). Redis errors are logged but
 // not propagated — the DB flip is the durable part of the operation.
+//
+// The engine's reconciler starts the playout loop IMMEDIATELY on PREPARE
+// (is_active=true AND status != 'INACTIVE'). The loop will idle until
+// the planner writes timeline data to Redis. The planner is the SINGLE
+// writer of status='LIVE': it flips the channel on its next tick once
+// timeline data is in Redis (a successful prepare or a "date already
+// prepared" short-circuit).
+//
+// Note on perceived latency: this handler returns within ~20ms. The
+// engine reconciler polls every 5s, so a freshly-started channel will
+// have its playout loop running within ~5s. The planner is a poll-based
+// cron (`cmd/planner/main.go`) that walks the DB every `PLANNER_INTERVAL`
+// (default 5m); on a cold start, the first `ProcessEPGToTimeline` run for
+// today + tomorrow may add another 30s–2min (EPG HTTP + rclone cat +
+// Redis pipeline). Subsequent ticks short-circuit via `HasDateInTimeline`
+// and add <1s. The `[api] channel=... started` line below lets the
+// operator correlate the API call with the next planner tick.
 func (h *ChannelHandler) StartChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !channelIDGuard(c, id) {
@@ -460,7 +588,7 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"is_active":  true,
-			"status":     "ACTIVE",
+			"status":     "PREPARE",
 			"updated_at": time.Now(),
 		})
 	if res.Error != nil {
@@ -481,9 +609,13 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 			return
 		}
 		// Row exists; treat as idempotent success.
+		log.Printf("[api] channel=%s start: no-op (already active)", id)
 		c.JSON(http.StatusOK, row)
 		return
 	}
+
+	log.Printf("[api] channel=%s start: is_active=true, status=PREPARE, breaker cleared (planner will flip to LIVE once timeline data is in Redis, within PLANNER_INTERVAL=%s)",
+		id, plannerTickHint())
 
 	// Best-effort: clear the breaker counter. Use a fresh context so a
 	// client-side cancellation on the HTTP request doesn't abort the
@@ -506,10 +638,13 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 
 // ----- POST /api/channels/:id/stop --------------------------------------
 
-// StopChannel flips is_active=false and status='INACTIVE'. The breaker
-// counter is INTENTIONALLY preserved — a future start behaves like a
-// fresh attempt regardless of the current counter value (StartChannel
-// also clears the counter), so the counter is a no-op while stopped.
+// StopChannel flips is_active=false and status='INACTIVE', then best-
+// effort DELs the channel's HLS playlist keys in Redis (master + each
+// rung's media playlist) so the /live/* routes stop serving stale
+// playlists immediately rather than waiting for the planner to tick
+// and the engine to overwrite. The breaker counter is INTENTIONALLY
+// preserved — a future start clears it (see StartChannel), so the
+// counter is a no-op while stopped.
 func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !channelIDGuard(c, id) {
@@ -526,6 +661,11 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to stop channel"})
 		return
 	}
+	// Purge the channel's Redis data whenever the DB flip succeeded OR
+	// the row was already stopped — a stopped channel should not have
+	// live playlists, timeline, renditions metadata, or cursor cached.
+	// Best-effort, logged on failure.
+	h.purgeChannelRedisData(id)
 	if res.RowsAffected == 0 {
 		var row models.PlayoutChannel
 		if err := h.db.First(&row, "id = ?", id).Error; err != nil {
@@ -537,9 +677,12 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 			return
 		}
 		// Row exists and was already stopped — idempotent 200.
+		log.Printf("[api] channel=%s stop: no-op (already inactive)", id)
 		c.JSON(http.StatusOK, row)
 		return
 	}
+	log.Printf("[api] channel=%s stop: is_active=false, status=INACTIVE, Redis data purged (HLS + timeline + renditions + cursor), breaker preserved (engine will stop within 5s, planner within PLANNER_INTERVAL=%s)",
+		id, plannerTickHint())
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read stopped channel"})

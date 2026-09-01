@@ -106,6 +106,18 @@ func TestMarkChannelInactive_RespectsDB(t *testing.T) {
 	}
 }
 
+// TestMarkChannelLive_RespectsDB verifies that markChannelLive short-circuits
+// cleanly when no *gorm.DB is wired up (i.e. in unit tests). Without this
+// guard a nil-deref would crash on the first planner success — and
+// TestFailureCounter_SuccessResetsZero above calls handlePrepareResult(nil)
+// with a nil-db planner, which must keep passing as a no-op.
+func TestMarkChannelLive_RespectsDB(t *testing.T) {
+	p := &Planner{} // db is nil
+	if err := p.markChannelLive("any-channel"); err != nil {
+		t.Fatalf("markChannelLive with nil db should be a no-op, got %v", err)
+	}
+}
+
 func ctxForTest() context.Context {
 	return context.Background()
 }

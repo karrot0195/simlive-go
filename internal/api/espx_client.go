@@ -24,7 +24,7 @@ func NewESPXClient(baseURL string) *ESPXClient {
 
 // API 1: Fetch Channel List
 func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
-	url := fmt.Sprintf("%s/api/v2/common/channel-playouts", c.baseURL)
+	url := fmt.Sprintf("%s/api/v2/common/channel-playouts?$limit=50&is_playout_assigned=true", c.baseURL)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return nil, err
@@ -53,7 +53,7 @@ func (c *ESPXClient) ListESpxChannels() ([]models.ESPXChannelListItem, error) {
 
 // API 2: Get Playout Detail to extract channelEpg.id
 func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
-	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]", c.baseURL, playoutID)
+	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]&$limit=50&is_playout_assigned=true", c.baseURL, playoutID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
 		return "", err

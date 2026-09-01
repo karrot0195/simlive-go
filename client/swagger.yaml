@@ -60,7 +60,7 @@ paths:
           name: status
           schema:
             type: string
-            enum: [ACTIVE, INACTIVE, ERROR]
+            enum: [PREPARE, LIVE, INACTIVE, ERROR]
           description: Exact-match status filter.
         - in: query
           name: is_active
@@ -88,7 +88,9 @@ paths:
         (`GetChannelDetailWithEPG`, ESPX API 2) before persisting. Upserts
         on primary-key conflict. The ESPX-derived fields (`name`,
         `base_name`, `content_timezone`, `channel_epg_id`) are refreshed;
-        `is_active` is set to `true` and `status` to `'ACTIVE'`.
+        `is_active` is set to `true` and `status` to `'PREPARE'` (the
+        planner flips it to `'LIVE'` on the next tick once timeline data
+        is in Redis).
       operationId: createOrUpsertChannel
       requestBody:
         required: true
@@ -172,8 +174,8 @@ paths:
         Same pointer-field semantics as `PATCH`. The handler builds a
         `gorm` `Updates(map)` with the non-nil fields, so unset fields
         are NOT cleared. `Status` is validated against the closed set
-        `{ACTIVE, INACTIVE}` (`ERROR` is rejected — it is set by the
-        planner breaker, not the API surface).
+        `{PREPARE, LIVE, INACTIVE}` (`ERROR` is rejected — it is set by
+        the planner breaker, not the API surface).
       operationId: updateChannel
       requestBody:
         required: true
@@ -236,10 +238,17 @@ paths:
       tags: [channels]
       summary: Soft-delete a channel
       description: |
-        Flips `is_active=false` and `status='INACTIVE'`. The row is
-        preserved (no `DELETE FROM playout_channels` is ever issued) so
-        audit history is intact. **Idempotent** — returns `204` whether
-        the row existed or not, including for a row that was already
+        Flips `is_active=false` and `status='INACTIVE'`, then best-effort
+        DELs the channel's per-channel Redis keys via
+        `purgeChannelRedisData(id)`: `simlive:hls:{id}` master + the
+        per-rung media playlists, `simlive:timeline:{id}` (planner
+        ZSET), `simlive:renditions:{id}` (per-channel ladder metadata),
+        and `planner:cursor:{id}` (per-channel lookahead cursor). The
+        breaker counter `planner:failures:{id}` is INTENTIONALLY
+        PRESERVED across the purge. The row is preserved (no
+        `DELETE FROM playout_channels` is ever issued) so audit history
+        is intact. **Idempotent** — returns `204` whether the row
+        existed or not, including for a row that was already
         soft-deleted.
       operationId: deleteChannel
       responses:
@@ -260,14 +269,20 @@ paths:
       tags: [channels]
       summary: Start a playout channel
       description: |
-        Flips `is_active=true` and `status='ACTIVE'`, then deletes the
+        Flips `is_active=true` and `status='PREPARE'`, then deletes the
         planner's per-channel breaker counter `planner:failures:{id}` so
         the re-started channel behaves like a fresh attempt regardless
-        of the counter's current value. **Redis is best-effort**: a
-        Redis blip is logged at `[api] StartChannel: DEL ...` and the
-        request still returns 200 — the DB flip is the durable part of
-        the operation. Idempotent: starting an already-active channel
-        returns 200 with the same end-state.
+        of the counter's current value. The engine's reconciler starts the
+        playout loop IMMEDIATELY on PREPARE (is_active=true AND status !=
+        'INACTIVE') — it does NOT wait for the planner to flip to 'LIVE'.
+        The loop will idle until the planner writes timeline data to Redis.
+        The planner flips `status` to `'LIVE'` on its next tick once
+        timeline data is in Redis (the planner is the SINGLE writer of
+        `'LIVE'`). **Redis is best-effort**: a Redis blip is logged at
+        `[api] StartChannel: DEL ...` and the request still returns 200 —
+        the DB flip is the durable part of the operation. Idempotent:
+        starting an already-active channel returns 200 with the same
+        end-state.
       operationId: startChannel
       responses:
         '200':
@@ -295,11 +310,19 @@ paths:
       tags: [channels]
       summary: Stop a playout channel
       description: |
-        Flips `is_active=false` and `status='INACTIVE'`. The breaker
-        counter is INTENTIONALLY preserved — a future `start` clears
-        it again, so while the channel is stopped the counter is a
-        no-op. Idempotent: stopping an already-stopped channel returns
-        200 with the same end-state.
+        Flips `is_active=false` and `status='INACTIVE'`, then best-effort
+        DELs the channel's per-channel Redis keys via
+        `purgeChannelRedisData(id)`: `simlive:hls:{id}` master + the
+        three per-rung media playlists, `simlive:timeline:{id}`
+        (planner ZSET), `simlive:renditions:{id}` (per-channel ladder
+        metadata), and `planner:cursor:{id}` (per-channel lookahead
+        cursor). The breaker counter `planner:failures:{id}` is
+        INTENTIONALLY PRESERVED across the purge. **Redis is
+        best-effort**: a Redis blip is logged at `[api]
+        purgeChannelRedisData` and the request still returns 200 — the
+        DB flip is the durable part of the operation. Idempotent:
+        stopping an already-stopped channel returns 200 with the same
+        end-state.
       operationId: stopChannel
       responses:
         '200':
@@ -464,10 +487,15 @@ components:
     PlayoutChannel:
       type: object
       description: |
-        One row of the `playout_channels` table. `IsActive` and `Status`
-        are also written by the planner's breaker
-        (`markChannelInactive` in `internal/planner/planner.go`) and by
-        the REST surface (PUT/PATCH/DELETE/start/stop).
+        One row of the `playout_channels` table. `Status` lifecycle is
+        PREPARE → LIVE → INACTIVE: the REST surface writes `'PREPARE'`
+        (register / start) and `'INACTIVE'` (stop / soft delete); the
+        planner is the SINGLE writer of `'LIVE'` (markChannelLive /
+        MarkChannelLiveForChannel in `internal/planner/planner.go`) once
+        it has timeline data in Redis. The engine only streams channels
+        with `is_active=true AND status='LIVE'`. `'ERROR'` is
+        planner-only. `'ACTIVE'` was removed; legacy rows self-heal on
+        the next planner tick.
       properties:
         id:                { type: string, format: uuid, example: 7261da4b-9c45-4619-bfb0-a6119dc7b6e6 }
         name:              { type: string, example: Playout 09 }
@@ -476,8 +504,8 @@ components:
         channel_epg_id:    { type: string, format: uuid }
         status:
           type: string
-          enum: [ACTIVE, INACTIVE, ERROR]
-          default: ACTIVE
+          enum: [PREPARE, LIVE, INACTIVE, ERROR]
+          default: PREPARE
         is_active:
           type: boolean
           default: true
@@ -509,11 +537,13 @@ components:
         is_active:        { type: boolean }
         status:
           type: string
-          enum: [ACTIVE, INACTIVE]
+          enum: [PREPARE, LIVE, INACTIVE]
           description: |
             Closed set. `ERROR` is rejected by the API surface
             (400 Invalid status) because that value is set by the
             planner's failure breaker, not by manual operator action.
+            `'LIVE'` is accepted so an operator can reinstate a channel
+            the planner has already started streaming.
 
     ListChannelsResp:
       type: object

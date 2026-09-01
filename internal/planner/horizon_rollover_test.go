@@ -15,58 +15,50 @@ import (
 	"simlive/internal/utils"
 )
 
-// newPlannerForHorizonTest builds a Planner with only the fields isEndOfTimeline
-// touches (horizon, globalRunningTime). All other deps (db, rdb, espx, rclone)
-// are nil — callers must not exercise any code path that dereferences them.
-// This keeps the test pure Go (no Postgres, no Redis, no network).
-func newPlannerForHorizonTest() *Planner {
-	return &Planner{}
-}
-
 // TestIsEndOfTimeline_HorizonIndependentOfProcessStartTime proves the per-date
 // horizon unblocks a single ProcessEPGToTimeline call from filling today AND
 // tomorrow in one shot. Before the change isEndOfTimeline was anchored on
 // processStartTime, so a call that started at 23:58 today could never walk past
 // midnight and the engine's next-day would never get prepared.
+//
+// The function is now a package-level helper taking the horizon explicitly
+// (the per-call state moved off the Planner onto SegmentProcessor), so the
+// test exercises the same contract with the free function.
 func TestIsEndOfTimeline_HorizonIndependentOfProcessStartTime(t *testing.T) {
 	loc := utils.GetLocFor("Asia/Saigon")
 	now := time.Date(2026, 8, 29, 23, 58, 0, 0, loc) // 23:58 today (Asia/Saigon)
 
-	p := newPlannerForHorizonTest()
-	_ = now // kept for narrative clarity; isEndOfTimeline now consults horizon only
-
 	t.Run("at 23:58 with horizon=tomorrow_end: not end of timeline", func(t *testing.T) {
 		tomorrow := time.Date(2026, 8, 30, 0, 0, 0, 0, loc)
-		p.horizon = utils.EndOfDay(tomorrow)
+		horizon := utils.EndOfDay(tomorrow)
 		// 23:58 today is well before tomorrow's 23:59:59.999999999
-		if p.isEndOfTimeline(float64(now.Unix())) {
+		if isEndOfTimeline(horizon, float64(now.Unix())) {
 			t.Fatalf("isEndOfTimeline at 23:58 today with horizon=tomorrow should be false, got true")
 		}
 	})
 
 	t.Run("at midday tomorrow with horizon=tomorrow_end: not end of timeline", func(t *testing.T) {
 		tomorrow := time.Date(2026, 8, 30, 0, 0, 0, 0, loc)
-		p.horizon = utils.EndOfDay(tomorrow)
+		horizon := utils.EndOfDay(tomorrow)
 		middayTomorrow := time.Date(2026, 8, 30, 12, 0, 0, 0, loc)
-		if p.isEndOfTimeline(float64(middayTomorrow.Unix())) {
+		if isEndOfTimeline(horizon, float64(middayTomorrow.Unix())) {
 			t.Fatalf("isEndOfTimeline at midday tomorrow with horizon=tomorrow_end should be false, got true")
 		}
 	})
 
 	t.Run("1s past horizon: end of timeline", func(t *testing.T) {
 		tomorrow := time.Date(2026, 8, 30, 0, 0, 0, 0, loc)
-		p.horizon = utils.EndOfDay(tomorrow)
+		horizon := utils.EndOfDay(tomorrow)
 		// 1s past EndOfDay(tomorrow) = day-after-tomorrow 00:00:00
 		dayAfter := tomorrow.Add(24 * time.Hour)
-		if !p.isEndOfTimeline(float64(dayAfter.Unix())) {
+		if !isEndOfTimeline(horizon, float64(dayAfter.Unix())) {
 			t.Fatalf("isEndOfTimeline at day-after-tomorrow with horizon=tomorrow_end should be true, got false")
 		}
 	})
 
 	t.Run("defensive: zero horizon is a no-op (returns false)", func(t *testing.T) {
-		p.horizon = time.Time{}
 		farFuture := float64(time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC).Unix())
-		if p.isEndOfTimeline(farFuture) {
+		if isEndOfTimeline(time.Time{}, farFuture) {
 			t.Fatalf("isEndOfTimeline with zero horizon must be a no-op (return false), got true")
 		}
 	})

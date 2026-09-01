@@ -101,31 +101,25 @@ type Planner struct {
 	bucketName string
 	adsBucket  string
 
-	globalRunningTime  float64
-	totalSegmentsAdded int64
-	channelID          string
-
-	// horizon is the wall-clock end of the date we are currently processing
-	// (EndOfDay of processDate in the channel's content timezone). A single
-	// ProcessEPGToTimeline call walks the timeline up to this point and no
-	// further, regardless of when the planner was started. Zero means
-	// "no horizon set" -- isEndOfTimeline is a no-op in that case.
-	horizon     time.Time
-	processDate time.Time
-
 	// Rendition matching: ensures VOD and ads share the same resolution for seamless streaming
-	rendMu     sync.Mutex
-	rendCache  map[string]renditionPair
-	adsRend    string // resolved once (ads are shared across all streams)
-	adsRendSet bool
+	rendMu    sync.Mutex
+	rendCache map[string]renditionPair
 
-	// NOTE: ProcessEPGToTimeline is NOT safe to call concurrently on the same
-	// Planner instance because it mutates shared state (globalRunningTime,
-	// totalSegmentsAdded, processDate, horizon, channelID) without locking.
-	// The cron loop in cmd/planner/main.go runs one channel per goroutine
-	// under PLANNER_WORKERS, so any value > 1 risks inter-channel races on
-	// this shared state. Keep PLANNER_WORKERS at 1 until per-call state is
-	// moved onto SegmentProcessor (see docs/290826-planner-24h-next-day-rollover.md).
+	// NOTE: The Planner intentionally holds NO per-call walk state. The old
+	// fields (globalRunningTime, totalSegmentsAdded, channelID, horizon,
+	// processDate) were moved onto SegmentProcessor (see segment_processor.go)
+	// so ProcessEPGToTimeline is safe to call concurrently for DIFFERENT
+	// channels. History: the fields used to live here and were mutated
+	// unlocked, so PLANNER_WORKERS > 1 produced inter-channel races (one
+	// channel's segments landing in the other's ZSET, or the EPG walk
+	// stopping early because horizon got reset) — symptom: 2 active
+	// channels, only 1 had data. The stopgap epgMu mutex + PLANNER_WORKERS=1
+	// clamp made it strictly serial (channel #2 waited for #1's full
+	// cold-start walk, ~30s–2min per date, so it had no data for the whole
+	// window). The per-call state now lives on the SegmentProcessor; the
+	// per-channel in-flight guard in cmd/planner/main.go runPlannerTick still
+	// prevents overlapping calls for the SAME channel, and PLANNER_WORKERS
+	// defaults back to 4.
 }
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
@@ -141,7 +135,12 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 }
 
 func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.PlayoutChannel, dateStr string) error {
-	p.channelID = channel.ID
+	// Safe to call concurrently for different channels: all per-call walk
+	// state (runningTime, totalSegmentsAdded, channelID, horizon) lives on
+	// the SegmentProcessor this function constructs, not on the shared
+	// Planner (see the NOTE on the Planner struct). The per-channel
+	// in-flight guard in cmd/planner/main.go still prevents overlapping
+	// calls for the SAME channel.
 	callStartedAt := time.Now()
 
 	// Set the per-call horizon from the requested date so a single call can
@@ -149,16 +148,11 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	// If dateStr is empty or unparseable, fall back to today in the channel's
 	// content timezone (defaulting to UTC if the timezone is unknown).
 	loc := utils.GetLocFor(channel.ContentTimezone)
-	if dateStr == "" {
-		p.processDate = utils.StartOfDay(callStartedAt).In(loc)
-	} else if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
-		p.processDate = utils.StartOfDay(parsed)
-	} else {
-		p.processDate = utils.StartOfDay(callStartedAt).In(loc)
+	processDate := utils.StartOfDay(callStartedAt).In(loc)
+	if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
+		processDate = utils.StartOfDay(parsed)
 	}
-	p.horizon = utils.EndOfDay(p.processDate)
-	// Always reset the loop's running time so each call starts clean.
-	p.globalRunningTime = 0
+	horizon := utils.EndOfDay(processDate)
 
 	schedules, err := p.espx.GetSchedules(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
 	if err != nil || len(schedules.Data) == 0 {
@@ -166,7 +160,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	}
 
 	adSegments, _ := p.loadAdSegments()
-	lastSeq := p.getLastSequenceNumber(ctx)
+	lastSeq := p.getLastSequenceNumber(ctx, channel.ID)
 
 	processor := &SegmentProcessor{
 		planner:         p,
@@ -175,11 +169,13 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		nowUnix:         float64(time.Now().Unix()),
 		sequenceCounter: lastSeq,
 		adSegments:      adSegments,
+		channelID:       channel.ID,
+		horizon:         horizon,
 	}
 
 	nowLocal := callStartedAt
 	for _, item := range schedules.Data {
-		if p.isEndOfTimeline(p.globalRunningTime) {
+		if isEndOfTimeline(processor.horizon, processor.runningTime) {
 			break
 		}
 		if err := processor.ProcessScheduleItem(item, channel, nowLocal); err == ErrEndOfTimeline {
@@ -187,7 +183,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		}
 	}
 
-	if err := p.flushRedisPipeline(processor.pipe); err != nil {
+	if err := processor.flush(); err != nil {
 		return err
 	}
 	// Persist the resolved ladder metadata so the engine can build the master
@@ -272,46 +268,48 @@ func (p *Planner) probeRenditions(basePath, firstSeg string, candidates []string
 
 // resolveAdsRendition picks the ads rendition by priority: env
 // SIMLIVE_ADS_RENDITION (hard override) > SIMLIVE_QUALITY tier (rendition closest
-// to the target resolution) > auto (largest measured rendition). The result is
-// cached once because ads are shared across all streams.
+// to the target resolution) > auto (largest measured rendition).
+//
+// Process-global (sync.Once): the ads pool (bucket + rung dirs) is shared
+// across all streams AND all channels, so the resolution only needs to run
+// once per process. It used to be cached on the Planner
+// (adsRend/adsRendSet) which raced when two channels walked in parallel —
+// same fix pattern as activeRenditionsOnce in rendition.go.
 func (p *Planner) resolveAdsRendition() string {
-	if p.adsRendSet {
-		return p.adsRend
-	}
-	defer func() { p.adsRendSet = true }()
-
-	if ex := utils.GetEnv("SIMLIVE_ADS_RENDITION", ""); ex != "" {
-		p.adsRend = ex
-		return p.adsRend
-	}
-
-	probes := p.probeRenditions(p.adsBucket, "vod_000.ts", adsRenditionCandidates)
-	tier, isAuto := p.resolveQualityTier()
-	if !isAuto {
-		if best, ok := pickClosestRendition(probes, tier.w, tier.h); ok {
-			p.adsRend = best
-			return p.adsRend
+	adsRenditionOnce.Do(func() {
+		if ex := utils.GetEnv("SIMLIVE_ADS_RENDITION", ""); ex != "" {
+			adsRendition = ex
+			return
 		}
-		if fb, ok := fallbackRenditionForTier[tier.label]; ok {
-			log.Printf("[Planner] WARN: could not probe ads resolution for tier %s, fallback %s", tier.label, fb.ads)
-			p.adsRend = fb.ads
-			return p.adsRend
-		}
-	}
 
-	best := ""
-	bestArea := -1
-	for dir, wh := range probes {
-		if area := wh[0] * wh[1]; area > bestArea {
-			best, bestArea = dir, area
+		probes := p.probeRenditions(p.adsBucket, "vod_000.ts", adsRenditionCandidates)
+		tier, isAuto := p.resolveQualityTier()
+		if !isAuto {
+			if best, ok := pickClosestRendition(probes, tier.w, tier.h); ok {
+				adsRendition = best
+				return
+			}
+			if fb, ok := fallbackRenditionForTier[tier.label]; ok {
+				log.Printf("[Planner] WARN: could not probe ads resolution for tier %s, fallback %s", tier.label, fb.ads)
+				adsRendition = fb.ads
+				return
+			}
 		}
-	}
-	if best == "" {
-		log.Printf("[Planner] WARN: could not probe ads resolution, fallback L0")
-		best = "L0"
-	}
-	p.adsRend = best
-	return best
+
+		best := ""
+		bestArea := -1
+		for dir, wh := range probes {
+			if area := wh[0] * wh[1]; area > bestArea {
+				best, bestArea = dir, area
+			}
+		}
+		if best == "" {
+			log.Printf("[Planner] WARN: could not probe ads resolution, fallback L0")
+			best = "L0"
+		}
+		adsRendition = best
+	})
+	return adsRendition
 }
 
 // resolveRenditions picks the (VOD, ads) rendition pair for streamID per the
@@ -544,12 +542,8 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	return adSegments, nil
 }
 
-func (p *Planner) getRedisKey() string {
-	return fmt.Sprintf("simlive:timeline:%s", p.channelID)
-}
-
-func (p *Planner) getLastSequenceNumber(ctx context.Context) int64 {
-	items, err := p.rdb.ZRevRange(ctx, p.getRedisKey(), 0, 0).Result()
+func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
+	items, err := p.rdb.ZRevRange(ctx, fmt.Sprintf("simlive:timeline:%s", channelID), 0, 0).Result()
 	if err != nil || len(items) == 0 {
 		return 0
 	}
@@ -560,44 +554,17 @@ func (p *Planner) getLastSequenceNumber(ctx context.Context) int64 {
 	return 0
 }
 
-func (p *Planner) flushRedisPipeline(pipe redis.Pipeliner) error {
-	pipe.Expire(context.Background(), p.getRedisKey(), RedisExpiryHours*time.Hour)
-	_, err := pipe.Exec(context.Background())
-	return err
-}
-
-func (p *Planner) addSegmentToRedis(pipe redis.Pipeliner, ctx context.Context, runningTime float64, data models.SegmentItem) error {
-	if p.isEndOfTimeline(runningTime) {
-		return ErrEndOfTimeline
-	}
-
-	data.TimeText = utils.TimeNumToText(data.StartTime)
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-
-	pipe.ZAdd(ctx, p.getRedisKey(), redis.Z{
-		Score:  runningTime,
-		Member: bytes,
-	})
-
-	if runningTime <= (float64(time.Now().Unix()) + 120) {
-		_ = p.flushBatch(pipe, ctx)
-	} else if p.totalSegmentsAdded > 0 && p.totalSegmentsAdded%WindowItemSize == 0 {
-		_ = p.flushBatch(pipe, ctx)
-	}
-	return nil
-}
-
 // isEndOfTimeline reports whether runningTime (Unix seconds) has crossed the
-// per-call horizon. If no horizon is set the function is a defensive no-op
+// given horizon. If horizon is zero the function is a defensive no-op
 // (returns false) so legacy callers that never set horizon keep walking.
-func (p *Planner) isEndOfTimeline(runningTime float64) bool {
-	if p.horizon.IsZero() {
+//
+// The horizon is passed explicitly because it is per-call state owned by the
+// SegmentProcessor (one horizon per channel/date walk), not by the Planner.
+func isEndOfTimeline(horizon time.Time, runningTime float64) bool {
+	if horizon.IsZero() {
 		return false
 	}
-	return p.horizon.Before(time.Unix(int64(runningTime), 0))
+	return horizon.Before(time.Unix(int64(runningTime), 0))
 }
 
 // HasDateInTimeline returns true when the ZSET simlive:timeline:{channelID}
@@ -635,11 +602,6 @@ func (p *Planner) DeleteTimeline(ctx context.Context, channelID string) error {
 	return p.rdb.Del(ctx, fmt.Sprintf("simlive:timeline:%s", channelID)).Err()
 }
 
-func (p *Planner) flushBatch(pipe redis.Pipeliner, ctx context.Context) error {
-	_, err := pipe.Exec(ctx)
-	return err
-}
-
 func (p *Planner) getCursor(ctx context.Context, channelID string) int64 {
 	val, err := p.rdb.Get(ctx, fmt.Sprintf("planner:cursor:%s", channelID)).Int64()
 	if err != nil {
@@ -659,7 +621,12 @@ func (p *Planner) setCursor(ctx context.Context, channelID string, ts int64) {
 // of consecutive failed (channel, date) prepares since the last success.
 // When the counter crosses failureInactivateThreshold the channel is flipped
 // to is_active = false so it stops burning CPU/EPG bandwidth on a broken
-// upstream. A successful prepareDate resets the counter to 0.
+// upstream. A successful prepare resets the counter to 0.
+//
+// A successful prepare (or a "date already prepared" short-circuit) ALSO
+// flips the channel's status to 'LIVE' (markChannelLive) — the planner is
+// the single writer of 'LIVE', and the engine's reconciler only streams
+// channels that are is_active AND status='LIVE'.
 //
 // The counter is keyed per-channel (not per-date) so one broken date does not
 // by itself trip the breaker — a channel that fails today AND tomorrow's
@@ -716,12 +683,40 @@ func (p *Planner) markChannelInactive(channelID string) error {
 	return nil
 }
 
+// markChannelLive flips status='LIVE' on the given channel once its timeline
+// data is in Redis, so the engine's reconciler (which gates on `is_active`
+// AND `status='LIVE'`) starts a playout loop for it. The planner is the
+// SINGLE writer of 'LIVE' — the API only ever sets 'PREPARE' (register /
+// start) and 'INACTIVE' (stop / delete). A legacy row stuck in the removed
+// 'ACTIVE' state self-heals here: the next successful prepare or "date
+// already prepared" short-circuit flips it to 'LIVE'. Returns the row count
+// (0 means the channel no longer exists / nothing was updated).
+func (p *Planner) markChannelLive(channelID string) error {
+	if p.db == nil {
+		return nil
+	}
+	res := p.db.Model(&models.PlayoutChannel{}).
+		Where("id = ?", channelID).
+		Update("status", "LIVE")
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("[Planner] channel=%s marked LIVE (timeline data in Redis)", channelID)
+	}
+	return nil
+}
+
 // handlePrepareResult records success/failure for a single (channel, date)
 // prepare attempt and trips the inactivity breaker once the failure threshold
-// is crossed. Idempotent: a successful run resets the counter to 0.
+// is crossed. Idempotent: a successful run resets the counter to 0 and flips
+// the channel's status to 'LIVE'.
 func (p *Planner) handlePrepareResult(ctx context.Context, channelID string, err error) {
 	if err == nil {
 		p.resetFailureCounter(ctx, channelID)
+		if dbErr := p.markChannelLive(channelID); dbErr != nil {
+			log.Printf("[Planner] markChannelLive(%s) error: %v", channelID, dbErr)
+		}
 		return
 	}
 	count := p.incrFailureCounter(ctx, channelID)
@@ -745,6 +740,17 @@ func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID s
 // short-circuit without an in-package wrapper.
 func (p *Planner) ResetFailureCounterForChannel(ctx context.Context, channelID string) {
 	p.resetFailureCounter(ctx, channelID)
+}
+
+// MarkChannelLiveForChannel flips a channel's status to 'LIVE' from a "date
+// already prepared" short-circuit (the success path of a fresh prepare
+// already reaches markChannelLive via handlePrepareResult). Exported so
+// cmd/planner can call it without an in-package wrapper; the signature
+// mirrors ResetFailureCounterForChannel.
+func (p *Planner) MarkChannelLiveForChannel(ctx context.Context, channelID string) {
+	if err := p.markChannelLive(channelID); err != nil {
+		log.Printf("[Planner] MarkChannelLiveForChannel(%s) error: %v", channelID, err)
+	}
 }
 
 func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) error {

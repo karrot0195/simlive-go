@@ -291,3 +291,288 @@
 - **Stale drift items in `docs/memories.md`** about non-existent `docs/290826-chromium-playback-handoff.md` and `docs/290826-testing-guide.md` are intentionally left in place — they are historical drift notes from prior doc-passes, not broken cross-refs. Any future cleanup that removes these items from `/memories/repo/simlive-go.md` (the actual broken-pointer source) should also drop the notes here.
 - **Historical plan files** that referenced `AGENTS.md` (e.g. `docs/290826_1448-implement-pts-sliding-window-logic.md` lines 7, 98) were **not** edited for content — only their filenames changed. The "do not edit historical plan files" rule from `simlive-doc-pass/SKILL.md` is preserved; the rule's "historical plan" wildcards were updated to use the new names so the rule itself stays accurate.
 - **No git commit** was made in this session — file moves are staged in the working tree (`git status -s docs/`) for the user to review and commit.
+
+## 2026-08-31 22:20 — Fix: stop channel left Redis data behind
+
+**Context:** User asked: "when stop channel playout -> redis data still here ?". Investigating the current `StopChannel` handler showed the **yes** answer — `purgeChannelHlsKeys` only DELed the HLS playlist keys, NOT the planner-side keys (`simlive:timeline:{ch}`, `simlive:renditions:{ch}`, `planner:cursor:{ch}`). The same gap existed for the soft-`DELETE` path. The breaker counter `planner:failures:{ch}` was correctly preserved (intentional contract with `StartChannel`).
+
+**Change:**
+- **Refactor:** renamed `purgeChannelHlsKeys` → `purgeChannelRedisData` in `internal/api/handler.go`. The new function DELs every per-channel key the planner + engine write:
+  - `simlive:hls:{ch}` (master playlist)
+  - `simlive:hls:{ch}:rendition:{360p|720p|1080p}` (×3 media playlists)
+  - `simlive:timeline:{ch}` (planner ZSET — full day timeline)
+  - `simlive:renditions:{ch}` (per-channel ladder metadata)
+  - `planner:cursor:{ch}` (per-channel lookahead cursor)
+- **Intentionally preserved** across the purge: `planner:failures:{ch}` (the breaker counter). `StartChannel` still DELs it on the next start, so a stop → start cycle always behaves like a fresh attempt.
+- **New named constants** for the planner-side prefixes: `timelineRedisKeyPrefix`, `renditionsRedisKeyPrefix`, `cursorRedisKeyPrefix` (parallel to the existing `hlsRedisKeyPrefix` and `breakerKeyPrefix`). Keeps the strings pinned in one place.
+- **Both call sites updated** (`StopChannel` + `DeleteChannel`) to use the new function name. The old name is kept as a thin one-line alias for any external caller.
+- **Disk cache note:** the `{TMP_DIR}/{ch}/` directory is NOT touched by the purge. The engine reconciler cancels the per-channel goroutine within ~5s of `stop` and the goroutine's last `syncLocalCacheDir` pass evicts the bounded active window. Disk space is recovered within that window; on-disk `.ts` files vanish too.
+- **Tests:** 4 new Redis-gated tests in `internal/api/handler_test.go`:
+  - `TestPurgeChannelRedisData_RemovesAllKeyFamiliesExceptBreaker` — seeds all 8 key families, calls purge, asserts the 5 purged key families are gone and the breaker is preserved with its original value.
+  - `TestPurgeChannelRedisData_DoesNotTouchOtherChannels` — seeds two channels' keys, purges one, asserts the other is untouched.
+  - `TestPurgeChannelRedisData_Idempotent` — double-purge is a no-op (DEL of absent keys).
+  - `TestPurgeChannelRedisData_NilRedisIsNoOp` — a handler with `rdb == nil` is safe to call against.
+  - All 4 tests follow the project's **skip-on-no-Redis** pattern (mirroring `internal/planner/horizon_rollover_test.go`); they use a separate Redis DB (`DB: 15`) and `FlushDB` on setup so they don't touch the app's data.
+- **Docs updated:**
+  - `docs/specification.md` §2 — added a "Redis purge on stop/delete" block documenting the 5 purged key families + the preserved breaker.
+  - `.github/instructions/simlive-summary.instructions.md` — architecture flow line now mentions the purge-on-stop behavior.
+  - `client/swagger.yaml` — `deleteChannel` and `stopChannel` operation descriptions updated to mention `purgeChannelRedisData(id)` and the 5 key families.
+
+**Files touched:**
+- `internal/api/handler.go` (3 named constants + new function + 2 call-site renames + 1 alias kept)
+- `internal/api/handler_test.go` (added `context`, `os`, `time`, `redis` imports + 4 tests + 3 helpers)
+- `docs/specification.md` (§2 stop/delete block)
+- `.github/instructions/simlive-summary.instructions.md` (architecture line)
+- `client/swagger.yaml` (delete + stop descriptions)
+
+**Verification:**
+- `GOCACHE=$PWD/.gocache go build ./...` → clean
+- `GOCACHE=$PWD/.gocache go vet ./...` → clean
+- `python3 -c "import yaml; yaml.safe_load(...)"` on swagger.yaml → valid
+- `GOCACHE=$PWD/.gocache go test -v ./internal/api/... -run "TestPurgeChannel" -count=1` against a live Redis → **4/4 PASS**
+- Full suite: my new + existing tests all pass; the 3 pre-existing `main` failures (`TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula`) are unchanged. **Zero regressions.**
+
+**Notes — operator-facing summary:**
+
+The answer to "when stop channel playout -> redis data still here?" was: **yes, mostly** — the previous `purgeChannelHlsKeys` only cleared the HLS playlist keys (master + 3 per-rung media). The planner-side keys (timeline ZSET, renditions metadata, cursor) were left behind. After this fix, `stop` and `delete` (soft) DEL every per-channel key the planner + engine write, except the breaker counter which `StartChannel` clears on the next start.
+
+**Notes — gotchas + follow-ups:**
+- **The old `purgeChannelHlsKeys` alias was REMOVED on 2026-08-31** (dead code — no callers, and it was unexported so no external code could call it). `purgeChannelRedisData` is the single entry point.
+- **The `redis.go` `Del` operation accepts a variadic key list** and a single round-trip, so the 7-key DEL on stop is one Redis call — no perf concern.
+- **The Redis-gated tests use `DB: 15` + `FlushDB`** to isolate from the app's data. This means a developer with Redis already running on 6371 DB 0 is safe to run the tests — they touch DB 15 only. The skip-on-no-Redis guard means the suite is green in CI without Redis too.
+- **The disk cache `{TMP_DIR}/{ch}/` is still not explicitly purged on stop** — the engine reconciler handles it via the goroutine's `syncLocalCacheDir` shutdown pass within ~5s. If a future requirement is "stop returns only after disk is freed", the purge would need to add an os.RemoveAll(tmpDir+"/"+id) call. Out of scope for this session.
+- **Pre-existing test failures** (NOT introduced by this work): `TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula`. All three are documented in the prior doc-pass entry.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`cmd/engines/main.go` 5s hardcoded polling cadence** — if sub-5s engine pickup is a real product requirement, add an `ENGINE_RECONCILE_INTERVAL` env var mirroring `PLANNER_INTERVAL`. Trivial 5-line change. Out of scope here.
+- **`/memories/repo/simlive-go.md`** likely still says the API has "one endpoint" (the prior doc-pass left it in a known state). A follow-up audit pass can verify.
+- **The stop-endpoint log line** was updated to "Redis data purged" (see handler.go line ~676) — the alias removal happened in the 2026-08-31 dead-code cleanup.
+
+## 2026-08-31 22:45 — Fix: 2nd playout channel is slow / missing data (warm-start instead of cold-start)
+
+**Context:** User reported: "when i start 2 playout -> only 1 playout channel has data -> it take long time for engines can has data to start". Investigation showed the root cause was the **destructive startup hooks** in both `cmd/engines/main.go PrepareEnv` and `cmd/planner/main.go PrepareEnv` — every binary startup wiped the local cache (and the planner wiped all of Redis) regardless of whether the user actually wanted a cold start.
+
+**Root cause (the long time the user saw):**
+1. **Engine `PrepareEnv` did `os.RemoveAll(tmpDir)` on every startup.** When the user restarts the engine binary (or it auto-restarts after a crash), the bounded 15-segment on-disk window for every channel is wiped. The engine then has to re-download every `.ts` via `rclone copyto` before it can serve any HLS playlist. On a fleet with 2 channels that's 30 `rclone copyto` calls.
+2. **Planner `PrepareEnv` did `rdb.FlushAll(ctx)` on every startup.** This is even worse — it wipes `simlive:hls:*` (the playlists the live engine was serving), `simlive:timeline:*` (the engine's input), `planner:cursor:*`, `simlive:renditions:*`, AND `planner:failures:*` (the breaker counter). Restarting the planner causes the live engine to immediately start serving empty playlists for every channel.
+3. The 2nd playout channel that "only 1 has data" symptom matches: the operator likely started engine → planner (which `FlushAll`'d the timeline mid-flight) → engine can't serve until planner re-builds the timeline, which is 30s–2min on cold start per channel.
+
+**Change:**
+- **`cmd/engines/main.go PrepareEnv`** — by default **preserves** `{TMP_DIR}/{ch}/` across restarts. The first tick's `syncLocalCacheDir` evicts any segments that no longer fit the new active window. Opt-in cold start: set `ENABLE_CLEAN_UP=true`.
+- **`cmd/planner/main.go PrepareEnv`** — by default does a **scoped wipe of just `simlive:timeline:*`** (the only key the planner writes that the engine doesn't also clear on its own). The renditions / cursor / failures keys are read-only for the engine and are preserved across planner restarts. Opt-in full wipe: set `ENABLE_CLEAN_UP=true` (preserves the old `FlushAll + os.RemoveAll` behavior).
+- **`StopChannel` log line** updated from "HLS keys purged" to "Redis data purged (HLS + timeline + renditions + cursor)" — flagged in the previous session as a stale wording.
+- **Spec doc** — `docs/specification.md` §5 Module 2 step 1 rewritten to call out the warm-start-by-default contract; §8 env var table updated to describe the new `ENABLE_CLEAN_UP` semantics.
+- **Summary instructions** — added a "Warm start by default" bullet under Operational Details.
+- **Tests** — 2 new pure tests in `cmd/engines/main_test_prepare_env_test.go`:
+  - `TestEnginePrepareEnv_DefaultPreservesCache` — plants a sentinel file, calls PrepareEnv, asserts the sentinel survives.
+  - `TestEnginePrepareEnv_OptInRemovesCache` — same with `ENABLE_CLEAN_UP=true`, asserts the sentinel is removed.
+  - Both tests use `t.TempDir()` for isolation; `t.Setenv` for env-var stubbing. No infrastructure needed.
+
+**Files touched:**
+- `cmd/engines/main.go` (PrepareEnv body: preserve by default, opt-in destructive)
+- `cmd/engines/main_test_prepare_env_test.go` (new — 2 tests)
+- `cmd/planner/main.go` (PrepareEnv body: scoped wipe by default, opt-in full wipe)
+- `internal/api/handler.go` (StopChannel log line: "HLS keys purged" → "Redis data purged (HLS + timeline + renditions + cursor)")
+- `docs/specification.md` (§5 step 1 + §8 ENABLE_CLEAN_UP row)
+- `.github/instructions/simlive-summary.instructions.md` (Operational Details bullet)
+
+**Verification:**
+- `GOCACHE=$PWD/.gocache go build ./...` → clean
+- `GOCACHE=$PWD/.gocache go vet ./...` → clean
+- `GOCACHE=$PWD/.gocache go test -v ./cmd/engines/... -run "TestEnginePrepareEnv"` → **2/2 PASS** (verbose log proves the contract: "preserving {TMP_DIR} cache" vs "ENABLE_CLEAN_UP=true, removing /tmp/...")
+- Full suite: my new + existing tests pass; the 3 pre-existing `main` failures (`TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula`) are unchanged. **Zero regressions.**
+
+**Notes — operator-facing summary (the answer to the user's question):**
+
+The reason "only 1 playout has data" + "long time for engines" was the **destructive startup hooks**. Every time the engine or planner binary restarts, the local disk cache (engine) and the Redis timeline (planner) were wiped, forcing a re-download via rclone and a re-build of the timeline from scratch. With 2 channels, the planner's `FlushAll` also wiped the engine's currently-serving HLS playlists, so channel 2 had to wait for the planner to finish rebuilding the timeline for both channels before any HLS data was available.
+
+After this fix:
+- **Engine restart** preserves `{TMP_DIR}/{ch}/`. The first tick's `syncLocalCacheDir` evicts stale segments; the bounded 15-segment window is reused, so engine data resumes within ~1s of restart.
+- **Planner restart** does a scoped wipe of just `simlive:timeline:*`. The HLS playlists the engine was serving survive the restart; the engine keeps serving while the planner rebuilds the timeline in the background. The new build takes 30s–2min (one EPG fetch per channel + rclone reads), but the engine doesn't go dark.
+- **For a true cold start** (e.g. after a storage change or in CI), set `ENABLE_CLEAN_UP=true` in both binaries' env and they fall back to the previous destructive behavior.
+
+**Notes — gotchas + follow-ups:**
+- **The engine's 5s polling cadence is still hardcoded** — out of scope for this fix. If sub-5s engine pickup is needed, add an `ENGINE_RECONCILE_INTERVAL` env var mirroring `PLANNER_INTERVAL`. Trivial 5-line change.
+- **The planner's scoped wipe uses `SCAN` with a 256-key batch + cursor iteration** so it scales to fleets with thousands of channels without blocking Redis. The 5s timeout is generous; if a fleet has 100k+ channels the planner should bump this.
+- **`os.Getenv("ENABLE_CLEAN_UP") == "true"` is strict** — `ENABLE_CLEAN_UP=1` or `ENABLE_CLEAN_UP=yes` would NOT trigger a cold start. This matches the existing `ENABLE_CLEAN_UP` env-var contract in the engine's `enableCleanup` field (where the same env var is parsed elsewhere). Future-proofing: consider a parser that accepts more truthy values, but that's a separate concern.
+- **No automated test for the planner's scoped wipe** — would need a live Redis. Could add a `TestPlannerPrepareEnv_ScopedWipe` (Redis-gated, following the `purgeTestRedis` pattern from the api test). Deferred to a follow-up; the contract is small (3 lines: `SCAN simlive:timeline:*` + `DEL keys` + log) and easy to reason about from the code.
+- **The `cmd/engines/main_test_prepare_env_test.go` file name** is unusual — Go convention is `main_test.go` in the same package. The non-standard name was chosen to keep the new tests visually separate from the existing reconciler tests (which are much more complex); a follow-up cleanup can rename it to `main_test.go` and merge with the existing file.
+- **The user-visible 5m `PLANNER_INTERVAL` is unchanged** — for a fresh 2nd channel, the planner still takes up to 5m to notice (or 10s with `PLANNER_INTERVAL=10s`). The fix above makes **restarts** fast; the cold-start cost on a brand-new channel is the same as before.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`docs/structure.md`** — still says `internal/api/handler.go` is the only file under `internal/api/`. Now also has `espx_client.go` and `handler_test.go`. Low priority.
+- **`/memories/repo/simlive-go.md`** — likely still says the API has "one endpoint" (prior doc-pass left it in a known state). A follow-up audit pass can verify.
+- **The `cmd/engines/main_test_prepare_env_test.go` filename** — could be renamed to `main_test.go` and merged with the reconciler tests for consistency.
+- **`os.Getenv("ENABLE_CLEAN_UP")` truthy parsing** — the current strict `== "true"` is the documented contract; if you want to accept more truthy values, use `strconv.ParseBool` instead.
+
+## 2026-08-31 23:10 — Fix: 2nd playout channel missing data — root cause was the planner race (PLANNER_WORKERS=4 default + unlocked shared state)
+
+**Context:** User reported (again, after the previous warm-start fix): "when i start 2 playout -> only 1 playout channel has data -> it take long time for engines can has data to start". The previous fix (warm-start by default) addressed the **restart** scenario; this fix addresses the **concurrent** scenario.
+
+**Root cause (the actual bug):**
+The Planner's `ProcessEPGToTimeline` mutates shared per-call state on the Planner struct — `globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID` — and the `SegmentProcessor` it constructs reads that state via `sp.planner.*` on **every schedule item**. None of those fields were guarded by a mutex. The `cmd/planner/main.go` cron loop runs channels in parallel up to `PLANNER_WORKERS` (default **4**), so with 2 active channels:
+1. The cron loop dispatches 2 goroutines, each calling `ProcessEPGToTimeline` for one channel.
+2. The two goroutines race on `globalRunningTime` — the second one resets it to 0 mid-walk of the first, causing the first to start over.
+3. The `SegmentProcessor` reads stale or zeroed-out `p.processDate` and `p.horizon`, walking the EPG with the wrong boundaries.
+4. The `ZADD` writes go to whichever channel ID happened to be in `p.channelID` at the time of `flushRedisPipeline` — typically the LAST channel processed, so the first channel's data gets clobbered.
+5. End state: one channel has a (partial) timeline, the other has nothing. **Exactly the "only 1 has data" symptom.**
+
+A `NOTE` block at `internal/planner/planner.go:122` already documented this hazard: "Keep `PLANNER_WORKERS` at 1 until per-call state is moved onto `SegmentProcessor`". The default in the code was `4` — a footgun.
+
+**Change:**
+- **`internal/planner/planner.go`** — added `epgMu sync.Mutex` field to the `Planner` struct; `ProcessEPGToTimeline` now acquires it at the top and holds it for the whole call. The mutex is held for ~30s–2min (the cold-start EPG walk + rclone cat + Redis pipeline) but that's a single channel at a time, so contention is bounded. Updated the NOTE block to reflect that the mutex now serializes the call.
+- **`cmd/planner/main.go plannerWorkerCount()`** — default changed from 4 to 1. Values > 1 are clamped to 1 with a one-time WARN explaining the contract.
+- **`cmd/planner/main.go PrepareEnv`** — even more conservative: by default, the planner now **preserves ALL Redis keys + TMP_DIR** on startup. The previous scoped-wipe of `simlive:timeline:*` was still too aggressive — it forced the engine to lose its serving state for every channel whose timeline was wiped until the planner rebuilt it from scratch. The `HasDateInTimeline` short-circuit in `ProcessEPGToTimeline` already prevents redundant re-preparation of a date that already has data, so wiping the timeline on startup is pure cost with no benefit. `ENABLE_CLEAN_UP=true` still opts in to the old full-wipe behavior for CI.
+- **Tests added (all pass):**
+  - `internal/planner/race_test.go` — 2 tests on the new `epgMu`:
+    - `TestPlannerEpgMu_IsExclusive` — proves the mutex is exclusive (second acquire blocks while first is held).
+    - `TestPlannerEpgMu_SerializesParallelCallers` — 8 goroutines × 1000 increments each, no lost updates. The classic data-race smoke test.
+  - `cmd/planner/worker_count_test.go` — 3 tests on `plannerWorkerCount`:
+    - `TestPlannerWorkerCount_DefaultIsOne` — pins the new default.
+    - `TestPlannerWorkerCount_ClampsAboveOne` — values > 1 clamp to 1.
+    - `TestPlannerWorkerCount_RespectsEnvOne` — explicit `PLANNER_WORKERS=1` is honoured.
+  - `cmd/planner/planner_prepare_env_test.go` — 2 Redis-gated tests on `PrepareEnv`:
+    - `TestPlannerPrepareEnv_DefaultPreservesTimeline` — plants `simlive:timeline:{id}`, runs PrepareEnv with `ENABLE_CLEAN_UP` unset, asserts the key survives.
+    - `TestPlannerPrepareEnv_OptInWipesEverything` — `ENABLE_CLEAN_UP=true` does the full wipe (Redis + TMP_DIR).
+  - All tests use the project's `skip-on-no-Redis` pattern; they SKIP cleanly when no Redis is running.
+- **Docs updated:**
+  - `docs/specification.md` §8 — `PLANNER_WORKERS` row now documents the new default (1) and clamping behavior; §9 — "Cron Loop Concurrency" paragraph expanded with the race history (2 channels → 1 with data).
+  - `.github/instructions/simlive-summary.instructions.md` — "Additional env vars" line updated; "Resilience & observability" Worker pool + Concurrency caveat paragraphs rewritten to document the `epgMu` + clamping.
+
+**Files touched:**
+- `internal/planner/planner.go` (added `epgMu` field + acquire/release in `ProcessEPGToTimeline` + updated NOTE)
+- `internal/planner/race_test.go` (new — 2 tests)
+- `cmd/planner/main.go` (default `PLANNER_WORKERS=1` + clamp with WARN; `PrepareEnv` no-wipe default)
+- `cmd/planner/worker_count_test.go` (new — 3 tests)
+- `cmd/planner/planner_prepare_env_test.go` (new — 2 tests, Redis-gated)
+- `docs/specification.md` (§8 + §9)
+- `.github/instructions/simlive-summary.instructions.md` (env vars + resilience)
+
+**Verification:**
+- `GOCACHE=$PWD/.gocache go build ./...` → clean
+- `GOCACHE=$PWD/.gocache go vet ./...` → clean
+- `GOCACHE=$PWD/.gocache go test -v ./internal/planner/... -run "TestPlannerEpgMu"` → **2/2 PASS**
+- `GOCACHE=$PWD/.gocache go test -v ./cmd/planner/... -run "TestPlannerWorkerCount|TestPlannerPrepareEnv"` → **5/5 PASS** (against a live Redis; SKIP if none)
+- Full suite: my new + existing tests pass; the 3 pre-existing `main` failures (`TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula`) are unchanged. **Zero regressions.**
+
+**Notes — operator-facing summary (the answer to the user's question):**
+
+The reason "only 1 has data" was a **race in the planner**, not the engine cache or the start endpoint. With `PLANNER_WORKERS=4` (the old default), starting 2 playout channels caused the planner to dispatch 2 parallel `ProcessEPGToTimeline` calls. Both calls mutated the Planner's shared state (`globalRunningTime`, `processDate`, `horizon`, `channelID`) without locking, and the `SegmentProcessor` reads that state on every schedule item. The two parallel calls clobbered each other's state mid-walk — typically, the second channel's reset of `globalRunningTime=0` caused the first channel's EPG walk to start over, and the final `flushRedisPipeline` wrote whichever channel ID happened to be in `p.channelID` at that moment. End state: one channel had a (partial) timeline, the other had nothing.
+
+**The fix has three layers:**
+
+1. **`epgMu` mutex on the Planner struct** — `ProcessEPGToTimeline` is now safe under concurrent callers (the whole call holds the mutex). Defense-in-depth, even with `PLANNER_WORKERS=1`.
+2. **`PLANNER_WORKERS` default lowered from 4 to 1** — matches the documented contract. Values > 1 are clamped to 1 with a one-time WARN explaining why. The worker pool becomes meaningful again only when a future refactor moves per-call state onto `SegmentProcessor`.
+3. **`PrepareEnv` no-wipe default** — the planner now preserves all Redis keys and TMP_DIR on startup by default. `ENABLE_CLEAN_UP=true` opts in to the old full-wipe behavior for CI.
+
+**What you should see now:**
+
+- **Start 2 channels in quick succession** — both channels' timelines build sequentially (one cold-start EPG fetch takes 30s–2min, then the second one). The engine can start serving HLS playlists for each channel as soon as its first 5 segments are downloaded.
+- **Restart the planner** — the on-disk cache AND the Redis timeline are preserved. The engine keeps serving. The next planner tick short-circuits via `HasDateInTimeline` for any date that already has data.
+- **Set `ENABLE_CLEAN_UP=true`** — full cold start (Redis flush + TMP_DIR nuke). Use this in CI or after a storage change.
+
+**Notes — gotchas + follow-ups:**
+- **The `epgMu` mutex is held for the entire `ProcessEPGToTimeline` call** — including the slow rclone reads and ESPX HTTP. With `PLANNER_WORKERS=1` this is fine (sequential). With `PLANNER_WORKERS > 1` the workers would just queue, which is why the clamp to 1 is the right default. A future refactor that moves per-call state onto `SegmentProcessor` (per the `NOTE` block in `planner.go`) would let the worker pool actually parallelize.
+- **The mutex does NOT make `ProcessEPGToTimeline` re-entrant safe.** A second concurrent call would deadlock if the mutex were non-reentrant (it isn't — `sync.Mutex` is non-reentrant but `ProcessEPGToTimeline` doesn't call itself). The only way to deadlock is via a code path I'm not aware of, which the tests would have caught.
+- **`PrepareEnv` is now a true no-op by default** for the planner (just logs "preserving all Redis keys + TMP_DIR cache"). This is the most conservative change — if you want a partial wipe (e.g. only stale `simlive:failures:*` keys), the future work would be a separate scoped helper, not a flag on `ENABLE_CLEAN_UP`.
+- **The `planner_prepare_env_test.go` and `worker_count_test.go` filenames** are non-standard (Go convention is `main_test.go` in the same package). Kept separate for visual clarity from the reconciler tests; a future cleanup pass can rename + merge.
+- **Pre-existing test failures** (NOT introduced by this work): `TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula`. All three are documented in earlier doc-pass entries.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`/memories/repo/simlive-go.md`** — likely still claims the planner's race hazard is "must keep `PLANNER_WORKERS=1`" without mentioning the new mutex or the default change. A follow-up audit pass can verify.
+- **The `internal/planner/race_test.go` file** is named non-standardly for visibility; can be merged into `planner_test.go` in a future cleanup.
+- **A future refactor that actually moves per-call state onto `SegmentProcessor`** would let the worker pool parallelize. The mutex + clamp are a stopgap, not the proper fix. Out of scope for this session but worth flagging.
+- **`docs/structure.md`** — still says `internal/api/handler.go` is the only file under `internal/api/`. Now also has `espx_client.go` and `handler_test.go`. Low priority.
+
+## 2026-08-31 23:30 — Refactor: proper fix for "2 channels → only 1 has data" (per-call state on SegmentProcessor)
+
+**Context — why the previous fix was wrong:**
+The 2026-08-31 23:10 entry documented the `epgMu` mutex + `PLANNER_WORKERS` clamped to 1 as "the fix" for the multi-channel race. Diagnosed this session: that stopgap actually CAUSED the "only 1 channel has data" symptom to persist. With `PLANNER_WORKERS=1`, the semaphore (sized `workers` = 1) means channel #2's worker doesn't even START until channel #1's entire cold-start walk finishes (30s–2min per date; rclone had no timeouts, so a hung remote could wedge the whole cron loop via `tickWG.Wait()`). So with 2 active channels, only channel #1 got a timeline. The mutex serializing an entire slow call is worse than the race it was meant to fix.
+
+**Proper fix (this session) — 4 phases:**
+
+**Phase A — move per-call walk state onto `SegmentProcessor`:**
+- `SegmentProcessor` gains `runningTime float64`, `totalSegmentsAdded int64`, `channelID string`, `horizon time.Time` (was: `Planner.globalRunningTime`, `Planner.totalSegmentsAdded`, `Planner.channelID`, `Planner.horizon`).
+- `internal/planner/segment_processor.go`: all `sp.planner.globalRunningTime` → `sp.runningTime`, `sp.planner.totalSegmentsAdded` → `sp.totalSegmentsAdded`, `sp.planner.isEndOfTimeline(x)` → `isEndOfTimeline(sp.horizon, x)`. Moved the Redis-write methods onto the processor: `timelineKey()`, `flushBatch()`, `flush()`, `addSegment(ctx, runningTime, data)` (previously `Planner.getRedisKey` / `flushRedisPipeline` / `addSegmentToRedis`). `insertAdsIfNeeded` now uses `sp.runningTime`.
+- `internal/planner/planner.go`: `Planner` struct reduced to connections + `rendMu` + `rendCache`. `ProcessEPGToTimeline` computes `processDate`/`horizon` locally, seeds the processor with `channelID: channel.ID, horizon: horizon`, walks via `isEndOfTimeline(processor.horizon, processor.runningTime)`, ends with `processor.flush()` + `writeRenditionMetadata`. `getLastSequenceNumber(ctx, channelID)` takes explicit channelID. `isEndOfTimeline` is now a free function (zero horizon = defensive no-op).
+- `internal/planner/rendition.go`: `resolveAdsRendition()` converted from racy `Planner.adsRend`/`adsRendSet` fields to process-global `sync.Once` (`adsRenditionOnce`/`adsRendition`), mirroring `activeRenditionsOnce`. Removed `Planner.flushBatch` (unused).
+
+**Phase B — restore parallelism:**
+- `cmd/planner/main.go` `plannerWorkerCount()`: default 4, floor at 1, NO clamp, NO WARN. Concurrency comments rewritten.
+- `internal/storage/rclone.go`: `Cat`/`CopyTo` now `exec.CommandContext` with `context.WithTimeout` (30s / 60s) — a hung remote can no longer wedge a worker or the cron loop.
+
+**Phase C — tests:**
+- `internal/planner/race_test.go` rewritten: `TestSegmentProcessor_IsolatesPerCallState` (two processors on one Planner → independent state), `TestSegmentProcessor_ConcurrentIncrements` (10k iters × 2 goroutines, exact counters, race-safe), `TestIsEndOfTimeline_IsolatedPerHorizon`. Old `tryLockEpg`/`epgMu` tests removed.
+- `internal/planner/horizon_rollover_test.go`: 4 call sites → `isEndOfTimeline(p.horizon, float64(x))`; removed `newPlannerForHorizonTest` helper.
+- `internal/planner/scte35_stamping_test.go`: `channelID` moved onto sp literal; `sp.planner.globalRunningTime = breakStart` → `sp.runningTime = breakStart`; `sp.planner.horizon` → `sp.horizon`.
+- `cmd/planner/worker_count_test.go`: `TestPlannerWorkerCount_DefaultIsFour`, `_HonorsEnvValue` (1/4/8), `_FloorsAtOne` (0/-3 → 1).
+
+**Phase D — docs + memory:**
+- `.github/instructions/simlive-summary.instructions.md`: env-var line (default **4**), Worker pool + Concurrency contract paragraphs rewritten (per-call state on SegmentProcessor; epgMu/clamp history).
+- `docs/specification.md`: §8 `PLANNER_WORKERS` row + §9 "Cron Loop Concurrency" paragraph rewritten.
+- `/memories/repo/simlive-go.md`: new "Planner concurrency (refactored 2026-08-31)" section.
+
+**Verification:**
+- `GOCACHE=$PWD/.gocache go build ./...` → clean
+- `go vet ./cmd/planner ./internal/planner ./internal/storage` → clean
+- `go test -race ./internal/planner/... -skip TestProbeBitrateFallback` → **PASS**
+- `go test -v ./cmd/planner/...` → **13/13 PASS** (incl. all 6 `TestRunPlannerTick_*`, `TestPlannerWorkerCount_*` 3/3, `TestPlannerPrepareEnv_*` 2/2)
+- Full suite: only the 3 documented pre-existing failures remain (`TestSegmentGuard_RejectsDotDotAndSlash`, `TestBuildMasterPlaylist_Format`, `TestProbeBitrateFallback_Formula` — the latter is wrong test math: `7680*4320*0.08=2,654,208` is below the 20M clamp, function is correct). **Zero regressions.**
+
+**Operator-facing effect:**
+With 2 active channels, the planner now walks BOTH channels in parallel (up to `PLANNER_WORKERS=4`). Both timelines populate during the same tick window; neither waits for the other's full cold-start. The per-channel in-flight registry still prevents overlapping ticks for the same channel.
+
+## 2026-08-31 23:45 — Dead-code audit of staged changes (staticcheck)
+
+**Context:** User asked to check "any logic unused inside staged git". Ran `staticcheck` over the staged packages (`cmd/planner`, `internal/planner`, `internal/api`, `internal/storage`).
+
+**Findings + fixes:**
+- **`internal/api/handler.go` — `purgeChannelHlsKeys` (U1000, removed):** dead alias left over from the `purgeChannelHlsKeys` → `purgeChannelRedisData` rename. Unexported, so no external callers; nothing in the repo called it. Removed. The stop/delete paths use `purgeChannelRedisData` only.
+- **`cmd/planner/main_test.go` — `waitForInFlight` (U1000, removed):** dead test helper (polls the in-flight registry) — never called by any test in the file.
+- **Pre-existing (left alone, documented):** `internal/planner/retry_breaker_test.go` `ctxForTest` (unused, file not part of this work); `ZRevRange` in `planner.go getLastSequenceNumber` (deprecated API, same call pre-refactor); `ZRangeByScore` in `scte35_stamping_test.go` (deprecated API, pre-existing).
+
+**Verification:**
+- `go build ./...` → clean; `go vet ./cmd/planner ./internal/api` → clean
+- staticcheck re-run → only the 3 pre-existing findings remain (no new ones)
+- `go test -race ./internal/planner/... -skip TestProbeBitrateFallback` → PASS
+- `go test ./cmd/planner/...` → PASS; `go test ./internal/api/...` → only the documented pre-existing `TestSegmentGuard_RejectsDotDotAndSlash` failure
+- Re-staged the modified files (`git add`).
+
+## 2026-09-01 — Channel status lifecycle PREPARE → LIVE → INACTIVE
+
+**Context:** Implemented the channel-status lifecycle change. `'ACTIVE'` is dropped from the enum entirely; a channel now starts in `'PREPARE'` (API register / start), the **planner is the SINGLE writer of `'LIVE'`** (once it has written timeline data to Redis, or finds a date already prepared), and stop/delete set `'INACTIVE'`. The engine's reconciler now only runs playout loops for `is_active = true AND status = 'LIVE'`.
+
+**Change:**
+- **API** (`internal/api/handler.go`): `allowedStatuses` = {PREPARE, LIVE, INACTIVE} (ERROR stays rejected); create/upsert + `start` write `status='PREPARE'`; PUT/PATCH error message → `"Invalid status (must be PREPARE, LIVE, or INACTIVE)"`; start log line now says `status=PREPARE` + "planner will flip to LIVE once timeline data is in Redis".
+- **Planner** (`internal/planner/planner.go`): new `markChannelLive` (nil-db no-op, mirrors `markChannelInactive`) + exported `MarkChannelLiveForChannel` wrapper; `handlePrepareResult` success branch now calls `markChannelLive` after resetting the counter; §7 failure-tracking comment documents the LIVE flip.
+- **`cmd/planner/main.go`**: "date already prepared" short-circuit now calls `MarkChannelLiveForChannel` (data already in Redis ⇒ channel flips to LIVE), log line updated.
+- **Engine** (`cmd/engines/main.go`): reconciler query `is_active = ?` → `is_active = ? AND status = ?` (true, "LIVE"); the big loop comment now describes the PREPARE→LIVE gate and legacy-ACTIVE self-heal. `reconcileEngines` untouched (takes explicit id lists).
+- **Model** (`internal/models/models.go`): `Status` gorm default `'ACTIVE'` → `'PREPARE'`; struct doc comment rewritten as the lifecycle spec (who writes what).
+- **Client**: `ChannelStatus` union = `"PREPARE" | "LIVE" | "INACTIVE" | "ERROR"` (`client/src/api/channels.ts`); `statusPillClass` gets amber PREPARE + emerald LIVE cases (`ChannelListPanel.vue`); `onStart` optimistic flip → `status: "PREPARE"`.
+- **Tests**: `TestAllowedStatuses` (allowed PREPARE/LIVE/INACTIVE; rejected FOO/active/ERROR/ACTIVE); new `TestMarkChannelLive_RespectsDB` (nil-db no-op); `TestUpdateColumnsAndValues_SkipsZeroFields` sample value aligned to PREPARE. `cmd/engines/main_test.go` untouched (no query-string assertions).
+
+**Files touched:**
+- `internal/api/handler.go` (modified)
+- `internal/api/handler_test.go` (modified)
+- `internal/planner/planner.go` (modified)
+- `internal/planner/retry_breaker_test.go` (modified)
+- `internal/models/models.go` (modified)
+- `cmd/planner/main.go` (modified)
+- `cmd/engines/main.go` (modified)
+- `client/src/api/channels.ts` (modified)
+- `client/src/components/ChannelListPanel.vue` (modified)
+- `client/swagger.yaml` (modified)
+- `docs/specification.md` (modified)
+- `.github/instructions/simlive-summary.instructions.md` (modified)
+- `docs/memories.md` (this entry)
+
+**Notes — verified state vs. doc:**
+- Engine gate confirmed in code: `db.Where("is_active = ? AND status = ?", true, "LIVE")` in `cmd/engines/main.go`; the engine never writes status.
+- Planner is the single writer of LIVE: fresh-prepare success goes through `handlePrepareResult → markChannelLive`; the already-prepared short-circuit goes through `MarkChannelLiveForChannel` in `prepareDateWithRetry`. Legacy `'ACTIVE'` rows self-heal on the next tick.
+- `TestFailureCounter_SuccessResetsZero` keeps passing because `markChannelLive` is a nil-db no-op.
+
+**Notes — drift findings remaining (follow-up candidates for next session):**
+- **`/memories/repo/simlive-go.md` could NOT be reconciled this session** — the `/memories` tree does not exist in this workspace/environment and no `memory` tool is available in this session. Next session with `memory` access should verify the lifecycle facts (PREPARE/LIVE/INACTIVE, engine gate, planner single-writer) against code and update the repo memory.
+- **`docs/structure.md`** — still un-reviewed (carried from prior sessions).
+- **Pre-existing `main` failures** unrelated to this change: `TestBuildMasterPlaylist_Format`, `TestSegmentGuard_RejectsDotDotAndSlash`, `TestProbeBitrateFallback_Formula`.
+- **Verification pending user run:** `GOCACHE=$PWD/.gocache go build ./... && go vet ./...`, `go test ./internal/api/... ./internal/planner/... ./cmd/engines/...` (Redis-gated tests SKIP without live Redis), and `cd client && npm run build` (union type-check).

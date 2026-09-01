@@ -2,6 +2,7 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"simlive/internal/models"
 	"simlive/internal/utils"
@@ -21,6 +22,21 @@ type SegmentProcessor struct {
 	totalAdsAdded   int
 	nowUnix         float64
 	adSegments      []models.SegmentItem
+
+	// Per-call walk state — owned by THIS processor instance, not the shared
+	// Planner. runningTime is the current timeline position, totalSegmentsAdded
+	// counts members written, channelID is the channel being walked (it keys
+	// the Redis ZSET), and horizon is the EndOfDay wall-clock boundary that
+	// stops the walk. Living here instead of on the Planner makes
+	// ProcessEPGToTimeline safe to call concurrently for DIFFERENT channels:
+	// the old design mutated shared Planner fields (globalRunningTime,
+	// totalSegmentsAdded, channelID, horizon) and required the epgMu mutex +
+	// PLANNER_WORKERS=1 clamp — which serialized a multi-channel fleet to one
+	// channel at a time (~30s–2min per date cold start).
+	runningTime        float64
+	totalSegmentsAdded int64
+	channelID          string
+	horizon            time.Time
 
 	// PTS mapping state for the current stream
 	currentPtsOffset float64
@@ -54,13 +70,13 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 	}
 
 	epgStartUnix := float64(startTime.Unix())
-	if epgStartUnix > sp.planner.globalRunningTime {
-		sp.planner.globalRunningTime = epgStartUnix
+	if epgStartUnix > sp.runningTime {
+		sp.runningTime = epgStartUnix
 	}
 
 	// Initialize the first ad insertion marker if not set yet
 	if sp.lastAdTime == 0 {
-		sp.lastAdTime = sp.planner.globalRunningTime
+		sp.lastAdTime = sp.runningTime
 	}
 
 	return sp.processStreamSegments(streamID)
@@ -106,18 +122,18 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				ptsEnd, _ = strconv.ParseInt(parts[1], 10, 64)
 			}
 		case strings.HasSuffix(line, ".ts"):
-			if sp.planner.isEndOfTimeline(sp.planner.globalRunningTime) {
+			if isEndOfTimeline(sp.horizon, sp.runningTime) {
 				return ErrEndOfTimeline
 			}
 
 			// 1. Check and insert ads right before the video segment (when scheduled)
-			if err := sp.insertAdsIfNeeded(sp.planner.globalRunningTime); err != nil {
+			if err := sp.insertAdsIfNeeded(sp.runningTime); err != nil {
 				return err
 			}
 
-			// Anchor the PTS offset on the current globalRunningTime at the segment start
+			// Anchor the PTS offset on the current runningTime at the segment start
 			if firstSegmentInStream {
-				targetPtsStart := sp.planner.globalRunningTime * 90000.0
+				targetPtsStart := sp.runningTime * 90000.0
 				sp.currentPtsOffset = targetPtsStart - float64(ptsStart)
 				firstSegmentInStream = false
 			}
@@ -132,9 +148,9 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				calculatedDuration = currentDuration
 			}
 
-			// If ads were just inserted, globalRunningTime was pushed forward; resync mediaStart for the video
-			if sp.planner.globalRunningTime > mediaStart {
-				mediaStart = sp.planner.globalRunningTime
+			// If ads were just inserted, runningTime was pushed forward; resync mediaStart for the video
+			if sp.runningTime > mediaStart {
+				mediaStart = sp.runningTime
 				mediaEnd = mediaStart + calculatedDuration
 			}
 
@@ -143,8 +159,8 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				return err
 			}
 
-			// Advance globalRunningTime by the actual video segment
-			sp.planner.globalRunningTime = mediaEnd
+			// Advance runningTime by the actual video segment
+			sp.runningTime = mediaEnd
 		}
 	}
 	return nil
@@ -169,10 +185,10 @@ func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, durati
 	}
 
 	if mediaStart >= (sp.nowUnix - WindowBufferSeconds) {
-		if err := sp.planner.addSegmentToRedis(sp.pipe, sp.ctx, mediaStart, segment); err != nil {
+		if err := sp.addSegment(sp.ctx, mediaStart, segment); err != nil {
 			return err
 		}
-		sp.planner.totalSegmentsAdded++
+		sp.totalSegmentsAdded++
 	}
 
 	return nil
@@ -205,12 +221,12 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 	// the engine needs to render #EXT-X-DATERANGE / splice_insert
 	// payloads. breakDuration is the sum of the pool's individual ad
 	// segment durations (the same pool trimmed to 5 by loadAdSegments).
-	breakStart := sp.planner.globalRunningTime
+	breakStart := sp.runningTime
 	breakDuration := totalBreakDuration(sp.adSegments)
 	breakID := adBreakIDFor(breakStart)
 
 	for _, adSeg := range sp.adSegments {
-		if sp.planner.isEndOfTimeline(sp.planner.globalRunningTime) {
+		if isEndOfTimeline(sp.horizon, sp.runningTime) {
 			return ErrEndOfTimeline
 		}
 
@@ -219,9 +235,9 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		adItem.Sequence = sp.sequenceCounter
 		adItem.Rendition = sp.currentRendition // M1: tag ad with the same rung as the VOD it follows.
 
-		// Map the ad right after the current globalRunningTime
-		adItem.MediaStart = sp.planner.globalRunningTime
-		adItem.MediaEnd = sp.planner.globalRunningTime + adItem.Duration
+		// Map the ad right after the current runningTime
+		adItem.MediaStart = sp.runningTime
+		adItem.MediaEnd = sp.runningTime + adItem.Duration
 		adItem.StartTime = int64(adItem.MediaStart)
 		ptsOffset := sp.setTimelineBase(adItem.MediaStart)
 		adItem.PtsOffset = &ptsOffset
@@ -233,17 +249,69 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		adItem.AdBreakStart = breakStart
 		adItem.AdBreakDuration = breakDuration
 
-		if err := sp.planner.addSegmentToRedis(sp.pipe, sp.ctx, adItem.MediaStart, adItem); err != nil {
+		if err := sp.addSegment(sp.ctx, adItem.MediaStart, adItem); err != nil {
 			return err
 		}
 
-		sp.planner.globalRunningTime = adItem.MediaEnd
-		sp.planner.totalSegmentsAdded++
+		sp.runningTime = adItem.MediaEnd
+		sp.totalSegmentsAdded++
 		sp.totalAdsAdded++
 	}
 
 	// Update the last ad insertion marker so the next insertion triggers after 30 more seconds
-	sp.lastAdTime = sp.planner.globalRunningTime
+	sp.lastAdTime = sp.runningTime
+	return nil
+}
+
+// timelineKey returns the Redis ZSET key for this processor's channel.
+// Per-call (not a shared Planner field) so concurrent channels write to
+// their own keys.
+func (sp *SegmentProcessor) timelineKey() string {
+	return fmt.Sprintf("simlive:timeline:%s", sp.channelID)
+}
+
+// flushBatch flushes the processor's pipeline. Mirrors the old
+// Planner.flushBatch(pipe, ctx).
+func (sp *SegmentProcessor) flushBatch() error {
+	_, err := sp.pipe.Exec(context.Background())
+	return err
+}
+
+// flush is the final step of ProcessEPGToTimeline: it sets the timeline
+// key's TTL and flushes the pipeline. Mirrors the old
+// Planner.flushRedisPipeline.
+func (sp *SegmentProcessor) flush() error {
+	sp.pipe.Expire(context.Background(), sp.timelineKey(), RedisExpiryHours*time.Hour)
+	_, err := sp.pipe.Exec(context.Background())
+	return err
+}
+
+// addSegment writes one timeline member to the channel's Redis ZSET.
+// Mirrors the old Planner.addSegmentToRedis but keys off the processor's
+// per-call channelID/horizon instead of shared Planner state. Batches the
+// pipeline every WindowItemSize segments and flushes immediately for
+// members inside the live window.
+func (sp *SegmentProcessor) addSegment(ctx context.Context, runningTime float64, data models.SegmentItem) error {
+	if isEndOfTimeline(sp.horizon, runningTime) {
+		return ErrEndOfTimeline
+	}
+
+	data.TimeText = utils.TimeNumToText(data.StartTime)
+	bytes, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+
+	sp.pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
+		Score:  runningTime,
+		Member: bytes,
+	})
+
+	if runningTime <= (float64(time.Now().Unix()) + 120) {
+		_ = sp.flushBatch()
+	} else if sp.totalSegmentsAdded > 0 && sp.totalSegmentsAdded%WindowItemSize == 0 {
+		_ = sp.flushBatch()
+	}
 	return nil
 }
 
