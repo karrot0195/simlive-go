@@ -536,11 +536,7 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 	}
 	res := h.db.Model(&models.PlayoutChannel{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"is_active":  false,
-			"status":     "INACTIVE",
-			"updated_at": time.Now(),
-		})
+		Delete(&models.PlayoutChannel{})
 	if res.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete channel"})
 		return
