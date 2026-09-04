@@ -1,0 +1,37 @@
+[Unit]
+Description=SimLive API Service
+After=network.target simlive-planner.service simlive-engines.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/simlive-go
+ExecStart=/root/simlive-go/cmd/api
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/simlive-go/config/.env
+Environment=LOG_ROTATE_DAYS=3
+
+# Log rotation configuration
+Environment=LOG_PATH=/var/log/simlive/
+Environment=LOG_FILE=simlive-api.log
+Environment=LOG_MAX_SIZE=100M
+Environment=LOG_MAX_FILES=10
+Environment=LOG_MAX_AGE=3d
+
+# Application-specific settings
+Environment=ENABLE_CLEAN_UP=true
+Environment=PLANNER_INTERVAL=5m
+Environment=PLANNER_WORKERS=4
+Environment=MAX_PREPARE_RETRIES=3
+Environment=PREPARE_RETRY_BASE_MS=500
+Environment=PREPARE_RETRY_MAX_MS=8000
+Environment=RETENTION_SECONDS=7200
+Environment=LOOKAHEAD_SECONDS=7200
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

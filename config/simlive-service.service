@@ -1,0 +1,57 @@
+[Unit]
+Description=SimLive Service with Environment Config and Log Rotation
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/simlive-go
+ExecStart=/root/simlive-go/cmd/api
+Restart=always
+RestartSec=10
+EnvironmentFile=/root/simlive-go/config/.env
+Environment=LOG_ROTATE_DAYS=3
+
+# Core environment variables
+Environment=REDIS_ADDR=redis:6379
+Environment=DB_HOST=postgres
+Environment=DB_USER=postgres
+Environment=DB_PASSWORD=postgres
+Environment=DB_NAME=simlive
+Environment=DB_PORT=5432
+Environment=ESPX_URL=http://localhost:8080/api/channels/esp
+Environment=TMP_DIR=/root/simlive-go/outputs
+Environment=SIMLIVE_QUALITY=360p,720p,1080p
+Environment=SIMLIVE_RENDITIONS=360p,720p,1080p
+Environment=SIMLIVE_VOD_RENDITION=360p
+Environment=SIMLIVE_ADS_RENDITION=360p
+Environment=MAX_WORKERS=50
+Environment=SIMLIVE_KEEP_BEHIND=5
+Environment=SIMLIVE_DOWNLOAD_AHEAD=5
+
+# Log rotation configuration
+Environment=LOG_PATH=/var/log/simlive/
+Environment=LOG_FILE=simlive-api.log
+Environment=LOG_MAX_SIZE=100M
+Environment=LOG_MAX_FILES=10
+Environment=LOG_MAX_AGE=3d
+
+# Application-specific settings
+Environment=ENABLE_CLEAN_UP=false
+Environment=PLANNER_INTERVAL=5m
+Environment=PLANNER_WORKERS=4
+Environment=MAX_PREPARE_RETRIES=3
+Environment=PREPARE_RETRY_BASE_MS=500
+Environment=PREPARE_RETRY_MAX_MS=8000
+Environment=RETENTION_SECONDS=7200
+Environment=LOOKAHEAD_SECONDS=7200
+
+StandardOutput=journal
+StandardError=journal
+
+# Log rotation script
+ExecStartPost=/root/simlive-go/config/rotate_logs.sh
+
+[Install]
+WantedBy=multi-user.target
