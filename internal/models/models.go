@@ -4,6 +4,23 @@ import (
 	"time"
 )
 
+// SCTE-35 segmentation_type_id values per ANSI/SCTE 35 §10.2.3
+// (the seg_type_id field inside the segmentation_descriptor).
+// Mirrors the constants in tmp/PrepareSimulatedLive.ts and the
+// planner's internal copies in internal/planner/segment_processor.go.
+// The planner stamps these on every SpliceInsert; the engine
+// reads them off the model and translates to a TYPE= attribute
+// on the emitted #EXT-X-SCTE35 tag (and into the segmentation
+// descriptor when the bitstream-side injector is added later).
+//
+// See docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
+// §3.1.1.
+const (
+	SegTypePlacementOpportunityStart = 0x30 // pre-roll (8s/4s warning)
+	SegTypeAdvertisementStart        = 0x34 // slice point / cue-out
+	SegTypeAdvertisementEnd          = 0x35 // cue-in
+)
+
 // PlayoutChannel - PostgreSQL Single Table.
 //
 // Status lifecycle (PREPARE → LIVE → INACTIVE):
@@ -51,6 +68,16 @@ type ESPXChannelListItem struct {
 	ContentTimezone string `json:"content_timezone"`
 }
 
+type SpliceInsert struct {
+	Type               string  `json:"type"`
+	EventID            int64   `json:"eventId"`
+	SpliceTimePTS      int64   `json:"spliceTimePts"`
+	SpliceTimeSeconds  float64 `json:"spliceTimeSeconds"`
+	Duration           float64 `json:"duration"`
+	UniqueProgramID    int64   `json:"uniqueProgramId"`
+	SegmentationTypeID int     `json:"segmentationTypeId"`
+}
+
 // SegmentItem - Structure stored in the Redis Sorted Set
 type SegmentItem struct {
 	Sequence    int64   `json:"sequence"`
@@ -58,7 +85,7 @@ type SegmentItem struct {
 	Duration    float64 `json:"duration"`   // Used for #EXTINF
 	StartTime   int64   `json:"start_time"` // Kept for display/debug compatibility (Unix timestamp)
 	TimeText    string  `json:"time_text"`  // HH:mm
-
+	RunningTime float64 `json:"running_time"`
 	// --- PTS TIMELINE ADDITIONS ---
 	PtsStart   int64   `json:"pts_start"`   // Raw value from #EXT-X-PTS-RANGE
 	PtsEnd     int64   `json:"pts_end"`     // Raw value from #EXT-X-PTS-RANGE
@@ -108,6 +135,9 @@ type SegmentItem struct {
 	AdBreakID       string  `json:"ad_break_id,omitempty"`
 	AdBreakStart    float64 `json:"ad_break_start,omitempty"`
 	AdBreakDuration float64 `json:"ad_break_duration,omitempty"`
+
+	// SCTE35
+	SliceInserts []SpliceInsert `json:"splice_inserts,omitempty"`
 }
 
 // Response structs for ESPX APIs

@@ -52,8 +52,8 @@ func TestBuildMasterPlaylist_Format(t *testing.T) {
 	if !strings.Contains(out, "RESOLUTION=640x360") {
 		t.Fatalf("missing RESOLUTION:\n%s", out)
 	}
-	if !strings.Contains(out, "playlist_360p.m3u8\n") {
-		t.Fatalf("missing media URI (M1.5 uses playlist_<rend>.m3u8):\n%s", out)
+	if !strings.Contains(out, "360p/playlist.m3u8\n") {
+		t.Fatalf("missing media URI (M2 uses {rend}/playlist.m3u8):\n%s", out)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestBuildMasterPlaylist_ThreeRungs(t *testing.T) {
 	uris := pickRenditionURIs(metas)
 	out := buildMasterPlaylist(metas, uris)
 
-	wantURIs := []string{"playlist_360p.m3u8\n", "playlist_720p.m3u8\n", "playlist_1080p.m3u8\n"}
+	wantURIs := []string{"360p/playlist.m3u8\n", "720p/playlist.m3u8\n", "1080p/playlist.m3u8\n"}
 	for _, want := range wantURIs {
 		if !strings.Contains(out, want) {
 			t.Fatalf("master missing rung URI %q in:\n%s", want, out)
@@ -103,13 +103,13 @@ func TestBuildMasterPlaylist_SkipsIncompleteRungs(t *testing.T) {
 	uris := pickRenditionURIs(metas)
 	out := buildMasterPlaylist(metas, uris)
 
-	if !strings.Contains(out, "playlist_360p.m3u8") {
+	if !strings.Contains(out, "360p/playlist.m3u8") {
 		t.Fatalf("360p rung missing:\n%s", out)
 	}
-	if strings.Contains(out, "playlist_720p.m3u8") {
+	if strings.Contains(out, "720p/playlist.m3u8") {
 		t.Fatalf("720p rung should be skipped (width=0):\n%s", out)
 	}
-	if strings.Contains(out, "playlist_1080p.m3u8") {
+	if strings.Contains(out, "1080p/playlist.m3u8") {
 		t.Fatalf("1080p rung should be skipped (bandwidth=0):\n%s", out)
 	}
 }
@@ -123,7 +123,7 @@ func TestBuildMasterPlaylist_RefsRelativePath(t *testing.T) {
 	}
 	uris := pickRenditionURIs(metas)
 	out := buildMasterPlaylist(metas, uris)
-	for _, want := range []string{"playlist_360p.m3u8\n", "playlist_720p.m3u8\n"} {
+	for _, want := range []string{"360p/playlist.m3u8\n", "720p/playlist.m3u8\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing relative URI %q in:\n%s", want, out)
 		}
@@ -203,10 +203,9 @@ func TestGroupSegsByRendition_MultiRung(t *testing.T) {
 func TestPickRenditionURIs(t *testing.T) {
 	metas := []RenditionMeta{{Rendition: "360p"}, {Rendition: ""}}
 	got := pickRenditionURIs(metas)
-	// M1.5: per-rung media playlist filenames are "playlist_<rend>.m3u8"
-	// (flat, not nested under {rend}/). Empty rendition rescues to
-	// DefaultRendition ("360p").
-	want := []string{"playlist_360p.m3u8", "playlist_360p.m3u8"}
+	// M2: per-rung media playlist URIs are "{rend}/playlist.m3u8" (nested
+	// under the rung subdir). Empty rendition rescues to DefaultRendition.
+	want := []string{"360p/playlist.m3u8", "360p/playlist.m3u8"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("pickRenditionURIs[%d] = %q, want %q", i, got[i], want[i])
@@ -215,22 +214,28 @@ func TestPickRenditionURIs(t *testing.T) {
 }
 
 func TestRungPlaylistFilename(t *testing.T) {
-	// M1.5: rung media playlist filenames live in the channel root.
-	if got := rungPlaylistFilename("360p"); got != "playlist_360p.m3u8" {
-		t.Fatalf("rungPlaylistFilename(360p) = %q, want playlist_360p.m3u8", got)
+	// M2: rung media playlist filename is always "playlist.m3u8" (it lives
+	// inside the rung subdir).
+	if got := rungPlaylistFilename("360p"); got != "playlist.m3u8" {
+		t.Fatalf("rungPlaylistFilename(360p) = %q, want playlist.m3u8", got)
 	}
-	if got := rungPlaylistFilename(""); got != "playlist_360p.m3u8" {
-		t.Fatalf("rungPlaylistFilename(\"\") = %q, want playlist_360p.m3u8 (rescue)", got)
+	if got := rungPlaylistFilename(""); got != "playlist.m3u8" {
+		t.Fatalf("rungPlaylistFilename(\"\") = %q, want playlist.m3u8", got)
 	}
 }
 
 func TestChannelDirAndRedisKeys(t *testing.T) {
-	// M1.5: no per-rung subdirs -- single channelDir for both segs and
-	// per-rung media playlists.
+	// M2: channelDir is the channel root; rungDir is the per-rung subdir.
 	if got := channelDir("/tmp/out", "ch1"); got != "/tmp/out/ch1" {
 		t.Fatalf("channelDir = %q", got)
 	}
-	// Per-rung Redis key changed shape to "simlive:hls:{ch}:rendition:{rend}".
+	if got := rungDir("/tmp/out", "ch1", "360p"); got != "/tmp/out/ch1/360p" {
+		t.Fatalf("rungDir = %q", got)
+	}
+	if got := rungDir("/tmp/out", "ch1", ""); got != "/tmp/out/ch1/360p" {
+		t.Fatalf("rungDir(empty) = %q, want rescue to 360p", got)
+	}
+	// Per-rung Redis key shape "simlive:hls:{ch}:rendition:{rend}".
 	if got := rungMediaRedisKey("ch1", "360p"); got != "simlive:hls:ch1:rendition:360p" {
 		t.Fatalf("rungMediaRedisKey = %q", got)
 	}
@@ -260,59 +265,49 @@ func TestActiveLadder_HasThreeRungs(t *testing.T) {
 	}
 }
 
-// --- TestSyncLocalCacheDir_SharedChannelRoot --------------------------------
+// --- TestSyncLocalCacheDir_PerRungDir ---------------------------------------
 //
-// M1.5: the engine keeps ONE flat seg_N.ts set per channel (shared cache).
-// syncLocalCacheDir is called on the channel root, not a per-rung subdir.
-// All rung playlists reference these same files.
-func TestSyncLocalCacheDir_SharedChannelRoot(t *testing.T) {
+// M2: each rung has its OWN seg_N.ts set in its own subdir. syncLocalCacheDir
+// is called on a rung subdir and GCs stale .ts/.pts files there. The master
+// playlist (channel root) and other rung subdirs are untouched.
+func TestSyncLocalCacheDir_PerRungDir(t *testing.T) {
 	tmp := t.TempDir()
-	chRoot := filepath.Join(tmp, "ch1")
-	if err := os.MkdirAll(chRoot, 0755); err != nil {
+	rDir := filepath.Join(tmp, "ch1", "360p")
+	if err := os.MkdirAll(rDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 
 	// Active window: only seg_1.ts. Other .ts files + their markers should
-	// be removed. Per-rung media playlists in the same dir must be
-	// preserved (they are not .ts and not .ts.pts).
-	if err := os.WriteFile(filepath.Join(chRoot, "seg_1.ts"), []byte("a"), 0644); err != nil {
+	// be removed. The rung's media playlist must be preserved (not .ts).
+	if err := os.WriteFile(filepath.Join(rDir, "seg_1.ts"), []byte("a"), 0644); err != nil {
 		t.Fatalf("write seg_1.ts: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(chRoot, "seg_2.ts"), []byte("b"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(rDir, "seg_2.ts"), []byte("b"), 0644); err != nil {
 		t.Fatalf("write seg_2.ts: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(chRoot, "seg_2.ts.pts"), []byte(""), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(rDir, "seg_2.ts.pts"), []byte(""), 0644); err != nil {
 		t.Fatalf("write seg_2.ts.pts: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(chRoot, "playlist.m3u8"), []byte("master"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(rDir, "playlist.m3u8"), []byte("rung360p"), 0644); err != nil {
 		t.Fatalf("write playlist.m3u8: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(chRoot, "playlist_360p.m3u8"), []byte("rung360p"), 0644); err != nil {
-		t.Fatalf("write playlist_360p.m3u8: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(chRoot, "playlist_720p.m3u8"), []byte("rung720p"), 0644); err != nil {
-		t.Fatalf("write playlist_720p.m3u8: %v", err)
 	}
 
 	activeMap := map[string]bool{"seg_1.ts": true}
-	syncLocalCacheDir(chRoot, activeMap)
+	syncLocalCacheDir(rDir, activeMap)
 
 	// seg_1.ts must remain; seg_2.ts + its marker must be gone.
-	if _, err := os.Stat(filepath.Join(chRoot, "seg_1.ts")); err != nil {
+	if _, err := os.Stat(filepath.Join(rDir, "seg_1.ts")); err != nil {
 		t.Fatalf("seg_1.ts was removed: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(chRoot, "seg_2.ts")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(rDir, "seg_2.ts")); !os.IsNotExist(err) {
 		t.Fatalf("seg_2.ts should be removed, stat err = %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(chRoot, "seg_2.ts.pts")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(rDir, "seg_2.ts.pts")); !os.IsNotExist(err) {
 		t.Fatalf("seg_2.ts.pts should be removed, stat err = %v", err)
 	}
-	// Master + per-rung media playlists must be preserved (they are not
-	// .ts or .ts.pts and are part of the HLS surface).
-	for _, p := range []string{"playlist.m3u8", "playlist_360p.m3u8", "playlist_720p.m3u8"} {
-		if _, err := os.Stat(filepath.Join(chRoot, p)); err != nil {
-			t.Fatalf("%s was removed by syncLocalCacheDir: %v", p, err)
-		}
+	// The rung's media playlist must be preserved (not .ts / .ts.pts).
+	if _, err := os.Stat(filepath.Join(rDir, "playlist.m3u8")); err != nil {
+		t.Fatalf("playlist.m3u8 was removed by syncLocalCacheDir: %v", err)
 	}
 }
 
@@ -365,9 +360,9 @@ func TestGenerateMasterPlaylist_ThreeRungs(t *testing.T) {
 		"BANDWIDTH=800000,RESOLUTION=640x360",
 		"BANDWIDTH=2500000,RESOLUTION=1280x720",
 		"BANDWIDTH=5000000,RESOLUTION=1920x1080",
-		"playlist_360p.m3u8\n",
-		"playlist_720p.m3u8\n",
-		"playlist_1080p.m3u8\n",
+		"360p/playlist.m3u8\n",
+		"720p/playlist.m3u8\n",
+		"1080p/playlist.m3u8\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("master missing %q in:\n%s", want, out)

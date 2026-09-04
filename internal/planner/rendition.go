@@ -40,7 +40,7 @@ type RenditionMeta struct {
 // active rung in M1's default config (360p). Mirrors engine.DefaultRendition.
 const DefaultRendition = "360p"
 
-// activeRenditionsOnce guards the "WARN + use first" log line so it fires
+// activeRenditionsOnce guards the parse of SIMLIVE_RENDITIONS so it runs
 // once per process, not per tick × per channel.
 var (
 	activeRenditionsOnce sync.Once
@@ -61,22 +61,22 @@ var (
 )
 
 // activeRenditions reads SIMLIVE_RENDITIONS (comma list) and returns the
-// list of active rung labels for M1. Semantics:
-//   - Unset / empty -> single rung derived from SIMLIVE_QUALITY (fallback "360p").
-//   - "360p,720p"  -> WARN + use ["360p"] (M1 only allows exactly 1 rung).
+// list of active rung labels for M2. Semantics:
+//   - Unset / empty -> the full ladder ["360p", "720p", "1080p"].
+//   - "360p,720p"   -> ["360p", "720p"] (all listed rungs, order preserved).
 //   - " 720p "      -> ["720p"] (whitespace trimmed, empty entries dropped).
+//   - "360p,720p,1080p" -> all three (the default full ladder).
 //
-// The parsed result is cached behind a sync.Once so the WARN log fires once.
+// The parsed result is cached behind a sync.Once so the parse runs once.
 func (p *Planner) activeRenditions() []string {
 	activeRenditionsOnce.Do(func() {
 		raw := utils.GetEnv("SIMLIVE_RENDITIONS", "")
 		if raw == "" {
-			tier, _ := p.resolveQualityTier()
-			label := tier.label
-			if label == "" {
-				label = DefaultRendition
-			}
-			activeRenditionsList = []string{label}
+			// Default to the full ladder so the master advertises all 3
+			// rungs out of the box. SIMLIVE_QUALITY no longer narrows the
+			// ladder (it only influenced the single-rung M1 default); the
+			// engine serves all 3 rungs from their own per-rung segments.
+			activeRenditionsList = []string{"360p", "720p", "1080p"}
 			return
 		}
 		parts := strings.Split(raw, ",")
@@ -89,14 +89,10 @@ func (p *Planner) activeRenditions() []string {
 			cleaned = append(cleaned, part)
 		}
 		if len(cleaned) == 0 {
-			activeRenditionsList = []string{DefaultRendition}
+			activeRenditionsList = []string{"360p", "720p", "1080p"}
 			return
 		}
-		if len(cleaned) > 1 {
-			log.Printf("[Planner] WARN: SIMLIVE_RENDITIONS=%q has %d rungs; M1 only supports 1, using %q",
-				raw, len(cleaned), cleaned[0])
-		}
-		activeRenditionsList = cleaned[:1]
+		activeRenditionsList = cleaned
 	})
 	return activeRenditionsList
 }
@@ -205,26 +201,22 @@ func (p *Planner) probeAnyCachedBitrate() int64 {
 	return bw
 }
 
-// writeRenditionMetadata persists the active rung(s) as JSON to
-// simlive:renditions:{channelID} with a 24h TTL. M1 writes a single entry
-// derived from the active ladder rung + (re-)probed bandwidth. Called from
-// ProcessEPGToTimeline as the last step before the pipeline flush. Best-effort
-// (logs and continues on failure -- the engine has a fallback default).
 // writeRenditionMetadata persists the FULL ladder (360p / 720p / 1080p) as
 // JSON to simlive:renditions:{channelID} with a 24h TTL. The engine reads it
-// to build the master playlist. M1.5: all 3 rungs are always written so the
+// to build the master playlist. M2: all 3 rungs are always written so the
 // master advertises the full ladder regardless of SIMLIVE_QUALITY. The
-// engine serves the SAME seg_N.ts files for all rungs (shared segment cache);
-// the per-rung metadata is purely informational (bandwidth, resolution, label).
+// engine downloads per-rung segments (each rung's timeline members carry
+// their own StoragePath); the per-rung metadata here is the informational
+// ladder (bandwidth, resolution, label) the master STREAM-INF lines need.
 func (p *Planner) writeRenditionMetadata(ctx context.Context, channelID string) error {
 	if p.rdb == nil {
 		return nil
 	}
 
 	// Build one entry per known tier. Pull the VOD/ads dirs from the per-tier
-	// fallback map; the per-stream rendCache is irrelevant here because the
-	// engine downloads ONE set of segments (from the active tier's VOD dir)
-	// and shares them across all 3 playlists.
+	// fallback map (the standard L_0/L2, L_1/L1, L_2/L0 mapping). The engine
+	// downloads from each member's StoragePath, so these dirs are
+	// informational only (used for the master STREAM-INF lines).
 	ladder := []RenditionMeta{}
 	for _, tierLabel := range []string{"360p", "720p", "1080p"} {
 		tier := qualityTierMap[tierLabel]
@@ -280,25 +272,34 @@ func (p *Planner) hasLegacyTimeline(ctx context.Context, channelID string) (bool
 	if p.rdb == nil {
 		return false, nil
 	}
-	key := fmt.Sprintf("simlive:timeline:%s", channelID)
-	items, err := p.rdb.ZRange(ctx, key, 0, 0).Result()
-	if err != nil {
-		return false, err
+	// M2: check every active rung's ZSET. A legacy (pre-M1) timeline lives
+	// under the flat simlive:timeline:{ch} key; the per-rung keys are new.
+	// If ANY rung key holds a member without a rendition tag, treat the
+	// channel as legacy so the caller flushes + repopulates.
+	for _, rung := range p.activeRenditions() {
+		key := timelineKeyFor(channelID, rung)
+		items, err := p.rdb.ZRange(ctx, key, 0, 0).Result()
+		if err != nil {
+			return false, err
+		}
+		if len(items) == 0 {
+			continue
+		}
+		// Probe the first member for the rendition field. Use a minimal struct
+		// instead of models.SegmentItem so we don't drag the full model import
+		// (also makes the field-check explicit).
+		var probe struct {
+			Rendition string `json:"rendition"`
+		}
+		if err := json.Unmarshal([]byte(items[0]), &probe); err != nil {
+			// Unparseable -- treat as legacy so we don't serve garbage.
+			return true, nil
+		}
+		if probe.Rendition == "" {
+			return true, nil
+		}
 	}
-	if len(items) == 0 {
-		return false, nil
-	}
-	// Probe the first member for the rendition field. Use a minimal struct
-	// instead of models.SegmentItem so we don't drag the full model import
-	// (also makes the field-check explicit).
-	var probe struct {
-		Rendition string `json:"rendition"`
-	}
-	if err := json.Unmarshal([]byte(items[0]), &probe); err != nil {
-		// Unparseable -- treat as legacy so we don't serve garbage.
-		return true, nil
-	}
-	return probe.Rendition == "", nil
+	return false, nil
 }
 
 // --- small helpers shared by probeBitrate / probeResolution ---------------

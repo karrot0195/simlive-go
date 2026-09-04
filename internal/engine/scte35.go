@@ -204,12 +204,29 @@ func buildCueInLine(breakStart, durSec float64) string {
 // segment not in the playlist.
 //
 // Tag format mirrors tmp/SCTE35Utils.ts:
+//
 //   - CUE-OUT (VOD -> ad) emitted BEFORE the first ad EXTINF.
+//
 //   - CUE-IN  (ad -> VOD) emitted BEFORE the first VOD EXTINF after
 //     the break, reusing the break's id, start, and duration.
+//
 //   - DURATION is always UNQUOTED and TRAILING (threefive TagParser
 //     parses a line as quoted-vs-unquoted by its last char; trailing
 //     unquoted is what works -- see tmp/SCTE35Utils.ts#L51-L59).
+//
+//   - Per-segment #EXT-X-SCTE35 lines emitted BEFORE the segment's
+//     #EXTINF (and AFTER any DATERANGE the edge detection already
+//     produced) for every entry in seg.SliceInserts. The format
+//     is:
+//
+//     #EXT-X-SCTE35:CUE="<base64>",TYPE=<segType>,ID="<adbreak-id>"
+//
+//     See buildSpliceInsertLine for the rationale. These carry
+//     the pre-roll (0x30), slice-point (0x34), and cue-in (0x35)
+//     splice events stamped by the planner's
+//     insertAdsIfNeeded. See
+//     docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
+//     §3.2.
 func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (string, error) {
 	if len(segments) == 0 {
 		return "", fmt.Errorf("buildMediaPlaylistBody: empty segments")
@@ -250,9 +267,72 @@ func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (
 				body.WriteString("\n")
 			}
 		}
+		// Per-segment #EXT-X-SCTE35 lines (NEW). The planner
+		// stamps 1-2 SpliceInserts on each segment that participates
+		// in an ad break (pre-roll on VOD at breakStart-8/-4;
+		// slice-point on the first ad; cue-in on the last ad).
+		// Emit them BEFORE the segment's #EXTINF, AFTER any
+		// DATERANGE the edge detection above already produced, so
+		// the DATERANGE remains the lead marker for the VOD<>ad
+		// edge and the per-segment inserts follow the segment they
+		// are attached to. Order within the slice is preserved
+		// (planner writes them in chronological PTS order).
+		for _, ev := range seg.SliceInserts {
+			body.WriteString(buildSpliceInsertLine(seg, ev))
+			body.WriteString("\n")
+		}
 		body.WriteString(fmt.Sprintf("#EXTINF:%.3f,\n", seg.Duration))
 		body.WriteString(fmt.Sprintf("seg_%d.ts\n", seg.Sequence))
 	}
 
 	return body.String(), nil
+}
+
+// buildSpliceInsertLine returns the per-segment #EXT-X-SCTE35 tag
+// for one SpliceInsert event stamped on a SegmentItem. The wire
+// format is:
+//
+//	#EXT-X-SCTE35:CUE="<base64>",TYPE=<segType>,ID="<adbreak-id>"
+//
+// where:
+//   - <base64> is the SpliceInfoSection from buildSpliceInsert
+//     (same shape as the CUE payload in buildCueOutLine /
+//     buildCueInLine: SpliceImmediateFlag=true,
+//     OutOfNetworkIndicator=out, BreakDuration if out).
+//   - <segType> is the decimal segmentation_type_id (0x30/0x34/0x35)
+//     so the player can tell a pre-roll from a slice-point from a
+//     cue-in without decoding the base64.
+//   - <adbreak-id> is the matching "adbreak-<int64>" string so the
+//     player can correlate the per-segment insert with the
+//     CUE-OUT/CUE-IN DATERANGE summary tags on the VOD<>ad edges.
+//
+// ID resolution: prefers seg.AdBreakID (the engine's stable break
+// string) so the per-segment insert and the CUE-OUT/CUE-IN agree
+// byte-for-byte on the same break. Falls back to
+// "adbreak-<int64(SpliceTimeSeconds)>" only if the segment carries
+// no AdBreakID (defensive -- shouldn't happen in practice because
+// the planner stamps both fields together in insertAdsIfNeeded).
+//
+// On buildSpliceInsert error the CUE= attribute is dropped and the
+// line is emitted with only TYPE+ID, so the rest of the playlist
+// survives. Mirrors the failure handling of buildCueOutLine
+// (log + degrade, never panic).
+//
+// See docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
+// §3.2.1 for the design rationale.
+func buildSpliceInsertLine(seg models.SegmentItem, ev models.SpliceInsert) string {
+	id := seg.AdBreakID
+	if id == "" {
+		// Fallback: derive the same adbreak-<n> string the planner's
+		// adBreakIDFor would have produced for this event's PTS.
+		id = fmt.Sprintf("adbreak-%d", int64(ev.SpliceTimeSeconds))
+	}
+	out := ev.Type == "out"
+	b64, err := buildSpliceInsert(uint32(ev.EventID), ev.Duration, out)
+	if err != nil {
+		log.Printf("[Engine] per-segment SCTE-35 encode failed (id=%s, type=0x%x): %v -- emitting #EXT-X-SCTE35 without CUE",
+			id, ev.SegmentationTypeID, err)
+		return fmt.Sprintf(`#EXT-X-SCTE35:TYPE=%d,ID="%s"`, ev.SegmentationTypeID, id)
+	}
+	return fmt.Sprintf(`#EXT-X-SCTE35:CUE="%s",TYPE=%d,ID="%s"`, b64, ev.SegmentationTypeID, id)
 }

@@ -1,14 +1,11 @@
 package planner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -41,34 +38,29 @@ func redisReachableForRendition(addr string) bool {
 	return true
 }
 
-// captureLog redirects the default logger to a buffer for one test and
-// restores it via t.Cleanup. Used by TestActiveRenditions_WarnsOnMultipleRungs
-// to assert the WARN log line fires exactly once.
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	var buf bytes.Buffer
-	prev := log.Writer()
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(prev) })
-	return &buf
-}
-
 // ctxForRendition returns a 5s-timeout context for redis ops in this file.
 func ctxForRendition() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
-// --- TestActiveRenditions_DefaultsToSIMLIVEQUALITY ---------------------------
+// --- TestActiveRenditions_DefaultsToFullLadder -------------------------------
 
-func TestActiveRenditions_DefaultsToSIMLIVEQUALITY(t *testing.T) {
+func TestActiveRenditions_DefaultsToFullLadder(t *testing.T) {
 	resetActiveRenditionsCache()
 	t.Setenv("SIMLIVE_RENDITIONS", "")
 	t.Setenv("SIMLIVE_QUALITY", "720p")
 
 	p := &Planner{}
 	got := p.activeRenditions()
-	if len(got) != 1 || got[0] != "720p" {
-		t.Fatalf("activeRenditions() = %v, want [720p]", got)
+	// M2: unset SIMLIVE_RENDITIONS -> full ladder, regardless of SIMLIVE_QUALITY.
+	want := []string{"360p", "720p", "1080p"}
+	if len(got) != len(want) {
+		t.Fatalf("activeRenditions() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("activeRenditions() = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -88,38 +80,35 @@ func TestActiveRenditions_ParsesCommaList(t *testing.T) {
 	resetActiveRenditionsCache()
 	t.Setenv("SIMLIVE_RENDITIONS", ",360p,,720p,,")
 	got = p.activeRenditions()
-	// M1: even though "360p,720p" has 2 entries, the WARN+use-first path
-	// must return ["360p"]. Empty entries must be dropped from the input parse.
-	if len(got) != 1 || got[0] != "360p" {
-		t.Fatalf("activeRenditions() cleaned = %v, want [360p]", got)
+	// M2: all listed rungs are returned in order; empty entries dropped.
+	want := []string{"360p", "720p"}
+	if len(got) != len(want) {
+		t.Fatalf("activeRenditions() cleaned = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("activeRenditions() cleaned = %v, want %v", got, want)
+		}
 	}
 }
 
-// --- TestActiveRenditions_WarnsOnMultipleRungs -------------------------------
+// --- TestActiveRenditions_ReturnsAllListedRungs -------------------------------
 
-func TestActiveRenditions_WarnsOnMultipleRungs(t *testing.T) {
+func TestActiveRenditions_ReturnsAllListedRungs(t *testing.T) {
 	resetActiveRenditionsCache()
-	t.Setenv("SIMLIVE_RENDITIONS", "360p,720p")
+	t.Setenv("SIMLIVE_RENDITIONS", "360p,720p,1080p")
 	t.Setenv("SIMLIVE_QUALITY", "")
 
-	buf := captureLog(t)
 	p := &Planner{}
-
 	got := p.activeRenditions()
-	if len(got) != 1 || got[0] != "360p" {
-		t.Fatalf("activeRenditions() = %v, want [360p] (WARN + use first)", got)
+	want := []string{"360p", "720p", "1080p"}
+	if len(got) != len(want) {
+		t.Fatalf("activeRenditions() = %v, want %v", got, want)
 	}
-	first := buf.String()
-	if !strings.Contains(first, "WARN") || !strings.Contains(first, "SIMLIVE_RENDITIONS") {
-		t.Fatalf("expected WARN line on first call, got: %q", first)
-	}
-
-	// Second call must NOT emit another WARN (sync.Once guard).
-	_ = p.activeRenditions()
-	second := buf.String()
-	// Count WARN occurrences: the first one already has 1; second must still be 1.
-	if count := strings.Count(second, "SIMLIVE_RENDITIONS="); count != 1 {
-		t.Fatalf("WARN fired %d times across two calls; want exactly 1", count)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("activeRenditions() = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -294,16 +283,21 @@ func TestHasLegacyTimeline_ReportsAndSkips(t *testing.T) {
 	}
 
 	chID := fmt.Sprintf("test-legacy-timeline-%d", time.Now().UnixNano())
-	key := fmt.Sprintf("simlive:timeline:%s", chID)
+	// M2: hasLegacyTimeline checks the per-rung keys. Use the default ladder.
+	keys := []string{
+		timelineKeyFor(chID, "360p"),
+		timelineKeyFor(chID, "720p"),
+		timelineKeyFor(chID, "1080p"),
+	}
 	t.Cleanup(func() {
 		ctx2, cancel2 := ctxForRendition()
 		defer cancel2()
-		rdb.Del(ctx2, key)
+		rdb.Del(ctx2, keys...)
 	})
 
 	p := &Planner{rdb: rdb}
 
-	// 1. Cold start: empty ZSET -> has=false (don't flush empty).
+	// 1. Cold start: empty ZSETs -> has=false (don't flush empty).
 	has, err := p.hasLegacyTimeline(ctx, chID)
 	if err != nil {
 		t.Fatalf("hasLegacyTimeline(empty): %v", err)
@@ -312,9 +306,9 @@ func TestHasLegacyTimeline_ReportsAndSkips(t *testing.T) {
 		t.Fatalf("hasLegacyTimeline(empty) = true, want false")
 	}
 
-	// 2. Seed a legacy member (no rendition field).
+	// 2. Seed a legacy member (no rendition field) in the 360p rung.
 	legacy := []byte(`{"sequence":1,"storage_path":"x","duration":4,"media_start":100,"media_end":104}`)
-	if err := rdb.ZAdd(ctx, key, redis.Z{
+	if err := rdb.ZAdd(ctx, keys[0], redis.Z{
 		Score: 100, Member: string(legacy),
 	}).Err(); err != nil {
 		t.Fatalf("ZAdd legacy: %v", err)
@@ -327,12 +321,12 @@ func TestHasLegacyTimeline_ReportsAndSkips(t *testing.T) {
 		t.Fatalf("hasLegacyTimeline(legacy) = false, want true")
 	}
 
-	// 3. Seed a tagged member -> has=false (already M1-ready).
-	if err := rdb.Del(ctx, key).Err(); err != nil {
+	// 3. Seed a tagged member -> has=false (already M2-ready).
+	if err := rdb.Del(ctx, keys...).Err(); err != nil {
 		t.Fatalf("DEL: %v", err)
 	}
 	tagged := []byte(`{"sequence":2,"storage_path":"y","duration":4,"media_start":200,"media_end":204,"rendition":"360p"}`)
-	if err := rdb.ZAdd(ctx, key, redis.Z{
+	if err := rdb.ZAdd(ctx, keys[0], redis.Z{
 		Score: 200, Member: string(tagged),
 	}).Err(); err != nil {
 		t.Fatalf("ZAdd tagged: %v", err)

@@ -1,10 +1,13 @@
 package engine
 
 import (
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/Comcast/scte35-go/pkg/scte35"
+
+	"simlive/internal/models"
 )
 
 // TestBuildSpliceInsert_Out: CUE-OUT produces an OON=true splice_insert
@@ -249,17 +252,17 @@ func TestFormatBreakDuration_PrecisionCappedAt3(t *testing.T) {
 		in   float64
 		want string
 	}{
-		{30.0, "30"},                          // trailing zeros stripped
-		{12.345, "12.345"},                    // 3 decimals preserved
-		{20.02, "20.02"},                      // 2 decimals preserved
-		{20.019999999999996, "20.02"},         // FP noise rounded to 3
-		{20.019, "20.019"},                    // exact 3-decimal input
-		{20.0190001, "20.019"},                // near-3-decimal rounded down
-		{20.0199999, "20.02"},                 // near-3-decimal rounded up
-		{0.001, "0.001"},                      // smallest non-zero
-		{0, "0"},                              // zero
-		{1.0 / 3.0, "0.333"},                  // repeating decimal rounded
-		{0.1 + 0.2, "0.3"},                    // classic FP error: 0.30000000000000004 -> 0.3
+		{30.0, "30"},                  // trailing zeros stripped
+		{12.345, "12.345"},            // 3 decimals preserved
+		{20.02, "20.02"},              // 2 decimals preserved
+		{20.019999999999996, "20.02"}, // FP noise rounded to 3
+		{20.019, "20.019"},            // exact 3-decimal input
+		{20.0190001, "20.019"},        // near-3-decimal rounded down
+		{20.0199999, "20.02"},         // near-3-decimal rounded up
+		{0.001, "0.001"},              // smallest non-zero
+		{0, "0"},                      // zero
+		{1.0 / 3.0, "0.333"},          // repeating decimal rounded
+		{0.1 + 0.2, "0.3"},            // classic FP error: 0.30000000000000004 -> 0.3
 	}
 	for _, tc := range cases {
 		got := formatBreakDuration(tc.in)
@@ -294,5 +297,148 @@ func TestFormatBreakDuration_NeverMoreThan3Decimals(t *testing.T) {
 			t.Fatalf("formatBreakDuration(%v) = %q has %d decimals (>3); precision cap broken",
 				in, out, len(out)-dot-1)
 		}
+	}
+}
+
+// --- Per-segment #EXT-X-SCTE35 (pre-roll / slice-point / cue-in) -----
+//
+// Added for docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md.
+// Each ad break produces 4 of these tags in the per-rung media
+// playlist: 2 pre-rolls on the VOD segments at breakStart-8 /
+// breakStart-4, 1 slice-point on the first ad, 1 cue-in on the
+// last ad. The wire format mirrors the TS reference's
+// spliceEvents: a base64 SpliceInfoSection + the segmentation
+// type id + the matching adbreak id.
+
+// TestBuildSpliceInsertLine_Format: a segment with a slice-point
+// (0x34) event produces a tag with the right CUE=, TYPE=, ID=
+// attributes. CUE= base64 round-trips through DecodeBase64 with
+// OutOfNetworkIndicator=true and a non-zero BreakDuration (the
+// slice point IS an out).
+func TestBuildSpliceInsertLine_Format(t *testing.T) {
+	seg := models.SegmentItem{
+		Sequence:        100,
+		AdBreakID:       "adbreak-1725014400",
+		AdBreakStart:    1725014400,
+		AdBreakDuration: 30,
+		SliceInserts: []models.SpliceInsert{
+			{
+				Type:               "out",
+				EventID:            1725014400,
+				SpliceTimePTS:      1725014400 * 90000,
+				SpliceTimeSeconds:  1725014400,
+				Duration:           30.0,
+				UniqueProgramID:    1725014400,
+				SegmentationTypeID: 0x34,
+			},
+		},
+	}
+	line := buildSpliceInsertLine(seg, seg.SliceInserts[0])
+	for _, want := range []string{
+		`#EXT-X-SCTE35:`,
+		`CUE="`,
+		`,TYPE=52`, // 0x34 = 52
+		`,ID="adbreak-1725014400"`,
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("per-segment SCTE-35 line missing %q in:\n%s", want, line)
+		}
+	}
+	// CUE= base64 must round-trip with OON=true (it's a slice-point,
+	// which is an "out" event).
+	si, derr := decodeSpliceInsert(extractAttr(line, "CUE"))
+	if derr != nil {
+		t.Fatalf("CUE= decode: %v", derr)
+	}
+	cmd := si.SpliceCommand.(*scte35.SpliceInsert)
+	if !cmd.OutOfNetworkIndicator {
+		t.Fatalf("slice-point OutOfNetworkIndicator = false, want true")
+	}
+	if cmd.BreakDuration == nil || cmd.BreakDuration.Duration == 0 {
+		t.Fatalf("slice-point BreakDuration = %+v, want non-zero (the 30s break)", cmd.BreakDuration)
+	}
+}
+
+// TestBuildSpliceInsertLine_CueInHasOONFalse: a cue-in event
+// (Type="in") produces a tag with the CUE= base64 carrying
+// OutOfNetworkIndicator=false and NO BreakDuration (back to
+// program immediately). Mirrors the buildSpliceInsert_In test
+// contract but on the per-segment path.
+func TestBuildSpliceInsertLine_CueInHasOONFalse(t *testing.T) {
+	seg := models.SegmentItem{AdBreakID: "adbreak-100"}
+	ev := models.SpliceInsert{
+		Type:               "in",
+		EventID:            100,
+		SpliceTimePTS:      100 * 90000,
+		SpliceTimeSeconds:  100,
+		UniqueProgramID:    100,
+		SegmentationTypeID: 0x35,
+	}
+	line := buildSpliceInsertLine(seg, ev)
+	if !strings.Contains(line, `TYPE=53`) { // 0x35 = 53
+		t.Fatalf("cue-in TYPE= missing in:\n%s", line)
+	}
+	si, derr := decodeSpliceInsert(extractAttr(line, "CUE"))
+	if derr != nil {
+		t.Fatalf("CUE= decode: %v", derr)
+	}
+	cmd := si.SpliceCommand.(*scte35.SpliceInsert)
+	if cmd.OutOfNetworkIndicator {
+		t.Fatalf("cue-in OutOfNetworkIndicator = true, want false")
+	}
+	if cmd.BreakDuration != nil {
+		t.Fatalf("cue-in BreakDuration = %+v, want nil", cmd.BreakDuration)
+	}
+}
+
+// TestBuildSpliceInsertLine_NaNDurationEncodesAsZero: a NaN
+// duration is silently treated as 0 by the scte35-go library
+// (it doesn't reject NaN). The tag is emitted normally with a
+// 0-duration BreakDuration inside the base64 -- the player
+// receives the slice event but sees break_duration=0, which
+// is what we want for a corrupt planner-side event rather
+// than dropping the entire tag. This test pins the
+// "degrade-gracefully" behavior -- if a future scte35-go
+// upgrade rejects NaN, this test will surface the change.
+func TestBuildSpliceInsertLine_NaNDurationEncodesAsZero(t *testing.T) {
+	seg := models.SegmentItem{AdBreakID: "adbreak-100"}
+	ev := models.SpliceInsert{
+		Type:               "out",
+		EventID:            100,
+		SpliceTimePTS:      100 * 90000,
+		SpliceTimeSeconds:  100,
+		Duration:           math.NaN(),
+		UniqueProgramID:    100,
+		SegmentationTypeID: 0x34,
+	}
+	line := buildSpliceInsertLine(seg, ev)
+	for _, want := range []string{`#EXT-X-SCTE35:`, `CUE=`, `TYPE=52`, `ID="adbreak-100"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line missing %q in:\n%s", want, line)
+		}
+	}
+}
+
+// TestBuildSpliceInsertLine_IDFallbackToEventTime: if a segment
+// carries no AdBreakID (defensive -- shouldn't happen in practice
+// because the planner stamps both fields together), the tag
+// falls back to "adbreak-<int64(SpliceTimeSeconds)>" so the
+// per-segment insert still carries a usable ID. Matches the TS
+// reference's behavior of deriving the break ID from the splice
+// event's time.
+func TestBuildSpliceInsertLine_IDFallbackToEventTime(t *testing.T) {
+	seg := models.SegmentItem{AdBreakID: ""} // no break ID
+	ev := models.SpliceInsert{
+		Type:               "out",
+		EventID:            42,
+		SpliceTimePTS:      42 * 90000,
+		SpliceTimeSeconds:  42,
+		Duration:           30.0,
+		UniqueProgramID:    42,
+		SegmentationTypeID: 0x30,
+	}
+	line := buildSpliceInsertLine(seg, ev)
+	if !strings.Contains(line, `ID="adbreak-42"`) {
+		t.Fatalf("ID fallback to adbreak-42 missing in:\n%s", line)
 	}
 }

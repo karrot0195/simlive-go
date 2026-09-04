@@ -1,11 +1,11 @@
 # specification.md (Updated)
 
-> Status: reflects the **implemented** system as of 2026-08-30 — 3-tier quality
+> Status: reflects the **implemented** system as of 2026-09-04 — 3-tier quality
 > selection (`SIMLIVE_QUALITY`), VOD↔ads rendition matching, local `PtsOffset`
-> timeline, ffmpeg PTS/DTS rewrite in the engine, and the **M1.5 multi-rendition
-> detach/map** (1 shared segment cache + 3 advertised rungs via master
-> playlist, with per-rung media playlists `playlist_360p.m3u8` /
-> `playlist_720p.m3u8` / `playlist_1080p.m3u8`).
+> timeline, ffmpeg PTS/DTS rewrite in the engine, and the **M2 true
+> multi-rendition** (per-rung ZSETs + per-rung segment subdirs + per-rung
+> media playlists `{ch}/{rend}/playlist.m3u8`, 3 advertised rungs via master
+> playlist).
 > Plan: [300826_0620-multi-rendition-abr-ladder.md](300826_0620-multi-rendition-abr-ladder.md).
 > For current status and
 
@@ -153,12 +153,12 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
 
 1. Query active channels from `playout_channels`.
 2. For each channel, compute **today + tomorrow** in the channel's `content_timezone` (via `utils.GetLocFor`), so a channel in `Asia/Saigon` (UTC+7) doesn't accidentally query tomorrow's EPG when the server clock is in UTC.
-3. Call `prepareDate(ch, date)` which short-circuits via `HasDateInTimeline` (`ZCOUNT simlive:timeline:{ch} [dayStart, dayEnd] > 0`) and only invokes `ProcessEPGToTimeline` when the date is missing.
+3. Call `prepareDate(ch, date)` which short-circuits via `HasDateInTimeline` (`ZCOUNT simlive:timeline:{ch}:{rend} [dayStart, dayEnd] > 0` across all active rungs) and only invokes `ProcessEPGToTimeline` when the date is missing.
 4. For each schedule item inside the per-date horizon:
 * Read Stream ID (`programme.short_url`).
-* Execute `rclone cat` to read variant `m3u8` contents.
-* Compute timeline timestamps for each `.ts` file from the manifest's `#EXT-X-PTS-RANGE` (raw PTS) shifted to a **local timeline**: every segment gets `PtsOffset = MediaStart − timelineBase` (timelineBase = first segment's MediaStart, in seconds). Local offsets avoid the 2^33/90000 ≈ 95443.7s PTS wrap of huge epoch offsets.
-* **Ad Insertion:** Periodically insert ad segments at configured intervals (`AdInsertionInterval` = 30 seconds); ads are placed on the same local timeline.
+* **M2: walk EVERY active rung** (from `activeRenditions()`, default `360p,720p,1080p`). For each rung, resolve its own (VOD, ads) rendition pair (`resolveRenditionsFor(streamID, rung)` + `resolveAdsRenditionForTier(rung)`) and execute `rclone cat` to read that rung's variant `m3u8` contents.
+* Compute timeline timestamps for each `.ts` file from the manifest's `#EXT-X-PTS-RANGE` (raw PTS) shifted to a **local timeline**: every segment gets `PtsOffset = MediaStart − timelineBase` (timelineBase = first segment's MediaStart, in seconds). Local offsets avoid the 2^33/90000 ≈ 95443.7s PTS wrap of huge epoch offsets. All rungs share the same local timeline (MediaStart), so players can switch rungs at segment boundaries.
+* **Ad Insertion:** Periodically insert ad segments at configured intervals (`AdInsertionInterval` = 30 seconds); ads are placed on the same local timeline, using the rung's own ads rendition.
 * **Quality tier:** resolve `SIMLIVE_QUALITY` (`auto`|`360p`|`720p`|`1080p`) and pick the VOD/ads rendition pair matching the tier resolution (see §6.1).
 
 8. **Manual control via REST:** `POST /api/channels/:id/{start,stop}` and
@@ -171,8 +171,8 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
    `planner:failures:{id}` Redis key to reset the breaker; `stop`
    preserves the counter. See §3 "REST API Surface".
 
-4. Push segment mappings into a **Redis Sorted Set** (`ZADD` with Epoch timestamp as score):
-* **Key:** `simlive:timeline:{playout_id}`
+4. Push segment mappings into a **Redis Sorted Set** (`ZADD` with Epoch timestamp as score), one ZSET **per rung**:
+* **Key:** `simlive:timeline:{playout_id}:{rend}` (e.g. `simlive:timeline:{ch}:360p`)
 * **Value Structure (JSON):**
 ```json
 {
@@ -192,7 +192,7 @@ Runs as a 24/7 cron loop (default 5m, `PLANNER_INTERVAL` override; min effective
 
 
 6. **Redis Pipeline Batching:** Batch insert operations every 50 items to optimize Redis performance.
-7. **Per-tick bookkeeping:** `ProcessWindow` bumps `planner:cursor:{ch}` to `nowUnix + LOOKAHEAD_SECONDS`; `CleanupOldSegments` trims `simlive:timeline:{ch}` with `ZREMRANGEBYSCORE` at `nowUnix - RETENTION_SECONDS`. (The earlier `timeline:%s` key in `CleanupOldSegments` was a silent no-op — fixed.)
+7. **Per-tick bookkeeping:** `ProcessWindow` bumps `planner:cursor:{ch}` to `nowUnix + LOOKAHEAD_SECONDS`; `CleanupOldSegments` trims every rung's `simlive:timeline:{ch}:{rend}` with `ZREMRANGEBYSCORE` at `nowUnix - RETENTION_SECONDS`. (The earlier `timeline:%s` key in `CleanupOldSegments` was a silent no-op — fixed.)
 
 #### **Module 2: Engine (StartSimlive - Live Engine & HLS Generator)**
 
@@ -225,19 +225,19 @@ An infinite 1-second tick loop managing playout state:
    `ENABLE_CLEAN_UP=true`.)
 2. **Clock Sync:** Check current system epoch timestamp (`currentTime`).
 3. **Sliding Window Selector:**
-* Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`).
-* **M1.5 (shared segment cache):** The engine keeps ONE flat set of `seg_N.ts` files in `{TMP_DIR}/{ch}/` and serves them under 3 rung labels. The active rung's VOD dir is the single source the engine downloads from. The master playlist `playlist.m3u8` advertises all 3 rungs via `#EXT-X-STREAM-INF` (360p/720p/1080p); per-rung media playlists `playlist_360p.m3u8` / `playlist_720p.m3u8` / `playlist_1080p.m3u8` all reference the SAME `seg_N.ts` files. `groupSegsByRendition` rescues empty `Rendition` to `DefaultRendition` (`360p`) for legacy timeline members.
+* Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`) **per rung**: the engine reads `simlive:timeline:{ch}:{rend}` for each active rung (from `activeRungMeta`, which falls back to the hard-coded `ActiveLadder` if planner metadata is missing).
+* **M2 (per-rung segment cache):** Each rung downloads its OWN `seg_N.ts` files into its OWN subdir `{TMP_DIR}/{ch}/{rend}/` from that rung's VOD dir (via each member's `StoragePath`). The master playlist `playlist.m3u8` advertises all 3 rungs via `#EXT-X-STREAM-INF` (360p/720p/1080p); per-rung media playlists `{ch}/{rend}/playlist.m3u8` each reference that rung's OWN `seg_N.ts` files. `groupSegsByRendition` rescues empty `Rendition` to `DefaultRendition` (`360p`) for legacy timeline members.
 
 
 4. **Segment Fetcher (Worker Pool, async):**
-* Inspect local cache directory `{TMP_DIR}/{playout_id}/` — **M1.5 shared segment cache**: ONE flat set of `seg_N.ts` files is downloaded from the active rung's VOD dir and shared across all 3 rung media playlists. There is no per-rung subdir; the engine keeps a single `channelState` per channel.
-* The Redis timeline window `[now−300s, now+120s]` is still queried for timeline awareness, but only the **active on-disk window** is downloaded:
+* Inspect local cache directory `{TMP_DIR}/{playout_id}/{rend}/` — **M2 per-rung segment cache**: each rung has its own subdir with its own `seg_N.ts` files. The engine keeps one `channelState` per `{ch}:{rend}`.
+* The Redis timeline window `[now−300s, now+120s]` is still queried for timeline awareness, but only the **active on-disk window** is downloaded per rung:
   `SIMLIVE_KEEP_BEHIND` (default 5, behind the playhead) +
   `PlaylistWindowSize` (5, advertised to players) +
   `SIMLIVE_DOWNLOAD_AHEAD` (default 5, pre-fetched ahead).
-  Default total = **15 `.ts` files per channel**.
+  Default total = **15 `.ts` files per rung per channel** (45 across 3 rungs).
 * Use a worker pool (configurable max goroutines) to run `rclone copyto` and prebuffer upcoming segments; downloads run async so the tick never blocks (window slides exactly +1 segment per ~4s).
-* Segments are stored as `seg_{sequence}.ts` in the local cache, with an in-flight dedupe map so a file is never downloaded/rewritten twice.
+* Segments are stored as `seg_{sequence}.ts` in the rung's local cache, with an in-flight dedupe map (keyed on the full rung subdir path) so a file is never downloaded/rewritten twice.
 
 5. **PTS/DTS Rewrite (`rewritePtsOffset`):**
 * After download, each `.ts` is remuxed once with ffmpeg `-c copy -copyts -muxdelay 0 -muxpreload 0 -output_ts_offset <offset>`, where `offset = target − firstVideoDTS` (probed with ffprobe).
@@ -253,8 +253,8 @@ An infinite 1-second tick loop managing playout state:
 
 
 7. **Garbage Collection (Clean Up):**
-* `syncLocalCacheDir` removes any `.ts`/`.pts` file whose base name is not in the active set (the bounded 15-segment window computed in step 4). Runs every tick, so leftover files from a previous run are evicted on the first tick after startup; no separate startup cleanup is required.
-* Purge expired items from Redis older than 120 seconds.
+* `syncLocalCacheDir` is called per rung and removes any `.ts`/`.pts` file whose base name is not in the rung's active set (the bounded 15-segment window per rung computed in step 4). Runs every tick, so leftover files from a previous run are evicted on the first tick after startup; no separate startup cleanup is required.
+* Purge expired items from every rung's Redis ZSET older than 120 seconds.
 
 
 
@@ -264,7 +264,7 @@ An infinite 1-second tick loop managing playout state:
 
 #### **Redis Data Structure**
 
-* **Key:** `simlive:timeline:{channel_id}`
+* **Key:** `simlive:timeline:{channel_id}:{rend}` (M2 — one per rung; rend ∈ {360p, 720p, 1080p})
 * **Type:** Sorted Set
 * **Score:** `MediaStart` (segment start on the local timeline, seconds)
 * **Member:** JSON-encoded `SegmentItem` (with `rendition` field; omitempty)
@@ -283,11 +283,11 @@ An infinite 1-second tick loop managing playout state:
 * **Expiry:** 24 hours
 * **Consumer:** API `GET /live/{channel_id}/playlist.m3u8`
 
-* **Key:** `simlive:hls:{channel_id}:rendition:{rendition}` (M1.5)
+* **Key:** `simlive:hls:{channel_id}:rendition:{rendition}` (M2)
 * **Type:** String
-* **Value:** Per-rung media HLS playlist (5-segment sliding window, prepared segments only; references the same shared `seg_N.ts` files for all 3 rungs)
+* **Value:** Per-rung media HLS playlist (5-segment sliding window, prepared segments only; references that rung's own `seg_N.ts` files in `{ch}/{rend}/`)
 * **Expiry:** 24 hours
-* **Consumer:** API `GET /live/{channel_id}/playlist_{rendition}.m3u8`
+* **Consumer:** API `GET /live/{channel_id}/{rendition}/playlist.m3u8`
 
 #### **Ad Insertion Logic**
 
@@ -300,7 +300,7 @@ An infinite 1-second tick loop managing playout state:
 
 #### 6.1a SCTE-35 cue tags in media playlists
 
-Per-rung media playlists (`playlist_360p.m3u8` / `_720p` / `_1080p.m3u8`) emit `#EXT-X-DATERANGE` lines on VOD<->ad transitions, mirroring `tmp/SCTE35Utils.ts`:
+Per-rung media playlists (`{ch}/{rend}/playlist.m3u8`) emit `#EXT-X-DATERANGE` lines on VOD<->ad transitions, mirroring `tmp/SCTE35Utils.ts`:
 
 * **CUE-OUT** (`!prev.IsAd && seg.IsAd`): emitted BEFORE the first ad `seg_N.ts` EXTINF
   ```
@@ -314,6 +314,40 @@ Per-rung media playlists (`playlist_360p.m3u8` / `_720p` / `_1080p.m3u8`) emit `
 * `DURATION` is unquoted and trailing — threefive `TagParser` parses a line as quoted-vs-unquoted by the line's last char; a trailing quoted base64 value gets misparsed (see `tmp/SCTE35Utils.ts#L51-L59`).
 * DURATION precision: 3 decimal places (matches `#EXTINF:%.3f`); trailing zeros + lone trailing dot stripped. The `comcast/scte35-go` library builds the `SpliceInfoSection`; `internal/engine/scte35.go` wraps it (`buildSpliceInsert`, `buildCueOutLine`, `buildCueInLine`, `buildMediaPlaylistBody`, `adBreakEventID`).
 * Detection runs only on the **prepared** (`available`, `.pts`-marker-filtered) segments so a CUE-OUT never references a segment not in the playlist.
+
+#### **6.1a.1 Per-segment #EXT-X-SCTE35 splice inserts**
+
+In addition to the DATERANGE summary tags, the planner stamps 4 per-segment `SpliceInsert` events on the right segments (mirroring `tmp/PrepareSimulatedLive.ts markSpliceTargets`), and the engine emits one `#EXT-X-SCTE35` line per event in the media playlist. The per-segment inserts carry the pre-roll window (8s/4s warning before the slice point) and the slice-point + cue-in on the first and last ad respectively. The DATERANGE summary tags **stay** — the per-segment inserts are additive.
+
+* **Planned events per ad break** (constant: `var PreRollDelaysSec = []float64{8, 4}` in `internal/planner/segment_processor.go`):
+
+| Event                 | `SegmentationTypeID` | Stamped on                  | `SpliceTimePTS`               |
+| --------------------- | -------------------- | --------------------------- | ----------------------------- |
+| 8s pre-roll           | `0x30`               | VOD at `breakStart - 8s`    | `(breakStart - 8) * 90000`    |
+| 4s pre-roll           | `0x30`               | VOD at `breakStart - 4s`    | `(breakStart - 4) * 90000`    |
+| Slice point (cue-out) | `0x34`               | First ad (at `breakStart`)  | `breakStart * 90000`          |
+| Cue-in                | `0x35`               | Last ad (at `breakEnd`)     | `breakEnd * 90000`            |
+
+* All 4 events share the same `EventID` (= `uint32(int64(breakStart) & 0x7FFFFFFF)`, the `adBreakEventIDFor` formula in `internal/planner/segment_processor.go`; **MUST match the engine's `adBreakEventID`** byte-for-byte) and the same `Duration` (the sum of the ad pool's `Σ ad[i].Duration`).
+* The per-segment insert lookup uses `findSegmentContainingPts(sp.processingSegments, breakStart - delay)` (pure helper; left-inclusive / right-exclusive / first match on ties; mirrors the TS `findSegmentContainingPts`).
+* Pre-roll targets that land before `timelineBase` (preRollPts < 0, i.e. the first ad of a channel) or that aren't yet scheduled by the VOD walk (lookup returns `(-1, false)`) are **skipped silently** with a WARN log; the existing DATERANGE CUE-OUT on the first ad still covers the edge.
+* `appendSpliceInsertUnique` (pure helper) dedups on `(Type, SpliceTimePTS)` to mirror the TS `pushSpliceEvent` rule, so replans and restarts don't double-stamp.
+
+* **Wire format** (engine `buildSpliceInsertLine` in `internal/engine/scte35.go`):
+  ```
+  #EXT-X-SCTE35:CUE="<base64>",TYPE=<segType>,ID="<adbreak-id>"
+  ```
+  where `<base64>` is the same `SpliceInfoSection` shape as the DATERANGE payload (`SpliceImmediateFlag:true`, `OutOfNetworkIndicator=out`, `BreakDuration` if out), `<segType>` is the decimal segmentation_type_id (48 = 0x30, 52 = 0x34, 53 = 0x35), and `<adbreak-id>` is the matching `adbreak-<int64>` string so the player can correlate the per-segment insert with the CUE-OUT/CUE-IN DATERANGE summary tags on the VOD↔ad edges.
+* **Emission placement**: each `#EXT-X-SCTE35` line is emitted **before the segment's `#EXTINF`** and **after any `EXT-X-DATERANGE`** that the edge detection already produced for that segment (so the DATERANGE remains the lead marker for the VOD↔ad edge, and the per-segment inserts follow the segment they are attached to). Empty `SliceInserts` → no `#EXT-X-SCTE35` line is emitted (the VOD-only playlist is byte-identical to the pre-feature shape).
+* **Idempotence**: the dedup invariant `len(SliceInserts) <= N` per (Type, SpliceTimePTS) per segment means a planner replan at the same `breakStart` produces the same ZSET members and the same playlist. JSON-marshaling the ZSET members is deterministic for a given `SegmentItem` value.
+
+* **Production gotcha fixed in this change**: `synchSegmentIntoRedis` was calling `sp.pipe.ZAdd(..., Member: segment)` with a raw `models.SegmentItem` struct. go-redis v9.21+ (and v9.22+) `proto.Writer` only supports primitive types, `time.Time`, and `encoding.BinaryMarshaler` for the `Member` field — it returns `"can't marshal %T (implement encoding.BinaryMarshaler)"` for a complex struct. The planner was silently failing to write any ZSET members; the existing Redis-gated tests had been passing only because they SKIPped on unreachable Redis. Fix: JSON-marshal the SegmentItem before ZAdd (string member, not raw struct). An explicit `sp.pipe.Exec` is also called at the end of `synchSegmentIntoRedis` so the batched ZAdds actually flush (the previous `BatchProcess(ctx)` with no `cmd ...Cmder` args is a no-op). **Operational impact**: deployments running the pre-fix code on Redis v9.21+ have empty ZSETs and the engine has nothing to serve. Run `redis-cli ZCARD simlive:timeline:{ch}` on every active channel after this PR lands.
+
+* **Buffer location (revised 2026-09-03)**: the `processingSegments` and `isBlockingProcessing` fields used by the SCTE-35 ad-stamping code live on the SHARED `Planner` (not the per-call `SegmentProcessor`). The reasons: (1) the pre-roll lookup in `insertAdsIfNeeded` and the append in `addSegment` need to see the same buffer (without copying); (2) the per-channel in-flight guard in `cmd/planner/main.go runPlannerTick` already serializes SAME-channel calls, so shared ownership is safe; (3) DIFFERENT channels run concurrently because each gets its own `SegmentProcessor` instance (the per-call walk state — `runningTime`, `totalSegmentsAdded`, `channelID`, `horizon` — still lives on the processor). The Planner's `NOTE` comment documents the field move in full; tests use `sp.planner.processingSegments = ...` to pre-seed the VOD buffer.
+
+* **`PTS_DURATION` constant (revised 2026-09-03)**: `internal/planner/segment_processor.go` defines `const PTS_DURATION = (1001.0 / 24000.0) * 90000.0` (= 3753.75 ticks/frame at 23.976fps). The planner adds it to `ptsEnd` to derive the start of the NEXT frame, so `MediaEnd = (ptsEnd + PTS_DURATION) / 90000` gives a non-overlapping `[MediaStart, MediaEnd)` interval. Without it, adjacent segments would collapse to a single-frame width (the player sees each segment end at the same PTS it starts, producing a black frame + audio glitch on every segment boundary). The pre-roll lookup relies on this — a pre-roll PTS just past one segment's MediaEnd (but before the next segment's MediaStart) binds to the previous segment via the FP-rounding tolerance in `findSegmentContainingPts` (the strict right-exclusive test would otherwise miss).
+
+* Plan: [030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md](030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md).
 
 #### **Segment Processing Constants**
 
@@ -380,14 +414,14 @@ Selection logic (`internal/planner/planner.go`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SIMLIVE_QUALITY` | `auto` | `360p`/`720p`/`1080p` quality tier (currently `360p` in `.env`) |
-| `SIMLIVE_RENDITIONS` | unset | Reserved for M2 (true per-rung separate segments). M1.5 ignores this env var and always advertises 3 rungs via the engine's hard-coded `ActiveLadder` (or planner-written `simlive:renditions:{ch}` metadata). |
+| `SIMLIVE_RENDITIONS` | unset | M2: comma-separated active rungs (e.g. `360p,720p,1080p`). Unset → full ladder `360p,720p,1080p`. The planner walks all listed rungs (each into its own per-rung ZSET + per-rung subdir); the engine downloads each rung's segments and serves 3 per-rung media playlists. All rungs share the same local `PtsOffset` timeline. |
 | `SIMLIVE_VOD_RENDITION` | (empty) | Hard override: VOD rendition dir (e.g. `L_0`) |
 | `SIMLIVE_ADS_RENDITION` | (empty) | Hard override: ads rendition dir (e.g. `L2`) |
 - **REST start/stop best-effort Redis:** `POST /api/channels/:id/start` deletes the breaker counter key `planner:failures:{id}` as part of the operation. A Redis blip is logged at `[api] StartChannel: DEL ...` and the request still returns `200` — the DB flip is the durable part of the operation, the Redis clear is a "best effort" reset.
 | `DB_HOST`/`DB_USER`/`DB_PASSWORD`/`DB_NAME` | localhost/postgres | Postgres (`playout_channels`) |
 | `REDIS_ADDR` | `localhost:6371` | Redis (note: 6371, not 6379) |
 | `ESPX_API_URL` | `https://api2.espx.cloud` | EPG API base URL |
-| `TMP_DIR` | `./outputs` | Engine local segment cache (`{TMP_DIR}/{channelID}/`) |
+| `TMP_DIR` | `./outputs` | Engine local segment cache (`{TMP_DIR}/{channelID}/{rend}/` per rung, M2) |
 | `MAX_WORKERS` / `WORKER_POOL_SIZE` | 50 | Download concurrency |
 | `ENABLE_CLEAN_UP` | `false` | Startup cleanup toggle. When `true`, the engine `os.RemoveAll`s the `{TMP_DIR}` on startup and the planner `FlushAll`s Redis + `os.RemoveAll`s `{TMP_DIR}`. Default (`false`) preserves the on-disk cache across restarts (engine) and scopes the Redis wipe to `simlive:timeline:*` only (planner), so a restarted engine can resume immediately on whatever the previous run had downloaded. |
 | `SIMLIVE_KEEP_BEHIND` | `5` | Segments retained *before* the playlist window (active on-disk window). |
@@ -665,7 +699,44 @@ type SegmentItem struct {
     AdBreakID       string  `json:"ad_break_id,omitempty"`         // "adbreak-<int64(breakStart)>"
     AdBreakStart    float64 `json:"ad_break_start,omitempty"`      // unix seconds; → START-DATE
     AdBreakDuration float64 `json:"ad_break_duration,omitempty"`   // seconds; → DURATION + SCTE-35 BreakDuration
+
+    // M-SCTE35 (per-segment splice inserts, see §6.1a.1): the
+    // planner stamps up to 2 SpliceInserts on each VOD segment
+    // within PreRollDelaysSec (default 8s, 4s) of an ad break, 1
+    // slice-point on the first ad, and 1 cue-in on the last ad.
+    // The engine emits one #EXT-X-SCTE35:CUE="<base64>",TYPE=<segType>,ID="<adbreak-id>"
+    // per entry. omitempty so VOD members and pre-feature
+    // timeline entries round-trip to JSON unchanged.
+    SliceInserts []SpliceInsert `json:"splice_inserts,omitempty"`
 }
+```
+
+### SpliceInsert
+```go
+// SpliceInsert is the wire-shape of one per-segment SCTE-35 splice
+// event stamped on a SegmentItem.SliceInserts. The planner stamps
+// 0-2 of these on each VOD segment within PreRollDelaysSec of an
+// ad break, plus 1 slice-point on the first ad and 1 cue-in on the
+// last ad. The engine emits one #EXT-X-SCTE35 line per entry.
+type SpliceInsert struct {
+    Type               string  `json:"type"`               // "out" (CUE-OUT / pre-roll) | "in" (CUE-IN)
+    EventID            int64   `json:"eventId"`            // uint32 SpliceEventID (planner's adBreakEventIDFor)
+    SpliceTimePTS      int64   `json:"spliceTimePts"`      // 90kHz ticks; matches the base64 SpliceInfoSection
+    SpliceTimeSeconds  float64 `json:"spliceTimeSeconds"`  // seconds on the channel's local timeline
+    Duration           float64 `json:"duration"`           // seconds; the break length (0 for cue-in)
+    UniqueProgramID    int64   `json:"uniqueProgramId"`    // == EventID for our planner-stamped events
+    SegmentationTypeID int     `json:"segmentationTypeId"` // ANSI/SCTE 35 §10.2.3 seg_type_id (0x30/0x34/0x35)
+}
+```
+
+### SCTE-35 segmentation_type_id constants
+```go
+const (
+    SegTypePlacementOpportunityStart = 0x30 // pre-roll (8s/4s warning)
+    SegTypeAdvertisementStart       = 0x34 // slice point / cue-out
+    SegTypeAdvertisementEnd         = 0x35 // cue-in
+)
+var PreRollDelaysSec = []float64{8, 4} // configurable; one event per entry
 ```
 
 ### ESPXScheduleItem
@@ -687,8 +758,12 @@ type ESPXScheduleItem struct {
 
 | Key Pattern | Type | Description |
 |-------------|------|-------------|
-| `simlive:timeline:{channel_id}` | Sorted Set | Complete timeline with score = start_time |
-| `simlive:hls:{channel_id}` | String | Cached HLS playlist (10s TTL) |
+| `simlive:timeline:{channel_id}:{rend}` | Sorted Set | Per-rung timeline (M2); score = `MediaStart` seconds |
+| `simlive:renditions:{channel_id}` | String | Per-channel ladder metadata (JSON array, all 3 rungs) |
+| `simlive:hls:{channel_id}` | String | Cached master HLS playlist (24h TTL) |
+| `simlive:hls:{channel_id}:rendition:{rend}` | String | Cached per-rung media HLS playlist (24h TTL) |
+| `planner:cursor:{channel_id}` | String | Per-channel lookahead cursor (unix seconds) |
+| `planner:failures:{channel_id}` | String (TTL 24h) | Per-channel consecutive-failure counter (breaker) |
 
 ---
 
@@ -696,12 +771,13 @@ type ESPXScheduleItem struct {
 
 | Path Pattern | Module | Description |
 |--------------|--------|-------------|
-| `{bucket}/{streamID}/{vodDir}/vod.m3u8` | Planner | Content m3u8 manifest (vodDir per tier: `L_0`/`L_1`/`L_2`) |
-| `{adsBucket}/{adsRend}/vod.m3u8` | Planner | Ad manifest (adsRend per tier: `L0`/`L1`/`L2`) |
+| `{bucket}/{streamID}/{vodDir}/vod.m3u8` | Planner | Content m3u8 manifest (vodDir per rung: `L_0`/`L_1`/`L_2`) |
+| `{adsBucket}/{adsRend}/vod.m3u8` | Planner | Ad manifest (adsRend per rung: `L0`/`L1`/`L2`) |
 | `{bucket}/{streamID}/{vodDir}/{segment}.ts` | Both | Remote segment storage |
-| `{tmpDir}/{channelID}/seg_{seq}.ts` | Engine | Local cached segment |
-| `{tmpDir}/{channelID}/seg_{seq}.ts.pts` | Engine | Prepared marker (PTS rewrite done) |
-| `{tmpDir}/{channelID}/playlist.m3u8` | Engine | Local HLS playlist |
+| `{tmpDir}/{channelID}/{rend}/seg_{seq}.ts` | Engine | Per-rung local cached segment (M2) |
+| `{tmpDir}/{channelID}/{rend}/seg_{seq}.ts.pts` | Engine | Per-rung prepared marker (PTS rewrite done) |
+| `{tmpDir}/{channelID}/playlist.m3u8` | Engine | Master HLS playlist (channel root) |
+| `{tmpDir}/{channelID}/{rend}/playlist.m3u8` | Engine | Per-rung media HLS playlist (M2) |
 
 ---
 

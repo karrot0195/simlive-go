@@ -105,32 +105,75 @@ type Planner struct {
 	rendMu    sync.Mutex
 	rendCache map[string]renditionPair
 
-	// NOTE: The Planner intentionally holds NO per-call walk state. The old
-	// fields (globalRunningTime, totalSegmentsAdded, channelID, horizon,
-	// processDate) were moved onto SegmentProcessor (see segment_processor.go)
-	// so ProcessEPGToTimeline is safe to call concurrently for DIFFERENT
-	// channels. History: the fields used to live here and were mutated
-	// unlocked, so PLANNER_WORKERS > 1 produced inter-channel races (one
-	// channel's segments landing in the other's ZSET, or the EPG walk
-	// stopping early because horizon got reset) — symptom: 2 active
-	// channels, only 1 had data. The stopgap epgMu mutex + PLANNER_WORKERS=1
-	// clamp made it strictly serial (channel #2 waited for #1's full
-	// cold-start walk, ~30s–2min per date, so it had no data for the whole
-	// window). The per-call state now lives on the SegmentProcessor; the
-	// per-channel in-flight guard in cmd/planner/main.go runPlannerTick still
-	// prevents overlapping calls for the SAME channel, and PLANNER_WORKERS
-	// defaults back to 4.
+	// ladderCache is the per-tier rendition cache for M2: streamID -> tier
+	// label -> (VOD, ads) pair. Coexists with rendCache (the legacy
+	// single-pair cache used by resolveRenditions). resolveRenditionsFor
+	// reads/writes ladderCache; resolveRenditions reads/writes rendCache.
+	// Both are guarded by rendMu.
+	ladderCache map[string]map[string]renditionPair
+
+	// NOTE: The Planner intentionally holds NO per-channel walk state.
+	// The per-channel fields (runningTime, totalSegmentsAdded,
+	// channelID, horizon) live on the SegmentProcessor created per
+	// call to ProcessEPGToTimeline, so concurrent calls for DIFFERENT
+	// channels don't race. History: the fields used to live here and
+	// were mutated unlocked, so PLANNER_WORKERS > 1 produced
+	// inter-channel races (one channel's segments landing in the
+	// other's ZSET, or the EPG walk stopping early because horizon
+	// got reset) — symptom: 2 active channels, only 1 had data. A
+	// stopgap epgMu mutex + PLANNER_WORKERS=1 clamp made it strictly
+	// serial (channel #2 waited for channel #1's full cold-start walk,
+	// ~30s–2min per date, so it had no data for the whole window).
+	// The per-channel state now lives on the SegmentProcessor; the
+	// per-channel in-flight guard in cmd/planner/main.go
+	// runPlannerTick still prevents overlapping calls for the SAME
+	// channel, and PLANNER_WORKERS defaults back to 4.
+	//
+	// Two SCTE-35 ad-stamping fields live on the SHARED Planner
+	// instead of on the per-call processor:
+	//
+	//   isBlockingProcessing bool
+	//       Set true by processingVerifyNearingAds when the VOD walk
+	//       is within AdInsertionInterval-12s of the last ad break.
+	//       When true, addSegment appends to processingSegments but
+	//       skips the Redis flush (so a near-ad burst doesn't
+	//       fragment the in-memory buffer with tiny flushes; the
+	//       flush resumes on the next non-blocking tick). Reset
+	//       to false once 8s have elapsed since the last ad.
+	//
+	//   processingSegments []models.SegmentItem
+	//       The in-memory VOD + ad buffer that addSegment appends to
+	//       and synchSegmentIntoRedis drains. Lives on the Planner
+	//       (not the processor) so the pre-roll lookup in
+	//       insertAdsIfNeeded sees the same slice addSegment mutates
+	//       — both reference sp.planner.processingSegments. (The
+	//       alternative of keeping it on the processor would require
+	//       copying the buffer between insertAdsIfNeeded and the
+	//       pre-roll call site, which is wasteful and would miss
+	//       the in-place mutation contract.) The per-channel
+	//       in-flight guard ensures the buffer is only touched by
+	//       one call at a time, so the shared-ownership is safe.
+	//
+	// Both fields are reset to their zero values at the end of
+	// synchSegmentIntoRedis (for processingSegments) and at the end
+	// of processingVerifyNearingAds (for isBlockingProcessing).
+	isBlockingProcessing bool
+
+	processingSegments []models.SegmentItem
+
+	adsId uint64
 }
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
-		db:         db,
-		rdb:        rdb,
-		espx:       espx,
-		rclone:     rclone,
-		bucketName: "espx-video-lib:espx-video-lib",
-		adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
-		rendCache:  make(map[string]renditionPair),
+		db:          db,
+		rdb:         rdb,
+		espx:        espx,
+		rclone:      rclone,
+		bucketName:  "espx-video-lib:espx-video-lib",
+		adsBucket:   "espx-video-lib:espx-video-lib/ads-v3",
+		rendCache:   make(map[string]renditionPair),
+		ladderCache: make(map[string]map[string]renditionPair),
 	}
 }
 
@@ -159,33 +202,48 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		return err
 	}
 
-	adSegments, _ := p.loadAdSegments()
-	lastSeq := p.getLastSequenceNumber(ctx, channel.ID)
-
-	processor := &SegmentProcessor{
-		planner:         p,
-		pipe:            p.rdb.Pipeline(),
-		ctx:             ctx,
-		nowUnix:         float64(time.Now().Unix()),
-		sequenceCounter: lastSeq,
-		adSegments:      adSegments,
-		channelID:       channel.ID,
-		horizon:         horizon,
+	// M2: walk every active rung, each into its own per-rung ZSET
+	// (simlive:timeline:{ch}:{rend}). Each rung gets its own SegmentProcessor
+	// so its sequence counter, ad segments (per-tier ads rendition), and
+	// timeline key are isolated. All rungs share the same local PtsOffset
+	// timeline (MediaStart), so players can switch rungs at segment
+	// boundaries seamlessly.
+	rungs := p.activeRenditions()
+	if len(rungs) == 0 {
+		rungs = []string{DefaultRendition}
 	}
 
-	nowLocal := callStartedAt
-	for _, item := range schedules.Data {
-		if isEndOfTimeline(processor.horizon, processor.runningTime) {
-			break
+	for _, rung := range rungs {
+		adSegments, _ := p.loadAdSegments(rung)
+		lastSeq := p.getLastSequenceNumber(ctx, channel.ID, rung)
+
+		processor := &SegmentProcessor{
+			planner:          p,
+			pipe:             p.rdb.Pipeline(),
+			ctx:              ctx,
+			nowUnix:          float64(time.Now().Unix()),
+			sequenceCounter:  lastSeq,
+			adSegments:       adSegments,
+			channelID:        channel.ID,
+			horizon:          horizon,
+			currentRendition: rung,
 		}
-		if err := processor.ProcessScheduleItem(item, channel, nowLocal); err == ErrEndOfTimeline {
-			break
+
+		nowLocal := callStartedAt
+		for _, item := range schedules.Data {
+			if isEndOfTimeline(processor.horizon, processor.runningTime) {
+				break
+			}
+			if err := processor.ProcessScheduleItem(item, channel, nowLocal); err == ErrEndOfTimeline {
+				break
+			}
+		}
+
+		if err := processor.flush(); err != nil {
+			return err
 		}
 	}
 
-	if err := processor.flush(); err != nil {
-		return err
-	}
 	// Persist the resolved ladder metadata so the engine can build the master
 	// playlist without probing at runtime. Best-effort: a failure here logs
 	// inside writeRenditionMetadata and does not block the planner tick.
@@ -416,6 +474,118 @@ func (p *Planner) resolveRenditions(streamID string) renditionPair {
 	return pair
 }
 
+// resolveRenditionsFor picks the (VOD, ads) rendition pair for streamID at a
+// SPECIFIC tier label (e.g. "720p"). M2: the planner walks all active rungs,
+// each with its own pair. Results are cached in ladderCache keyed
+// streamID -> tier -> pair so each (streamID, tier) is probed once. Falls
+// back to the tier's fallbackRenditionForTier pair when probing fails.
+func (p *Planner) resolveRenditionsFor(streamID, tier string) renditionPair {
+	p.rendMu.Lock()
+	if byTier, ok := p.ladderCache[streamID]; ok {
+		if pair, ok := byTier[tier]; ok {
+			p.rendMu.Unlock()
+			return pair
+		}
+	}
+	p.rendMu.Unlock()
+
+	// Resolve outside the lock (probing does rclone + ffprobe, which can be
+	// slow); re-check the cache under the lock before writing.
+	pair := p.resolveRenditionsForUncached(streamID, tier)
+
+	p.rendMu.Lock()
+	if p.ladderCache[streamID] == nil {
+		p.ladderCache[streamID] = make(map[string]renditionPair)
+	}
+	p.ladderCache[streamID][tier] = pair
+	p.rendMu.Unlock()
+	return pair
+}
+
+// resolveRenditionsForUncached does the actual probe + pick for a single
+// (streamID, tier) without touching the cache. The tier's target resolution
+// comes from qualityTierMap; the pair is chosen by pickPairForTier (exact
+// tier first, then closest VOD==ads, then smallest area difference). Falls
+// back to the tier's fallbackRenditionForTier pair on probe failure.
+func (p *Planner) resolveRenditionsForUncached(streamID, tier string) renditionPair {
+	tierCfg, ok := qualityTierMap[tier]
+	if !ok {
+		// Unknown tier label -> legacy default pair.
+		return renditionPair{vod: "L_0", ads: "L0"}
+	}
+
+	vodBase := fmt.Sprintf("%s/%s", p.bucketName, streamID)
+	vodProbes := p.probeRenditions(vodBase, "vod_000.ts", vodRenditionCandidates)
+	adsProbes := p.probeRenditions(p.adsBucket, "vod_000.ts", adsRenditionCandidates)
+
+	if len(vodProbes) == 0 || len(adsProbes) == 0 {
+		if fb, ok := fallbackRenditionForTier[tier]; ok {
+			log.Printf("[Planner] WARN: stream %s could not probe renditions for tier %s, fallback VOD %s + ads %s",
+				streamID, tier, fb.vod, fb.ads)
+			return fb
+		}
+		return renditionPair{vod: "L_0", ads: "L0"}
+	}
+
+	if pair, _, ok := pickPairForTier(vodProbes, adsProbes, tierCfg.w, tierCfg.h); ok {
+		log.Printf("[Planner] stream %s tier %s -> renditions: VOD %s + ads %s",
+			streamID, tier, pair.vod, pair.ads)
+		return pair
+	}
+	if fb, ok := fallbackRenditionForTier[tier]; ok {
+		return fb
+	}
+	return renditionPair{vod: "L_0", ads: "L0"}
+}
+
+// adsRendByTier caches the per-tier ads rendition (adsRendByTierMu guards it).
+// The ads pool is shared across streams/channels, but each tier wants the
+// ads rendition closest to its own resolution, so the resolution is per-tier
+// (unlike the legacy process-global resolveAdsRendition).
+var (
+	adsRendByTierMu sync.Mutex
+	adsRendByTier   = map[string]string{}
+)
+
+// resolveAdsRenditionForTier returns the ads rendition dir for a specific
+// tier label (e.g. "720p" -> "L1"). Priority: env SIMLIVE_ADS_RENDITION
+// (hard override, applies to all tiers) > tier's fallback ads dir > closest
+// probed ads rendition to the tier resolution. Cached per tier.
+func (p *Planner) resolveAdsRenditionForTier(tier string) string {
+	adsRendByTierMu.Lock()
+	if r, ok := adsRendByTier[tier]; ok {
+		adsRendByTierMu.Unlock()
+		return r
+	}
+	adsRendByTierMu.Unlock()
+
+	if ex := utils.GetEnv("SIMLIVE_ADS_RENDITION", ""); ex != "" {
+		adsRendByTierMu.Lock()
+		adsRendByTier[tier] = ex
+		adsRendByTierMu.Unlock()
+		return ex
+	}
+
+	tierCfg, ok := qualityTierMap[tier]
+	if !ok {
+		return "L0"
+	}
+	probes := p.probeRenditions(p.adsBucket, "vod_000.ts", adsRenditionCandidates)
+	if best, ok := pickClosestRendition(probes, tierCfg.w, tierCfg.h); ok {
+		adsRendByTierMu.Lock()
+		adsRendByTier[tier] = best
+		adsRendByTierMu.Unlock()
+		return best
+	}
+	if fb, ok := fallbackRenditionForTier[tier]; ok {
+		adsRendByTierMu.Lock()
+		adsRendByTier[tier] = fb.ads
+		adsRendByTierMu.Unlock()
+		return fb.ads
+	}
+	return "L0"
+}
+
 // pickClosestRendition picks the rendition whose resolution is closest to the target (by area).
 func pickClosestRendition(probes map[string][2]int, tw, th int) (string, bool) {
 	best := ""
@@ -490,8 +660,11 @@ func abs(x int) int {
 }
 
 // loadAdSegments parses PTS for ads when available (or falls back to the standard duration)
-func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
-	adsRend := p.resolveAdsRendition()
+// loadAdSegments parses PTS for ads when available (or falls back to the
+// standard duration). M2: takes the tier label so each rung loads the ads
+// rendition closest to its own resolution (resolveAdsRenditionForTier).
+func (p *Planner) loadAdSegments(tier string) ([]models.SegmentItem, error) {
+	adsRend := p.resolveAdsRenditionForTier(tier)
 	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, adsRend)
 	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
 	if err != nil {
@@ -542,8 +715,8 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	return adSegments, nil
 }
 
-func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
-	items, err := p.rdb.ZRevRange(ctx, fmt.Sprintf("simlive:timeline:%s", channelID), 0, 0).Result()
+func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID, rung string) int64 {
+	items, err := p.rdb.ZRevRange(ctx, fmt.Sprintf("simlive:timeline:%s:%s", channelID, rung), 0, 0).Result()
 	if err != nil || len(items) == 0 {
 		return 0
 	}
@@ -567,39 +740,56 @@ func isEndOfTimeline(horizon time.Time, runningTime float64) bool {
 	return horizon.Before(time.Unix(int64(runningTime), 0))
 }
 
-// HasDateInTimeline returns true when the ZSET simlive:timeline:{channelID}
-// already has at least one segment whose MediaStart score falls inside the
-// local date [dayStart, dayEnd]. Used by the cron loop to short-circuit
-// re-processing of a date that has already been prepared.
+// timelineKeyFor returns the per-rung timeline ZSET key for a channel.
+// M2: each rung has its own ZSET (simlive:timeline:{ch}:{rend}).
+func timelineKeyFor(channelID, rung string) string {
+	return fmt.Sprintf("simlive:timeline:%s:%s", channelID, rung)
+}
+
+// HasDateInTimeline returns true when ANY active rung's ZSET
+// (simlive:timeline:{channelID}:{rend}) already has at least one segment
+// whose MediaStart score falls inside the local date [dayStart, dayEnd].
+// Used by the cron loop to short-circuit re-processing of a date that has
+// already been prepared. M2: checks all active rungs so a partially-prepared
+// ladder (some rungs missing) is re-prepared.
 func (p *Planner) HasDateInTimeline(ctx context.Context, channelID string, dayStart, dayEnd time.Time) (bool, error) {
 	if p.rdb == nil {
 		return false, nil
 	}
-	key := fmt.Sprintf("simlive:timeline:%s", channelID)
-	n, err := p.rdb.ZCount(ctx, key,
-		fmt.Sprintf("%d", dayStart.Unix()),
-		fmt.Sprintf("%d", dayEnd.Unix())).Result()
-	if err != nil {
-		return false, err
+	for _, rung := range p.activeRenditions() {
+		key := timelineKeyFor(channelID, rung)
+		n, err := p.rdb.ZCount(ctx, key,
+			fmt.Sprintf("%d", dayStart.Unix()),
+			fmt.Sprintf("%d", dayEnd.Unix())).Result()
+		if err != nil {
+			return false, err
+		}
+		if n > 0 {
+			return true, nil
+		}
 	}
-	return n > 0, nil
+	return false, nil
 }
 
 // HasLegacyTimeline is the exported wrapper for hasLegacyTimeline so the
 // planner main can call it from outside the package. Used by the first-tick
-// post-M1 legacy flush in cmd/planner/main.go.
+// post-M1 legacy flush in cmd/planner/main.go. M2: checks all active rungs.
 func (p *Planner) HasLegacyTimeline(ctx context.Context, channelID string) (bool, error) {
 	return p.hasLegacyTimeline(ctx, channelID)
 }
 
-// DeleteTimeline deletes the ZSET simlive:timeline:{channelID}. Used by the
-// legacy-timeline flush in cmd/planner/main.go. Best-effort -- a missing
-// key is not an error.
+// DeleteTimeline deletes the per-rung ZSETs simlive:timeline:{channelID}:{rend}
+// for all active rungs. Used by the legacy-timeline flush in cmd/planner/main.go.
+// Best-effort -- a missing key is not an error.
 func (p *Planner) DeleteTimeline(ctx context.Context, channelID string) error {
 	if p.rdb == nil {
 		return nil
 	}
-	return p.rdb.Del(ctx, fmt.Sprintf("simlive:timeline:%s", channelID)).Err()
+	keys := make([]string, 0, len(p.activeRenditions()))
+	for _, rung := range p.activeRenditions() {
+		keys = append(keys, timelineKeyFor(channelID, rung))
+	}
+	return p.rdb.Del(ctx, keys...).Err()
 }
 
 func (p *Planner) getCursor(ctx context.Context, channelID string) int64 {
@@ -766,12 +956,12 @@ func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) e
 
 func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
 	cutoff := time.Now().Unix() - RETENTION_SECONDS
-	// Bug fix: was "timeline:%s" which never matched the real key the engine
-	// reads, so the bounded retention model was a silent no-op. Now hits the
-	// real simlive:timeline:{channelID} ZSET used by the engine + dedup.
-	key := fmt.Sprintf("simlive:timeline:%s", channelID)
-	if _, err := p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff)).Result(); err != nil {
-		log.Printf("[Planner] ZREMRANGEBYSCORE(%s, -inf, %d) error: %v", channelID, cutoff, err)
+	// M2: trim every active rung's ZSET (simlive:timeline:{ch}:{rend}).
+	for _, rung := range p.activeRenditions() {
+		key := timelineKeyFor(channelID, rung)
+		if _, err := p.rdb.ZRemRangeByScore(ctx, key, "-inf", fmt.Sprintf("%d", cutoff)).Result(); err != nil {
+			log.Printf("[Planner] ZREMRANGEBYSCORE(%s, -inf, %d) error: %v", key, cutoff, err)
+		}
 	}
 }
 
@@ -823,20 +1013,25 @@ func (p *Planner) ProcessEPGToTimelineWithRetry(ctx context.Context, ch models.P
 	return lastErr
 }
 
-// TimelineSize returns the current ZSET cardinality for a channel. Used by
-// the metrics reporter to surface Redis pressure to logs/operators.
-// Returns 0 on error so a transient Redis blip doesn't crash the cron loop.
+// TimelineSize returns the total ZSET cardinality across all active rungs
+// for a channel. Used by the metrics reporter to surface Redis pressure to
+// logs/operators. Returns 0 on error so a transient Redis blip doesn't crash
+// the cron loop.
 func (p *Planner) TimelineSize(ctx context.Context, channelID string) int64 {
 	if p.rdb == nil {
 		return 0
 	}
-	key := fmt.Sprintf("simlive:timeline:%s", channelID)
-	n, err := p.rdb.ZCard(ctx, key).Result()
-	if err != nil {
-		log.Printf("[Planner] ZCARD(%s) error: %v", channelID, err)
-		return 0
+	var total int64
+	for _, rung := range p.activeRenditions() {
+		key := timelineKeyFor(channelID, rung)
+		n, err := p.rdb.ZCard(ctx, key).Result()
+		if err != nil {
+			log.Printf("[Planner] ZCARD(%s) error: %v", key, err)
+			continue
+		}
+		total += n
 	}
-	return n
+	return total
 }
 
 // LastProcessedCursor returns the unix timestamp the planner last wrote for

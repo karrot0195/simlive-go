@@ -3,7 +3,6 @@ package planner
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -93,7 +92,8 @@ func TestHasDateInTimeline_DedupSkipsPreparedDates(t *testing.T) {
 	}
 
 	chID := "test-horizon-rollover-dedup"
-	key := fmt.Sprintf("simlive:timeline:%s", chID)
+	// M2: HasDateInTimeline checks the per-rung keys. Seed the 360p rung.
+	key := timelineKeyFor(chID, "360p")
 	// Clean slate — the test owns this key.
 	rdb.Del(ctx, key)
 	t.Cleanup(func() { rdb.Del(context.Background(), key) })
@@ -178,7 +178,7 @@ func TestHasDateInTimeline_DedupSkipsPreparedDates(t *testing.T) {
 	// ZCOUNT [start,end] window). This is the cold-start case before the
 	// planner's first ProcessEPGToTimeline ever writes a member.
 	emptyChID := "test-horizon-rollover-empty"
-	emptyKey := fmt.Sprintf("simlive:timeline:%s", emptyChID)
+	emptyKey := timelineKeyFor(emptyChID, "360p")
 	rdb.Del(ctx, emptyKey)
 	t.Cleanup(func() { rdb.Del(context.Background(), emptyKey) })
 

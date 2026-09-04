@@ -93,7 +93,7 @@ func plannerTickHint() string {
 //
 //	simlive:hls:{ch}                              (engine master playlist)
 //	simlive:hls:{ch}:rendition:{360p|720p|1080p}  (engine per-rung media playlists)
-//	simlive:timeline:{ch}                         (planner ZSET — full day timeline)
+//	simlive:timeline:{ch}:{360p|720p|1080p}       (planner per-rung ZSETs — M2)
 //	simlive:renditions:{ch}                       (planner per-channel ladder metadata)
 //	planner:cursor:{ch}                           (planner per-channel lookahead cursor)
 //
@@ -122,10 +122,11 @@ func (h *ChannelHandler) purgeChannelRedisData(id string) {
 	if h.rdb == nil {
 		return
 	}
-	keys := make([]string, 0, 1+len(hlsRungs)+3)
+	keys := make([]string, 0, 1+len(hlsRungs)+len(hlsRungs)+3)
 	keys = append(keys, hlsRedisKeyPrefix+id)
 	for _, r := range hlsRungs {
 		keys = append(keys, hlsRedisKeyPrefix+id+":rendition:"+r)
+		keys = append(keys, timelineRedisKeyPrefix+id+":"+r)
 	}
 	keys = append(keys,
 		timelineRedisKeyPrefix+id,

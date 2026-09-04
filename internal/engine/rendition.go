@@ -77,11 +77,11 @@ func resolveRung(label string) string {
 	return label
 }
 
-// rungPlaylistFilename returns the media-playlist filename for a rung
-// (e.g. "playlist_360p.m3u8"). All rung playlists live in the channel
-// root alongside the master playlist and the shared seg_N.ts files.
+// rungPlaylistFilename returns the media-playlist filename for a rung.
+// M2: each rung's media playlist lives INSIDE its own rung subdir
+// ({ch}/{rend}/playlist.m3u8), so the filename is always "playlist.m3u8".
 func rungPlaylistFilename(rendition string) string {
-	return fmt.Sprintf("playlist_%s.m3u8", resolveRung(rendition))
+	return "playlist.m3u8"
 }
 
 // buildMasterPlaylist renders an HLS master playlist (RFC 8216 §4.3.4.2)
@@ -122,12 +122,13 @@ func pickRenditionURIs(metas []RenditionMeta) []string {
 }
 
 // pickRungMediaURIs returns the per-rung media-playlist URIs
-// (e.g. "playlist_360p.m3u8", "playlist_720p.m3u8", "playlist_1080p.m3u8")
-// in the same order as the input metas.
+// (e.g. "360p/playlist.m3u8", "720p/playlist.m3u8", "1080p/playlist.m3u8")
+// in the same order as the input metas. M2: each media playlist lives in
+// its own rung subdir, so the URI is "{rend}/playlist.m3u8".
 func pickRungMediaURIs(metas []RenditionMeta) []string {
 	out := make([]string, len(metas))
 	for i, m := range metas {
-		out[i] = rungPlaylistFilename(m.Rendition)
+		out[i] = fmt.Sprintf("%s/playlist.m3u8", resolveRung(m.Rendition))
 	}
 	return out
 }
@@ -157,11 +158,18 @@ func ladderRank(label string, order map[string]int) int {
 	return len(order) // unknown labels sort last
 }
 
-// channelDir returns the channel root directory. M1.5: no per-rung subdirs --
-// the engine keeps a SINGLE flat seg_N.ts set per channel and writes one
-// media playlist per active rung that all reference those same files.
+// channelDir returns the channel root directory. M2: the channel root holds
+// the master playlist (playlist.m3u8) + one subdir per rung ({ch}/{rend}/),
+// each with its own media playlist + seg_N.ts files.
 func channelDir(tmpDir, channelID string) string {
 	return fmt.Sprintf("%s/%s", tmpDir, channelID)
+}
+
+// rungDir returns the per-rung directory for a channel
+// ({TMP_DIR}/{ch}/{rend}/). M2: each rung downloads its own seg_N.ts files
+// and writes its own media playlist here.
+func rungDir(tmpDir, channelID, rendition string) string {
+	return fmt.Sprintf("%s/%s/%s", tmpDir, channelID, resolveRung(rendition))
 }
 
 // rungMediaRedisKey returns the per-rung media playlist Redis key

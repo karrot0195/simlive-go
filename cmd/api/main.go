@@ -129,26 +129,22 @@ func main() {
 			c.String(http.StatusNotFound, "Stream not active or channel disabled")
 		})
 
-		// M1.5: serve a *rung* media playlist (e.g. /live/{ch}/playlist_360p.m3u8).
-		// The engine writes one media playlist per active rung in the channel
-		// root (playlist_360p.m3u8, playlist_720p.m3u8, playlist_1080p.m3u8),
-		// each referencing the same shared seg_N.ts files.
+		// M2: serve a *rung* media playlist (e.g. /live/{ch}/360p/playlist.m3u8).
+		// The engine writes one media playlist per active rung in its own
+		// subdir ({ch}/{rend}/playlist.m3u8), each referencing that rung's
+		// own seg_N.ts files.
 		// Route order matters in Gin: this MUST be registered BEFORE the
-		// 2-param /:channel_id/:segment route or the segment route will
-		// shadow it (Gin's radix tree).
-		liveGroup.GET("/:channel_id/playlist_:rendition", func(c *gin.Context) {
+		// 3-param /:channel_id/:rendition/:segment route or the segment
+		// route will shadow it (Gin's radix tree).
+		liveGroup.GET("/:channel_id/:rendition/playlist.m3u8", func(c *gin.Context) {
 			chID := c.Param("channel_id")
-			rendRaw := c.Param("rendition")
+			rend := c.Param("rendition")
 
 			if strings.Contains(chID, "..") || strings.Contains(chID, "/") ||
-				strings.Contains(rendRaw, "..") || strings.Contains(rendRaw, "/") {
+				strings.Contains(rend, "..") || strings.Contains(rend, "/") {
 				c.String(http.StatusBadRequest, "Invalid path")
 				return
 			}
-			// rendRaw arrives WITHOUT the ".m3u8" suffix (Gin strips it via
-			// the `:rendition` wildcard before the literal ".m3u8"). Accept
-			// either "360p" or "360p.m3u8" defensively.
-			rend := strings.TrimSuffix(rendRaw, ".m3u8")
 			// Must be a known ladder rung.
 			switch rend {
 			case "360p", "720p", "1080p":
@@ -165,7 +161,7 @@ func main() {
 				return
 			}
 			// Fallback: serve from disk if the engine has written it locally.
-			diskPath := filepath.Join(tmpDir, chID, "playlist_"+rend+".m3u8")
+			diskPath := filepath.Join(tmpDir, chID, rend, "playlist.m3u8")
 			if _, statErr := os.Stat(diskPath); statErr == nil {
 				c.Header("Content-Type", "application/x-mpegURL")
 				c.File(diskPath)
@@ -174,14 +170,16 @@ func main() {
 			c.String(http.StatusNotFound, "Rendition not active or channel disabled")
 		})
 
-		// M1.5: serve a shared-cache .ts segment. The engine writes a
-		// SINGLE flat set of seg_N.ts files in {TMP_DIR}/{ch}/ -- all
-		// rung playlists (360p/720p/1080p) point to the SAME files.
-		liveGroup.GET("/:channel_id/:segment", func(c *gin.Context) {
+		// M2: serve a per-rung .ts segment. The engine writes each rung's
+		// seg_N.ts files in its own subdir {TMP_DIR}/{ch}/{rend}/. Each rung
+		// playlist references its own rung's segments.
+		liveGroup.GET("/:channel_id/:rendition/:segment", func(c *gin.Context) {
 			channelID := c.Param("channel_id")
+			rend := c.Param("rendition")
 			segmentFile := c.Param("segment")
 
 			if strings.Contains(channelID, "..") || strings.Contains(channelID, "/") ||
+				strings.Contains(rend, "..") || strings.Contains(rend, "/") ||
 				strings.Contains(segmentFile, "..") || strings.Contains(segmentFile, "/") {
 				c.String(http.StatusBadRequest, "Invalid path")
 				return
@@ -192,7 +190,7 @@ func main() {
 				return
 			}
 
-			filePath := filepath.Join(tmpDir, channelID, segmentFile)
+			filePath := filepath.Join(tmpDir, channelID, rend, segmentFile)
 			c.File(filePath)
 		})
 	}

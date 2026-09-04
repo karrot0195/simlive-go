@@ -33,8 +33,8 @@ import (
 // core guarantee that makes concurrent channel walking safe.
 func TestSegmentProcessor_IsolatesPerCallState(t *testing.T) {
 	p := &Planner{}
-	spA := &SegmentProcessor{planner: p, channelID: "A", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
-	spB := &SegmentProcessor{planner: p, channelID: "B", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
+	spA := &SegmentProcessor{planner: p, channelID: "A", currentRendition: "360p", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
+	spB := &SegmentProcessor{planner: p, channelID: "B", currentRendition: "720p", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
 
 	// Advance A's walk state; B must be untouched.
 	spA.runningTime = 1000
@@ -49,8 +49,11 @@ func TestSegmentProcessor_IsolatesPerCallState(t *testing.T) {
 	if spA.channelID == spB.channelID {
 		t.Errorf("processors share channelID %q; per-call channel must be isolated", spA.channelID)
 	}
-	if got := spA.timelineKey(); got != "simlive:timeline:A" {
-		t.Errorf("spA.timelineKey() = %q, want simlive:timeline:A", got)
+	if got := spA.timelineKey(); got != "simlive:timeline:A:360p" {
+		t.Errorf("spA.timelineKey() = %q, want simlive:timeline:A:360p", got)
+	}
+	if got := spB.timelineKey(); got != "simlive:timeline:B:720p" {
+		t.Errorf("spB.timelineKey() = %q, want simlive:timeline:B:720p", got)
 	}
 }
 

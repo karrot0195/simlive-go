@@ -17,29 +17,26 @@ import (
 	"simlive/internal/models"
 )
 
-// These tests exercise the path-guard logic for the M1.5 routes in
+// These tests exercise the path-guard logic for the M2 routes in
 // cmd/api/main.go by recreating the guards inline. The intent is to lock
 // down the rejection behavior WITHOUT spinning up Redis / a full cmd/api
 // integration test. A separate cmd/api/main_test.go could exercise the
 // full router end-to-end; for now the guards are validated here.
 //
-// M1.5 route shape (matching cmd/api/main.go):
+// M2 route shape (matching cmd/api/main.go):
 //   GET /live/:channel_id/playlist.m3u8         (master)
-//   GET /live/:channel_id/playlist_:rendition   (e.g. playlist_360p, with .m3u8 wildcarded)
-//   GET /live/:channel_id/:segment              (shared-cache .ts segments)
+//   GET /live/:channel_id/:rendition/playlist.m3u8   (per-rung media playlist)
+//   GET /live/:channel_id/:rendition/:segment   (per-rung .ts segments)
 
 // rungPlaylistGuard reproduces the per-param guards for the
-// `GET /live/:channel_id/playlist_:rendition` route in cmd/api/main.go.
-// `rendRaw` is the value Gin extracts from the URL -- e.g. for the URL
-// /live/ch1/playlist_360p.m3u8, rendRaw arrives WITHOUT the .m3u8 suffix
-// (Gin strips it via the wildcarded literal). Returns the (statusCode, body)
-// tuple the live handler would emit.
-func rungPlaylistGuard(channelID, rendRaw string) (int, string) {
+// `GET /live/:channel_id/:rendition/playlist.m3u8` route in cmd/api/main.go.
+// `rend` is the value Gin extracts from the URL (e.g. "360p"). Returns the
+// (statusCode, body) tuple the live handler would emit.
+func rungPlaylistGuard(channelID, rend string) (int, string) {
 	if strings.Contains(channelID, "..") || strings.Contains(channelID, "/") ||
-		strings.Contains(rendRaw, "..") || strings.Contains(rendRaw, "/") {
+		strings.Contains(rend, "..") || strings.Contains(rend, "/") {
 		return http.StatusBadRequest, "Invalid path"
 	}
-	rend := strings.TrimSuffix(rendRaw, ".m3u8")
 	switch rend {
 	case "360p", "720p", "1080p":
 		// valid ladder rung
@@ -50,9 +47,10 @@ func rungPlaylistGuard(channelID, rendRaw string) (int, string) {
 }
 
 // segmentGuard reproduces the per-param guards for the
-// `GET /live/:channel_id/:segment` route (shared-cache segments).
-func segmentGuard(channelID, segment string) (int, string) {
+// `GET /live/:channel_id/:rendition/:segment` route (per-rung segments).
+func segmentGuard(channelID, rend, segment string) (int, string) {
 	if strings.Contains(channelID, "..") || strings.Contains(channelID, "/") ||
+		strings.Contains(rend, "..") || strings.Contains(rend, "/") ||
 		strings.Contains(segment, "..") || strings.Contains(segment, "/") {
 		return http.StatusBadRequest, "Invalid path"
 	}
@@ -65,9 +63,8 @@ func segmentGuard(channelID, segment string) (int, string) {
 // --- TestRungPlaylistGuard_RejectsUnknownRendition -------------------------
 //
 // The rung param must be a known ladder rung. Anything else (e.g.
-// "playlist_4k" or "playlist_random") is a 404 -- not a 200 with the
-// master. This guards against typo'd client URLs silently falling through
-// to the master playlist.
+// "4k" or "random") is a 404 -- not a 200 with the master. This guards
+// against typo'd client URLs silently falling through to the master playlist.
 
 func TestRungPlaylistGuard_RejectsUnknownRendition(t *testing.T) {
 	for _, bad := range []string{"4k", "random", "foo"} {
@@ -81,7 +78,7 @@ func TestRungPlaylistGuard_RejectsUnknownRendition(t *testing.T) {
 // --- TestRungPlaylistGuard_AcceptsValid -------------------------------------
 
 func TestRungPlaylistGuard_AcceptsValid(t *testing.T) {
-	for _, rend := range []string{"360p", "720p", "1080p", "360p.m3u8", "1080p.m3u8"} {
+	for _, rend := range []string{"360p", "720p", "1080p"} {
 		code, body := rungPlaylistGuard("ch1", rend)
 		if code != http.StatusOK {
 			t.Errorf("rendition=%q: code = %d, want 200 (passes guard); body = %q", rend, code, body)
@@ -114,7 +111,7 @@ func TestRungPlaylistGuard_RejectsSlashInRendition(t *testing.T) {
 // --- TestSegmentGuard_RejectsNonTS -----------------------------------------
 
 func TestSegmentGuard_RejectsNonTS(t *testing.T) {
-	code, _ := segmentGuard("ch1", "seg_1.exe")
+	code, _ := segmentGuard("ch1", "360p", "seg_1.exe")
 	if code != http.StatusNotFound {
 		t.Fatalf("non-.ts segment: code = %d, want 404", code)
 	}
@@ -123,7 +120,7 @@ func TestSegmentGuard_RejectsNonTS(t *testing.T) {
 // --- TestSegmentGuard_AcceptsValid -----------------------------------------
 
 func TestSegmentGuard_AcceptsValid(t *testing.T) {
-	code, body := segmentGuard("ch1", "seg_42.ts")
+	code, body := segmentGuard("ch1", "360p", "seg_42.ts")
 	if code != http.StatusOK {
 		t.Fatalf("valid segment: code = %d, want 200 (passes guard); body = %q", code, body)
 	}
@@ -132,14 +129,15 @@ func TestSegmentGuard_AcceptsValid(t *testing.T) {
 // --- TestSegmentGuard_RejectsDotDotAndSlash --------------------------------
 
 func TestSegmentGuard_RejectsDotDotAndSlash(t *testing.T) {
-	cases := []struct{ ch, seg string }{
-		{"ch1", "../etc/passwd"},
-		{"..", "seg_1.ts"},
-		{"ch1", "sub/seg_1.ts"},
-		{"ch1", "sub\\seg_1.ts"},
+	cases := []struct{ ch, rend, seg string }{
+		{"ch1", "360p", "../etc/passwd"},
+		{"..", "360p", "seg_1.ts"},
+		{"ch1", "360p", "sub/seg_1.ts"},
+		{"ch1", "360p", "sub\\seg_1.ts"},
+		{"ch1", "360p/..", "seg_1.ts"},
 	}
 	for _, tc := range cases {
-		code, _ := segmentGuard(tc.ch, tc.seg)
+		code, _ := segmentGuard(tc.ch, tc.rend, tc.seg)
 		if code != http.StatusBadRequest {
 			t.Errorf("guard passed for %+v, want 400", tc)
 		}
@@ -412,6 +410,9 @@ func TestPurgeChannelRedisData_RemovesAllKeyFamiliesExceptBreaker(t *testing.T) 
 		hlsRedisKeyPrefix + id + ":rendition:720p":  "720P",
 		hlsRedisKeyPrefix + id + ":rendition:1080p": "1080P",
 		timelineRedisKeyPrefix + id:                 `{"sequence":1}`,
+		timelineRedisKeyPrefix + id + ":360p":       `{"sequence":1,"rendition":"360p"}`,
+		timelineRedisKeyPrefix + id + ":720p":       `{"sequence":1,"rendition":"720p"}`,
+		timelineRedisKeyPrefix + id + ":1080p":      `{"sequence":1,"rendition":"1080p"}`,
 		renditionsRedisKeyPrefix + id:               `[{"rendition":"360p"}]`,
 		cursorRedisKeyPrefix + id:                   "1700000000",
 		breakerKeyPrefix + id:                       "3",
@@ -424,13 +425,17 @@ func TestPurgeChannelRedisData_RemovesAllKeyFamiliesExceptBreaker(t *testing.T) 
 
 	h.purgeChannelRedisData(id)
 
-	// 1. The 7 purged keys are gone.
+	// 1. The purged keys are gone (hls + per-rung hls + per-rung timeline
+	// + flat timeline + renditions + cursor).
 	for _, k := range []string{
 		hlsRedisKeyPrefix + id,
 		hlsRedisKeyPrefix + id + ":rendition:360p",
 		hlsRedisKeyPrefix + id + ":rendition:720p",
 		hlsRedisKeyPrefix + id + ":rendition:1080p",
 		timelineRedisKeyPrefix + id,
+		timelineRedisKeyPrefix + id + ":360p",
+		timelineRedisKeyPrefix + id + ":720p",
+		timelineRedisKeyPrefix + id + ":1080p",
 		renditionsRedisKeyPrefix + id,
 		cursorRedisKeyPrefix + id,
 	} {
