@@ -51,7 +51,8 @@ func rungPlaylistGuard(channelID, rend string) (int, string) {
 func segmentGuard(channelID, rend, segment string) (int, string) {
 	if strings.Contains(channelID, "..") || strings.Contains(channelID, "/") ||
 		strings.Contains(rend, "..") || strings.Contains(rend, "/") ||
-		strings.Contains(segment, "..") || strings.Contains(segment, "/") {
+		strings.Contains(segment, "..") || strings.Contains(segment, "/") ||
+		strings.Contains(segment, `\`) {
 		return http.StatusBadRequest, "Invalid path"
 	}
 	if !strings.HasSuffix(segment, ".ts") {

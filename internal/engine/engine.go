@@ -41,6 +41,24 @@ type channelState struct {
 	initialized bool
 }
 
+var RENDITIONMAP = []string{
+	"360p",
+	"720p",
+	"1080p",
+}
+
+// downloadJob is one rendition-specific download/rewrite task. A single
+// SegmentItem with Renditions=[360p,720p] fans out into two jobs (one
+// per rung) so each rung gets its own source path and its own on-disk
+// seg_{seq}_{rend}.ts file.
+type downloadJob struct {
+	rend string
+	seq  int64
+	src  string
+	dest string
+	seg  models.SegmentItem
+}
+
 type Engine struct {
 	rdb           *redis.Client
 	rclone        *storage.RcloneService
@@ -88,8 +106,18 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 	defer ticker.Stop()
 
 	channelDir := filepath.Join(e.tmpDir, channelID)
+	logger := utils.GetLogger(fmt.Sprintf("PLANNER:%s", channelID))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		return
+	}
+
+	for _, ren := range RENDITIONMAP {
+		renDIR := filepath.Join(e.tmpDir, channelID, ren)
+
+		if err := os.MkdirAll(renDIR, 0755); err != nil {
+			log.Printf("[%s] mkdir rung dir %s error: %v", channelID, renDIR, err)
+			return
+		}
 	}
 
 	// M1: per-rung channelState entries (keyed "{channelID}:{rend}") are
@@ -104,46 +132,57 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			nowFloat := float64(time.Now().UnixNano()) / 1e9
 			nowUnix := time.Now().Unix()
 
-			// M2: determine the active rungs to advertise. Prefer the
-			// planner-written per-channel metadata; fall back to the
-			// hard-coded ActiveLadder so the master always lists 3 rungs
-			// even before the planner has run.
+			// M3: read a single shared timeline ZSET (simlive:timeline:{ch}).
+			// Each SegmentItem carries its own Renditions list; the engine
+			// pulls one shared .ts per sequence and renders one media
+			// playlist per rendition that appears in the window.
+			allSegs := e.fetchTimeline(ctx, channelID, nowUnix)
+			if len(allSegs) == 0 {
+				// Still emit a master so player reloads never 404.
+				logger.Warn("allSegs are empty")
+				e.generateMasterPlaylist(ctx, channelID, e.activeRungMeta(ctx, channelID))
+				continue
+			}
+
+			candidateSegs := e.selectCandidateWindow(allSegs, nowFloat)
+			if len(candidateSegs) == 0 {
+				logger.Warn("candidateSegs are empty")
+				e.generateMasterPlaylist(ctx, channelID, e.activeRungMeta(ctx, channelID))
+				continue
+			}
+
+			downloadSegs := e.computeDownloadWindow(allSegs, candidateSegs)
 			meta := e.activeRungMeta(ctx, channelID)
 
-			// M2: each rung has its OWN ZSET (simlive:timeline:{ch}:{rend}),
-			// its own on-disk subdir ({ch}/{rend}/), its own seg_N.ts files,
-			// and its own media playlist. The master playlist (channel root)
-			// references each rung's media playlist.
-			for _, m := range meta {
-				e.processRung(ctx, channelID, m, nowFloat, nowUnix)
+			rendBuckets := downloadSegs[0].Renditions
+			// rendBuckets := groupSegsByRendition(candidateSegs)
+			e.syncAndPreparePerRendition(ctx, channelID, downloadSegs)
+			for i, rend := range rendBuckets {
+				if rend != "" {
+					e.generateRenditionPlaylist(ctx, channelID, RENDITIONMAP[i], downloadSegs)
+				}
 			}
+
+			// Master uses the union of renditions present + the static ladder
+			// so hls.js always sees a valid variant list.
 			e.generateMasterPlaylist(ctx, channelID, meta)
 		}
 	}
 }
 
-// processRung runs one tick's work for a single rung: query the rung's ZSET,
-// select the sliding window, download + prepare the rung's segments into its
-// own subdir, GC stale files, and write the rung's media playlist.
-func (e *Engine) processRung(ctx context.Context, channelID string, m RenditionMeta, nowFloat float64, nowUnix int64) {
-	rend := m.Rendition
-	if rend == "" {
-		rend = DefaultRendition
-	}
-	redisKey := fmt.Sprintf("simlive:timeline:%s:%s", channelID, rend)
-
-	// Query the lookahead window from Redis (score = MediaStart)
+// fetchTimeline reads the single shared ZSET (simlive:timeline:{ch}) and
+// returns the segments sorted by sequence. M3: replaces per-rung ZSETs.
+func (e *Engine) fetchTimeline(ctx context.Context, channelID string, nowUnix int64) []models.SegmentItem {
+	redisKey := fmt.Sprintf("simlive:timeline:%s", channelID)
 	min := fmt.Sprintf("%d", nowUnix-300)
-	maxLookahead := fmt.Sprintf("%d", nowUnix+120)
-
+	max := fmt.Sprintf("%d", nowUnix+120)
 	items, err := e.rdb.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
 		Min: min,
-		Max: maxLookahead,
+		Max: max,
 	}).Result()
 	if err != nil || len(items) == 0 {
-		return
+		return nil
 	}
-
 	var allSegs []models.SegmentItem
 	for _, itemStr := range items {
 		var seg models.SegmentItem
@@ -151,26 +190,23 @@ func (e *Engine) processRung(ctx context.Context, channelID string, m RenditionM
 			allSegs = append(allSegs, seg)
 		}
 	}
-
 	sort.Slice(allSegs, func(i, j int) bool {
 		return allSegs[i].Sequence < allSegs[j].Sequence
 	})
+	return allSegs
+}
 
+// selectCandidateWindow picks the playlist window (PlaylistWindowSize
+// segments) centered on `now`. Auto-catchup if `now` drifted past the end.
+func (e *Engine) selectCandidateWindow(allSegs []models.SegmentItem, nowFloat float64) []models.SegmentItem {
 	playlistWindow := PlaylistWindowSize
-
-	// Pick the candidate segments + on-disk window from this rung's timeline.
-	var candidateSegs []models.SegmentItem
-	currentIndex := -1
-
-	// 1. Find the segment containing the current time
+	var currentIndex = -1
 	for idx, seg := range allSegs {
 		if seg.MediaStart <= nowFloat && nowFloat < seg.MediaEnd {
 			currentIndex = idx
 			break
 		}
 	}
-
-	// 2. Auto-Catchup if nowFloat drifts away from the Redis timeline
 	if currentIndex == -1 && len(allSegs) > 0 {
 		if nowFloat >= allSegs[len(allSegs)-1].MediaEnd {
 			if len(allSegs) >= playlistWindow {
@@ -190,87 +226,109 @@ func (e *Engine) processRung(ctx context.Context, channelID string, m RenditionM
 			}
 		}
 	}
-
-	if currentIndex != -1 {
-		endIndex := currentIndex + playlistWindow
-		if endIndex > len(allSegs) {
-			endIndex = len(allSegs)
-		}
-		candidateSegs = allSegs[currentIndex:endIndex]
+	if currentIndex == -1 {
+		return allSegs
 	}
-
-	if len(candidateSegs) < playlistWindow {
+	end := currentIndex + playlistWindow
+	if end > len(allSegs) {
+		end = len(allSegs)
+	}
+	candidate := allSegs[currentIndex:end]
+	if len(candidate) < playlistWindow {
 		if len(allSegs) <= playlistWindow {
-			candidateSegs = allSegs
-		} else {
-			candidateSegs = allSegs[len(allSegs)-playlistWindow:]
+			return allSegs
+		}
+		return allSegs[len(allSegs)-playlistWindow:]
+	}
+	return candidate
+}
+
+// computeDownloadWindow returns the bounded on-disk set: [current-keepBehind,
+// current+window+downloadAhead]. Falls back to allSegs if no current index.
+func (e *Engine) computeDownloadWindow(allSegs, candidate []models.SegmentItem) []models.SegmentItem {
+	if len(allSegs) == 0 {
+		return nil
+	}
+	// Find current index from the candidate window anchor.
+	anchor := candidate[0]
+	for idx, seg := range allSegs {
+		if seg.Sequence == anchor.Sequence {
+			start := idx - e.keepBehind
+			if start < 0 {
+				start = 0
+			}
+			end := idx + PlaylistWindowSize + e.downloadAhead - 1
+			if end >= len(allSegs) {
+				end = len(allSegs) - 1
+			}
+			if end >= start {
+				return allSegs[start : end+1]
+			}
+			break
 		}
 	}
+	return allSegs
+}
 
-	if len(candidateSegs) == 0 {
-		return
+func (e *Engine) syncAndPreparePerRendition(ctx context.Context, channelID string, downloadSegs []models.SegmentItem) {
+	channelDir := filepath.Join(e.tmpDir, channelID)
+
+	// Track active files per rendition directory for clean up
+	activePerRendition := make(map[string]map[string]bool)
+	for _, ren := range RENDITIONMAP {
+		activePerRendition[ren] = make(map[string]bool)
 	}
 
-	// Per-rung channel state (one set of files = one window per rung).
-	stateKey := fmt.Sprintf("%s:%s", channelID, rend)
-	e.statesMu.Lock()
-	state, ok := e.states[stateKey]
-	if !ok {
-		state = &channelState{}
-		e.states[stateKey] = state
-	}
-	e.statesMu.Unlock()
+	var jobs []downloadJob
 
-	candidateFirst := candidateSegs[0].Sequence
-	candidateLast := candidateSegs[len(candidateSegs)-1].Sequence
-	lastSeg := candidateSegs[len(candidateSegs)-1]
-	lastEndTimeInt := int64(lastSeg.MediaEnd)
-
-	state.mu.Lock()
-	if !state.initialized {
-		state.firstSeq = candidateFirst
-		state.lastSeq = candidateLast
-		state.lastEndTime = lastEndTimeInt
-		state.initialized = true
-		log.Printf("[%s] Initialized PTS window: firstSeq=%d, lastSeq=%d (rung %s)",
-			channelID, state.firstSeq, state.lastSeq, rend)
-	} else if candidateFirst != state.firstSeq || candidateLast != state.lastSeq {
-		state.firstSeq = candidateFirst
-		state.lastSeq = candidateLast
-		state.lastEndTime = lastEndTimeInt
-	}
-	state.mu.Unlock()
-
-	// Compute the bounded active on-disk window for this rung.
-	downloadSegs := allSegs
-	if currentIndex >= 0 {
-		startIdx := currentIndex - e.keepBehind
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		endIdx := currentIndex + playlistWindow + e.downloadAhead - 1
-		if endIdx >= len(allSegs) {
-			endIdx = len(allSegs) - 1
-		}
-		if endIdx >= startIdx {
-			downloadSegs = allSegs[startIdx : endIdx+1]
-		}
-	}
-
-	// Per-rung sync + download (each rung has its own seg_N.ts files).
-	rDir := rungDir(e.tmpDir, channelID, rend)
-	if err := os.MkdirAll(rDir, 0755); err != nil {
-		log.Printf("[%s] mkdir rung dir %s error: %v", channelID, rDir, err)
-		return
-	}
-	activeMap := make(map[string]bool)
+	// 1. Collect all jobs and mark active files across all segments and renditions
 	for _, seg := range downloadSegs {
-		activeMap[fmt.Sprintf("seg_%d.ts", seg.Sequence)] = true
-	}
-	syncLocalCacheDir(rDir, activeMap)
-	go e.downloadAndPrepareSegments(rDir, channelID, rend, downloadSegs)
+		rends := seg.Renditions
+		if len(rends) == 0 {
+			rends = []string{DefaultRendition}
+		}
 
-	e.generateHLSPlaylist(ctx, channelID, rend, candidateSegs)
+		for i, rend := range rends {
+			// Map index safely to RENDITIONMAP or fallback
+			localRenName := DefaultRendition
+			if i < len(RENDITIONMAP) {
+				localRenName = RENDITIONMAP[i]
+			}
+
+			rDir := filepath.Join(channelDir, localRenName)
+			src := strings.ReplaceAll(seg.StoragePath, "{rendition}", rend)
+			dest := filepath.Join(rDir, fmt.Sprintf("seg_%d.ts", seg.Sequence))
+
+			segFileName := fmt.Sprintf("seg_%d.ts", seg.Sequence)
+			activePerRendition[localRenName][segFileName] = true
+
+			jobs = append(jobs, downloadJob{
+				rend: rend,
+				seq:  seg.Sequence,
+				src:  src,
+				dest: dest,
+				seg:  seg,
+			})
+		}
+	}
+
+	// 2. Perform cache cleanup in parallel for all rendition directories
+	var syncWg sync.WaitGroup
+	for _, ren := range RENDITIONMAP {
+		renDir := filepath.Join(channelDir, ren)
+		activeSet := activePerRendition[ren]
+		syncWg.Add(1)
+		go func(dir string, active map[string]bool) {
+			defer syncWg.Done()
+			syncLocalCacheDir(dir, active)
+		}(renDir, activeSet)
+	}
+	syncWg.Wait()
+
+	// 3. Batch process all rendition download/rewrite jobs concurrently across worker pool
+	if len(jobs) > 0 {
+		e.downloadAndPrepareJobs(ctx, channelDir, channelID, jobs)
+	}
 }
 
 // syncLocalCacheDir removes any .ts/.pts file whose base name is not in the
@@ -313,15 +371,19 @@ func (e *Engine) activeRungMeta(ctx context.Context, channelID string) []Renditi
 	return ActiveLadder
 }
 
-// downloadAndPrepareSegments downloads missing segments and rewrites PTS/DTS
-// (ffmpeg -copyts -output_ts_offset) so DTS stays continuous across VOD + ads.
-// Each file is processed only once (in-flight dedupe + .pts marker). M2:
-// `rungDir` is the per-rung subdir ({ch}/{rend}/) so each rung gets its own
-// seg_N.ts files.
-func (e *Engine) downloadAndPrepareSegments(rungDir, channelID, rend string, segs []models.SegmentItem) {
+// downloadAndPrepareJobs downloads each (rendition, source, dest) tuple and
+// rewrites PTS/DTS (ffmpeg -copyts -output_ts_offset) so DTS stays
+// continuous across VOD + ads. M3.1: a single SegmentItem can fan out to
+// several jobs (one per rendition in its Renditions list); each job has
+// its own source path (StoragePath with {rendition} substituted) and
+// its own dest file (seg_{seq}_{rend}.ts). Dedupe is keyed on the
+// dest path so the same job never runs twice in the same tick.
+func (e *Engine) downloadAndPrepareJobs(ctx context.Context, dir, channelID string, jobs []downloadJob) {
 	var wg sync.WaitGroup
-	for _, seg := range segs {
-		dest := filepath.Join(rungDir, fmt.Sprintf("seg_%d.ts", seg.Sequence))
+	for _, j := range jobs {
+		dest := j.dest
+		src := j.src
+		seg := j.seg
 
 		e.inFlightMu.Lock()
 		if e.inFlight[dest] {
@@ -332,7 +394,7 @@ func (e *Engine) downloadAndPrepareSegments(rungDir, channelID, rend string, seg
 		e.inFlightMu.Unlock()
 
 		wg.Add(1)
-		go func(s models.SegmentItem, d string) {
+		go func(s models.SegmentItem, d, sr string) {
 			defer wg.Done()
 			defer func() {
 				e.inFlightMu.Lock()
@@ -341,55 +403,43 @@ func (e *Engine) downloadAndPrepareSegments(rungDir, channelID, rend string, seg
 			}()
 			e.workerPool <- struct{}{}
 			defer func() { <-e.workerPool }()
-			if err := e.prepareSegment(rungDir, s); err != nil {
-				log.Printf("[%s] prepare segment %d failed: %v", channelID, s.Sequence, err)
+			if err := e.prepareSegmentFromSource(dir, s, d, sr); err != nil {
+				log.Printf("[%s] prepare segment %d (rend=%s) failed: %v", channelID, s.Sequence, j.rend, err)
 			}
-		}(seg, dest)
+		}(seg, dest, src)
 	}
 	wg.Wait()
 }
 
-// prepareSegment ensures the segment is downloaded and has its PTS/DTS rewritten
-// (marked by the .pts marker). Idempotent: skips when the marker already exists.
-// M2: `rungDir` is the per-rung subdir; the .pts marker lives next to the
-// rung's own seg_N.ts file.
-func (e *Engine) prepareSegment(rungDir string, seg models.SegmentItem) error {
-	dest := filepath.Join(rungDir, fmt.Sprintf("seg_%d.ts", seg.Sequence))
+// prepareSegmentFromSource is like prepareSegment but takes an explicit
+// source path (StoragePath with {rendition} already substituted) and an
+// explicit dest file (seg_{seq}_{rend}.ts).
+func (e *Engine) prepareSegmentFromSource(dir string, seg models.SegmentItem, dest, src string) error {
 	marker := dest + ".pts"
 
 	if _, err := os.Stat(marker); err == nil {
 		return nil // already prepared
 	}
 
-	// Stat the .ts file with an explicit "not exists" check (defensive against
-	// a Stat returning a transient error masking a missing file, which would
-	// otherwise skip the download and fail inside rewritePtsOffset with
-	// "No such file or directory").
 	needDownload := false
 	if _, err := os.Stat(dest); err != nil {
 		if !os.IsNotExist(err) {
-			// Some other stat error (perm denied, IO blip) -- treat as
-			// missing and let the download path retry.
-			log.Printf("[%s] Stat dest error: %v (will re-download)", filepath.Base(rungDir), err)
+			log.Printf("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
 		}
 		needDownload = true
 	}
 	if needDownload {
-		if err := e.rclone.CopyTo(seg.StoragePath, dest); err != nil {
-			return fmt.Errorf("download %s: %w", seg.StoragePath, err)
+		if err := e.rclone.CopyTo(src, dest); err != nil {
+			return fmt.Errorf("download %s: %w", src, err)
 		}
 	}
 
-	// Belt + braces: verify the file is actually on disk before handing it
-	// to ffmpeg. A racing syncLocalCacheDir + recreate race could otherwise
-	// pass a missing path to rewritePtsOffset.
 	if _, err := os.Stat(dest); err != nil {
 		return fmt.Errorf("verify dest after download: %w", err)
 	}
 
 	if err := e.rewritePtsOffset(dest, marker, seg); err != nil {
-		// Keep the raw file (legacy behavior) but still mark it so the window never stalls
-		log.Printf("[%s] PTS rewrite failed for %s: %v", filepath.Base(rungDir), filepath.Base(dest), err)
+		log.Printf("[%s] PTS rewrite failed for %s: %v", filepath.Base(dir), filepath.Base(dest), err)
 		return e.markPrepared(marker)
 	}
 
@@ -535,12 +585,13 @@ func probeFirstVideoDTS(path string) (float64, error) {
 	return v, nil
 }
 
-// generateHLSPlaylist writes a per-rung media playlist into the rung's own
-// subdir ({ch}/{rend}/playlist.m3u8). M2: each rung has its OWN seg_N.ts
-// files + .pts markers in its subdir, so the marker filter checks the rung
-// subdir (NOT the channel root). The playlist references the rung's own
-// seg_N.ts files (relative URIs, so they resolve inside the rung subdir).
-func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID, rendition string, segments []models.SegmentItem) {
+// generateRenditionPlaylist writes one media playlist per rendition
+// into the rung's own subdir. M3.2: layout is
+// `{TMP_DIR}/{ch}/{rend}/playlist.m3u8` referencing the flat
+// `seg_{seq}.ts` files in the SAME subdir (each rendition downloads
+// from its own tier bucket). Only segments whose per-rung .pts marker
+// exists are advertised, so players never 404 on a half-prepared file.
+func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendition string, segments []models.SegmentItem) {
 	if len(segments) == 0 {
 		return
 	}
@@ -551,7 +602,7 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID, rendition s
 
 	// Only advertise prepared segments (downloaded + PTS-rewritten, with the
 	// .pts marker) so players never request files still being written /
-	// missing -> avoids 404 buffering. M2: markers live in the rung subdir.
+	// missing -> avoids 404 buffering. M3.2: marker is in the rung subdir.
 	rDir := rungDir(e.tmpDir, channelID, rendition)
 	var available []models.SegmentItem
 	for _, seg := range segments {
@@ -586,14 +637,14 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID, rendition s
 		return
 	}
 
-	playlistPath := filepath.Join(rDir, rungPlaylistFilename(rendition))
+	playlistPath := filepath.Join(rDir, "playlist.m3u8")
 	tmpPlaylistPath := playlistPath + ".tmp"
 
 	if err := os.WriteFile(tmpPlaylistPath, []byte(playlist), 0644); err == nil {
 		_ = os.Rename(tmpPlaylistPath, playlistPath)
 	}
 
-	_ = e.rdb.Set(ctx, rungMediaRedisKey(channelID, rendition), playlist, 24*time.Hour).Err()
+	_ = e.rdb.Set(ctx, renditionMediaRedisKey(channelID, rendition), playlist, 24*time.Hour).Err()
 }
 
 // generateMasterPlaylist renders the master playlist from the supplied
@@ -601,7 +652,8 @@ func (e *Engine) generateHLSPlaylist(ctx context.Context, channelID, rendition s
 // hard-coded ActiveLadder fallback) so this function is pure: same input
 // -> same output, easy to unit-test. Always writes -- even on ticks with
 // no recent candidates -- so a player reload never gets a 404 against
-// the master URI.
+// the master URI. M3: each STREAM-INF points at the flat
+// `playlist_{rend}.m3u8` in the channel root (not a rung subdir).
 func (e *Engine) generateMasterPlaylist(ctx context.Context, channelID string, meta []RenditionMeta) {
 	if len(meta) == 0 {
 		// Defensive: caller should always pass at least one rung (the

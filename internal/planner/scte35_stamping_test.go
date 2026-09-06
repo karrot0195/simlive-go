@@ -277,7 +277,7 @@ func TestInsertAdsIfNeeded_StampsAllAdsWithBreakMetadata(t *testing.T) {
 	defer func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
-		rdb.Del(cleanCtx, timelineKeyFor(chID, "360p"))
+		rdb.Del(cleanCtx, timelineKeyFor(chID))
 	}()
 
 	const breakStart = 1725014400.0 // fixed for stable ID across the test
@@ -294,12 +294,11 @@ func TestInsertAdsIfNeeded_StampsAllAdsWithBreakMetadata(t *testing.T) {
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
 		},
-		pipe:            rdb.Pipeline(),
-		ctx:             ctx,
-		sequenceCounter: 100, // arbitrary starting sequence
-		adSegments:      ads,
-		channelID:       chID,
-		currentRendition: "360p",
+		pipe:             rdb.Pipeline(),
+		ctx:              ctx,
+		sequenceCounter:  100, // arbitrary starting sequence
+		adSegments:       ads,
+		channelID:        chID,
 		// nowUnix in the past so actualStartTime >= nowUnix + 30s guard passes.
 		nowUnix: 1.0,
 		// lastAdTime far in the past so (actualStartTime - lastAdTime) >=
@@ -322,7 +321,7 @@ func TestInsertAdsIfNeeded_StampsAllAdsWithBreakMetadata(t *testing.T) {
 	// fields. The 3 ads landed at scores [breakStart, breakStart+6,
 	// breakStart+12) and all must share the SAME AdBreakID +
 	// AdBreakStart + AdBreakDuration.
-	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: fmt.Sprintf("%d", int64(breakStart)-1), Max: "+inf"}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore: %v", err)
@@ -412,7 +411,7 @@ func TestStampSliceEvents_OnVODAndAdSegments(t *testing.T) {
 	defer func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
-		rdb.Del(cleanCtx, timelineKeyFor(chID, "360p"))
+		rdb.Del(cleanCtx, timelineKeyFor(chID))
 	}()
 
 	const breakStart = 30.0
@@ -444,16 +443,15 @@ func TestStampSliceEvents_OnVODAndAdSegments(t *testing.T) {
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
 		},
-		pipe:            rdb.Pipeline(),
-		ctx:             ctx,
-		sequenceCounter: 200, // start well above the VOD seqs so ads have fresh numbers
-		adSegments:      ads,
-		channelID:       chID,
-		currentRendition: "360p",
-		nowUnix:         1.0,
-		lastAdTime:      0.0, // 0 so (30 - 0) >= AdInsertionInterval=30 is satisfied
-		runningTime:     breakStart,
-		horizon:         time.Time{}, // no horizon => isEndOfTimeline is no-op
+		pipe:             rdb.Pipeline(),
+		ctx:              ctx,
+		sequenceCounter:  200, // start well above the VOD seqs so ads have fresh numbers
+		adSegments:       ads,
+		channelID:        chID,
+		nowUnix:          1.0,
+		lastAdTime:       0.0, // 0 so (30 - 0) >= AdInsertionInterval=30 is satisfied
+		runningTime:      breakStart,
+		horizon:          time.Time{}, // no horizon => isEndOfTimeline is no-op
 	}
 	// Don't pre-flush the VOD buffer: the pre-roll loop runs
 	// against the in-memory sp.planner.processingSegments and mutates the
@@ -475,7 +473,7 @@ func TestStampSliceEvents_OnVODAndAdSegments(t *testing.T) {
 	// Read back the ZSET across the whole range so we see both the
 	// 5 VOD members and the 3 ad members (the ZSET was empty before
 	// this test, so we read everything we wrote).
-	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore: %v", err)
@@ -623,7 +621,7 @@ func TestStampSliceEvents_PreRollBeforeTimelineBase(t *testing.T) {
 	defer func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
-		rdb.Del(cleanCtx, timelineKeyFor(chID, "360p"))
+		rdb.Del(cleanCtx, timelineKeyFor(chID))
 	}()
 
 	const breakStart = 2.0 // earlier than any possible pre-roll target
@@ -638,16 +636,15 @@ func TestStampSliceEvents_PreRollBeforeTimelineBase(t *testing.T) {
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
 		},
-		pipe:            rdb.Pipeline(),
-		ctx:             ctx,
-		sequenceCounter: 300,
-		adSegments:      ads,
-		channelID:       chID,
-		currentRendition: "360p",
-		nowUnix:         1.0,
-		lastAdTime:      -30.0, // negative so (2 - (-30)) = 32 >= 30 -- the 30s guard passes
-		runningTime:     breakStart,
-		horizon:         time.Time{},
+		pipe:             rdb.Pipeline(),
+		ctx:              ctx,
+		sequenceCounter:  300,
+		adSegments:       ads,
+		channelID:        chID,
+		nowUnix:          1.0,
+		lastAdTime:       -30.0, // negative so (2 - (-30)) = 32 >= 30 -- the 30s guard passes
+		runningTime:      breakStart,
+		horizon:          time.Time{},
 		// NO processingSegments: there are no VOD members before
 		// the ad break (this models the first ad of a channel).
 	}
@@ -659,7 +656,7 @@ func TestStampSliceEvents_PreRollBeforeTimelineBase(t *testing.T) {
 		t.Fatalf("pipe.Exec: %v", err)
 	}
 
-	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: "-inf", Max: "+inf"}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore: %v", err)
@@ -722,7 +719,7 @@ func TestStampSliceEvents_PreRollTargetNotYetScheduled(t *testing.T) {
 	defer func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
-		rdb.Del(cleanCtx, timelineKeyFor(chID, "360p"))
+		rdb.Del(cleanCtx, timelineKeyFor(chID))
 	}()
 
 	const breakStart = 100.0
@@ -737,16 +734,15 @@ func TestStampSliceEvents_PreRollTargetNotYetScheduled(t *testing.T) {
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
 		},
-		pipe:            rdb.Pipeline(),
-		ctx:             ctx,
-		sequenceCounter: 400,
-		adSegments:      ads,
-		channelID:       chID,
-		currentRendition: "360p",
-		nowUnix:         1.0,
-		lastAdTime:      0.0, // 0 so (100 - 0) >= 30 is satisfied
-		runningTime:     breakStart,
-		horizon:         time.Time{},
+		pipe:             rdb.Pipeline(),
+		ctx:              ctx,
+		sequenceCounter:  400,
+		adSegments:       ads,
+		channelID:        chID,
+		nowUnix:          1.0,
+		lastAdTime:       0.0, // 0 so (100 - 0) >= 30 is satisfied
+		runningTime:      breakStart,
+		horizon:          time.Time{},
 	}
 	// Pre-seed the planner's VOD buffer (the field lives on the
 	// shared Planner, not the per-call processor). No VOD at
@@ -766,7 +762,7 @@ func TestStampSliceEvents_PreRollTargetNotYetScheduled(t *testing.T) {
 	}
 
 	// The 2 VOD members must carry NO pre-roll entries.
-	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: "-inf", Max: fmt.Sprintf("%d", int64(breakStart)-1)}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore: %v", err)
@@ -786,7 +782,7 @@ func TestStampSliceEvents_PreRollTargetNotYetScheduled(t *testing.T) {
 	}
 
 	// The ad still carries its slice-point + cue-in.
-	adMembers, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	adMembers, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: fmt.Sprintf("%d", int64(breakStart)), Max: "+inf"}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore (ads): %v", err)
@@ -829,7 +825,7 @@ func TestStampSliceEvents_DedupOnReplay(t *testing.T) {
 	defer func() {
 		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cleanCancel()
-		rdb.Del(cleanCtx, timelineKeyFor(chID, "360p"))
+		rdb.Del(cleanCtx, timelineKeyFor(chID))
 	}()
 
 	const breakStart = 50.0
@@ -852,16 +848,15 @@ func TestStampSliceEvents_DedupOnReplay(t *testing.T) {
 			bucketName: "espx-video-lib:espx-video-lib",
 			adsBucket:  "espx-video-lib:espx-video-lib/ads-v3",
 		},
-		pipe:            rdb.Pipeline(),
-		ctx:             ctx,
-		sequenceCounter: 700,
-		adSegments:      ads,
-		channelID:       chID,
-		currentRendition: "360p",
-		nowUnix:         1.0,
-		lastAdTime:      0.0, // 0 so (50 - 0) >= 30 is satisfied
-		runningTime:     breakStart,
-		horizon:         time.Time{},
+		pipe:             rdb.Pipeline(),
+		ctx:              ctx,
+		sequenceCounter:  700,
+		adSegments:       ads,
+		channelID:        chID,
+		nowUnix:          1.0,
+		lastAdTime:       0.0, // 0 so (50 - 0) >= 30 is satisfied
+		runningTime:      breakStart,
+		horizon:          time.Time{},
 	}
 	// First tick: pre-seeded VOD buffer.
 	sp.planner.processingSegments = append([]models.SegmentItem{}, vod...)
@@ -898,7 +893,7 @@ func TestStampSliceEvents_DedupOnReplay(t *testing.T) {
 
 	// Assert: VOD seg 604 has exactly 2 pre-roll entries (NOT 4).
 	// Query the whole VOD range (below the break) to find seq=604.
-	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID, "360p"),
+	members, err := rdb.ZRangeByScore(ctx, timelineKeyFor(chID),
 		&redis.ZRangeBy{Min: "-inf", Max: fmt.Sprintf("%d", int64(breakStart))}).Result()
 	if err != nil {
 		t.Fatalf("ZRangeByScore (vod pre-break): %v", err)

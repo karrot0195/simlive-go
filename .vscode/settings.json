@@ -1,0 +1,11 @@
+{
+  "go.lintTool": "golangci-lint",
+  "go.lintOnSave": "package",
+  "gopls": {
+    "ui.diagnostic.diagnosticsTrigger": "Edit",
+    "analyses": {
+      "unusedvars": true,
+      "unusedparams": true
+    }
+  }
+}

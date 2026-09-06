@@ -11,8 +11,6 @@ import (
 const TSP_BINARY = "tsp"  // Ensure tsp is in PATH
 const SCTE35_PID = "0x30" // Typical PID for SCTE-35
 
-const logger = "TsDuckUtils"
-
 const SEG_TYPE_ADVERTISEMENT_START = 0x34 // Advertisement Start (slice point)
 
 // PTS_MASK is the 33-bit MPEG-TS PTS range (2^33 - 1). SCTE-35 pts_time is a

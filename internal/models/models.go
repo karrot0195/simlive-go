@@ -99,14 +99,14 @@ type SegmentItem struct {
 	// nil on legacy segments that lack this field (engine falls back to MediaStart).
 	PtsOffset *float64 `json:"pts_offset,omitempty"`
 
-	// Rendition is the active quality rung this segment was prepared under
+	// Renditions is the active quality rung this segment was prepared under
 	// (e.g. "360p", "720p", "1080p"). The planner writes it on every member
 	// (VOD + ads) and the engine uses it to dispatch the segment to the
 	// correct per-rung directory ({TMP_DIR}/{ch}/{rend}/seg_N.ts) + media
 	// playlist. Empty == legacy member without rendition tagging; the engine
 	// rescues it to DefaultRendition ("360p"). Omitted from JSON when empty
 	// so members written before M1 round-trip unchanged.
-	Rendition string `json:"rendition,omitempty"`
+	Renditions []string `json:"rendition,omitempty"`
 
 	// --- SCTE-35 ad-break markers (see docs/300826-implement-scte35-cue-markers.md) ---
 	//

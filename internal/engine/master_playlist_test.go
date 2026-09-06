@@ -152,59 +152,13 @@ func TestSortRungsByLadder(t *testing.T) {
 	}
 }
 
-// --- TestGroupSegsByRendition_Defaults --------------------------------------
-
-func TestGroupSegsByRendition_Defaults(t *testing.T) {
-	in := []models.SegmentItem{
-		{Sequence: 1, Rendition: ""},
-		{Sequence: 2, Rendition: ""},
-	}
-	out := groupSegsByRendition(in)
-	segs, ok := out[DefaultRendition]
-	if !ok {
-		t.Fatalf("missing default-rendition key (=%q); got keys: %v", DefaultRendition, keysOf(out))
-	}
-	if len(segs) != 2 {
-		t.Fatalf("default rung has %d segs, want 2", len(segs))
-	}
-	for i, s := range segs {
-		if s.Sequence != int64(i+1) {
-			t.Fatalf("segs[%d].Sequence = %d, want %d", i, s.Sequence, i+1)
-		}
-	}
-}
-
-// --- TestGroupSegsByRendition_MultiRung -------------------------------------
-
-func TestGroupSegsByRendition_MultiRung(t *testing.T) {
-	in := []models.SegmentItem{
-		{Sequence: 1, Rendition: "360p"},
-		{Sequence: 2, Rendition: "720p"},
-		{Sequence: 3, Rendition: "360p"},
-	}
-	out := groupSegsByRendition(in)
-	if len(out["360p"]) != 2 {
-		t.Fatalf("360p rung has %d segs, want 2", len(out["360p"]))
-	}
-	if len(out["720p"]) != 1 {
-		t.Fatalf("720p rung has %d segs, want 1", len(out["720p"]))
-	}
-	if got := len(out["360p"]) + len(out["720p"]); got != len(in) {
-		t.Fatalf("total grouped = %d, want %d (no segment dropped)", got, len(in))
-	}
-	// Sequence order preserved within each group.
-	if out["360p"][0].Sequence != 1 || out["360p"][1].Sequence != 3 {
-		t.Fatalf("360p seq order lost: %v", seqsOf(out["360p"]))
-	}
-}
-
 // --- TestPickRenditionURIs + TestRungDir / TestChannelDir helpers ------------
 
 func TestPickRenditionURIs(t *testing.T) {
 	metas := []RenditionMeta{{Rendition: "360p"}, {Rendition: ""}}
 	got := pickRenditionURIs(metas)
-	// M2: per-rung media playlist URIs are "{rend}/playlist.m3u8" (nested
-	// under the rung subdir). Empty rendition rescues to DefaultRendition.
+	// M3: per-rendition media playlist URIs are "playlist_{rend}.m3u8" in the
+	// channel root. Empty rendition rescues to DefaultRendition.
 	want := []string{"360p/playlist.m3u8", "360p/playlist.m3u8"}
 	for i := range want {
 		if got[i] != want[i] {
@@ -213,31 +167,14 @@ func TestPickRenditionURIs(t *testing.T) {
 	}
 }
 
-func TestRungPlaylistFilename(t *testing.T) {
-	// M2: rung media playlist filename is always "playlist.m3u8" (it lives
-	// inside the rung subdir).
-	if got := rungPlaylistFilename("360p"); got != "playlist.m3u8" {
-		t.Fatalf("rungPlaylistFilename(360p) = %q, want playlist.m3u8", got)
-	}
-	if got := rungPlaylistFilename(""); got != "playlist.m3u8" {
-		t.Fatalf("rungPlaylistFilename(\"\") = %q, want playlist.m3u8", got)
-	}
-}
-
 func TestChannelDirAndRedisKeys(t *testing.T) {
-	// M2: channelDir is the channel root; rungDir is the per-rung subdir.
+	// M3: channelDir is the channel root; no per-rung subdir.
 	if got := channelDir("/tmp/out", "ch1"); got != "/tmp/out/ch1" {
 		t.Fatalf("channelDir = %q", got)
 	}
-	if got := rungDir("/tmp/out", "ch1", "360p"); got != "/tmp/out/ch1/360p" {
-		t.Fatalf("rungDir = %q", got)
-	}
-	if got := rungDir("/tmp/out", "ch1", ""); got != "/tmp/out/ch1/360p" {
-		t.Fatalf("rungDir(empty) = %q, want rescue to 360p", got)
-	}
-	// Per-rung Redis key shape "simlive:hls:{ch}:rendition:{rend}".
-	if got := rungMediaRedisKey("ch1", "360p"); got != "simlive:hls:ch1:rendition:360p" {
-		t.Fatalf("rungMediaRedisKey = %q", got)
+	// Per-rendition Redis key shape "simlive:hls:{ch}:rendition:{rend}".
+	if got := renditionMediaRedisKey("ch1", "360p"); got != "simlive:hls:ch1:rendition:360p" {
+		t.Fatalf("renditionMediaRedisKey = %q", got)
 	}
 	if got := masterRedisKey("ch1"); got != "simlive:hls:ch1" {
 		t.Fatalf("masterRedisKey = %q", got)
@@ -272,6 +209,9 @@ func TestActiveLadder_HasThreeRungs(t *testing.T) {
 // playlist (channel root) and other rung subdirs are untouched.
 func TestSyncLocalCacheDir_PerRungDir(t *testing.T) {
 	tmp := t.TempDir()
+	// M3.2: layout is {TMP_DIR}/{ch}/{rend}/. syncLocalCacheDir is called on
+	// a rung subdir; it GCs stale .ts/.pts files in THAT subdir. The master
+	// (channel root) and other rung subdirs are untouched.
 	rDir := filepath.Join(tmp, "ch1", "360p")
 	if err := os.MkdirAll(rDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)

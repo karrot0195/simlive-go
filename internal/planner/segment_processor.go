@@ -101,7 +101,9 @@ type SegmentProcessor struct {
 	// top of processStreamSegments. Every member (VOD + ads) written by this
 	// processor carries this tag so the engine can dispatch it to the right
 	// per-rung directory. See docs/300826-multi-rendition-abr-ladder.md §3.
-	currentRendition string
+	// currentRendition string
+
+	logger utils.Logger
 }
 
 func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
@@ -135,17 +137,28 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 }
 
 func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
-	// M2: the processor is pinned to ONE rung (sp.currentRendition, set by
-	// ProcessEPGToTimeline when it constructs one processor per rung). Every
-	// member (VOD + ads) written by this processor carries that rung tag and
-	// lands in that rung's ZSET + per-rung directory on the engine side.
-	rung := sp.currentRendition
-	if rung == "" {
-		rung = DefaultRendition
-	}
+	masterPath := fmt.Sprintf("%s/%s/vod.m3u8", sp.planner.bucketName, streamID)
+	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 
-	pair := sp.planner.resolveRenditionsFor(streamID, rung)
-	m3u8Path := fmt.Sprintf("%s/%s/%s/vod.m3u8", sp.planner.bucketName, streamID, pair.vod)
+	// M3.2: the upstream playlist advertises its L_* tier dirs (e.g. ["L_0","L_2"]).
+	// We map each tier to a rendition LABEL (360p/720p/1080p) so the engine
+	// can download each rung from its own tier bucket. The fallback map
+	// (fallbackRenditionForTier) is the source of truth for L_* -> label.
+	// We synthesize the full 3-rung label set so the master playlist always
+	// lists 360p/720p/1080p even when the upstream only provides 2 tiers.
+	// renditions := []string{"360p", "720p", "1080p"}
+
+	// Read the highest-quality upstream m3u8 to drive the VOD timeline
+	// (duration, pts_start, pts_end). The engine will pull the OTHER rungs
+	// from their own L_* buckets on demand via StoragePath's {rendition}
+	// placeholder.
+	var primaryRung string
+	if len(upstreamRends) > 0 {
+		primaryRung = upstreamRends[0]
+	} else {
+		primaryRung = "L_0"
+	}
+	m3u8Path := fmt.Sprintf("%s/%s/%s/vod.m3u8", sp.planner.bucketName, streamID, primaryRung)
 	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
 	if err != nil {
 		return fmt.Errorf("failed to fetch m3u8: %w", err)
@@ -207,10 +220,13 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 				mediaEnd = mediaStart + calculatedDuration
 			}
 
+			sp.logger.Info(fmt.Sprintf("start processing for %s", streamID))
 			// 2. Process and write the regular video segment to Redis (single function owns the sequence)
-			if err := sp.processSegment(streamID, pair.vod, line, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd); err != nil {
+			if err := sp.processSegment(streamID, upstreamRends, line, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd); err != nil {
 				return err
 			}
+
+			sp.logger.Info(fmt.Sprintf("finished processing for %s", streamID))
 
 			// Advance runningTime by the actual video segment
 			sp.runningTime = mediaEnd
@@ -219,9 +235,9 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 	return nil
 }
 
-func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64) error {
+func (sp *SegmentProcessor) processSegment(streamID string, renditions []string, line string, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64) error {
 	sp.sequenceCounter++ // Single +1 sequence bump here for video
-	segmentPath := fmt.Sprintf("%s/%s/%s/%s", sp.planner.bucketName, streamID, vodDir, line)
+	segmentPath := fmt.Sprintf("%s/%s/%s/%s", sp.planner.bucketName, streamID, "{rendition}", line)
 	ptsOffset := sp.setTimelineBase(mediaStart)
 
 	segment := models.SegmentItem{
@@ -234,7 +250,7 @@ func (sp *SegmentProcessor) processSegment(streamID, vodDir, line string, durati
 		MediaStart:  mediaStart,
 		MediaEnd:    mediaEnd,
 		PtsOffset:   &ptsOffset,
-		Rendition:   sp.currentRendition, // M1: engine dispatches by tag.
+		Renditions:  renditions, // M1: engine dispatches by tag.
 	}
 
 	if mediaStart >= (sp.nowUnix - WindowBufferSeconds) {
@@ -369,7 +385,6 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		sp.sequenceCounter++ // Standard +1 sequence bump
 		adItem := adSeg
 		adItem.Sequence = sp.sequenceCounter
-		adItem.Rendition = sp.currentRendition // M1: tag ad with the same rung as the VOD it follows.
 
 		// Map the ad right after the current runningTime
 		adItem.MediaStart = sp.runningTime
@@ -438,7 +453,7 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 // processor's currentRendition is part of the key. Per-call (not a shared
 // Planner field) so concurrent channels write to their own keys.
 func (sp *SegmentProcessor) timelineKey() string {
-	return timelineKeyFor(sp.channelID, sp.currentRendition)
+	return timelineKeyFor(sp.channelID)
 }
 
 // flushBatch flushes the processor's pipeline. Mirrors the old

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"simlive/internal/models"
 )
 
 // DefaultRendition is the rescue rung used when a SegmentItem has no
@@ -56,17 +54,23 @@ type RenditionMeta struct {
 // the per-rung playlist candidate selection, but the actual download and
 // .pts marker paths are NOT bucketed -- a single flat set of files is
 // produced for all rungs.
-func groupSegsByRendition(allSegs []models.SegmentItem) map[string][]models.SegmentItem {
-	out := make(map[string][]models.SegmentItem)
-	for _, seg := range allSegs {
-		rend := seg.Rendition
-		if rend == "" {
-			rend = DefaultRendition
-		}
-		out[rend] = append(out[rend], seg)
-	}
-	return out
-}
+// func groupSegsByRendition(allSegs []models.SegmentItem) map[string][]models.SegmentItem {
+// 	out := make(map[string][]models.SegmentItem)
+// 	for _, seg := range allSegs {
+// 		rend := primaryRendition(seg.Renditions)
+// 		out[rend] = append(out[rend], seg)
+// 	}
+// 	return out
+// }
+
+// // primaryRendition returns the first rendition label in a SegmentItem's
+// // Renditions slice, or DefaultRendition if the slice is empty.
+// func primaryRendition(rends []string) string {
+// 	if len(rends) == 0 {
+// 		return DefaultRendition
+// 	}
+// 	return rends[0]
+// }
 
 // resolveRung returns the rendition label used for the per-rung playlist
 // filename. Defensive: returns DefaultRendition if the input is empty.
@@ -75,13 +79,6 @@ func resolveRung(label string) string {
 		return DefaultRendition
 	}
 	return label
-}
-
-// rungPlaylistFilename returns the media-playlist filename for a rung.
-// M2: each rung's media playlist lives INSIDE its own rung subdir
-// ({ch}/{rend}/playlist.m3u8), so the filename is always "playlist.m3u8".
-func rungPlaylistFilename(rendition string) string {
-	return "playlist.m3u8"
 }
 
 // buildMasterPlaylist renders an HLS master playlist (RFC 8216 §4.3.4.2)
@@ -112,20 +109,11 @@ func buildMasterPlaylist(metas []RenditionMeta, renditionURIs []string) string {
 	return b.String()
 }
 
-// pickRenditionURIs maps the input meta slice to its per-rung media playlist
-// relative URIs ("playlist_360p.m3u8", "playlist_720p.m3u8", ...). M1.5:
-// the per-rung media playlists are flat files in the channel root next to
-// the master, not nested in {rend}/ subdirs. All rungs reference the same
-// shared seg_N.ts files on disk.
+// pickRenditionURIs maps the input meta slice to its per-rendition media
+// playlist relative URIs ("360p/playlist.m3u8", "720p/playlist.m3u8", ...).
+// M3.2: each media playlist lives in its own rung subdir
+// ({TMP_DIR}/{ch}/{rend}/playlist.m3u8), so the URI is "{rend}/playlist.m3u8".
 func pickRenditionURIs(metas []RenditionMeta) []string {
-	return pickRungMediaURIs(metas)
-}
-
-// pickRungMediaURIs returns the per-rung media-playlist URIs
-// (e.g. "360p/playlist.m3u8", "720p/playlist.m3u8", "1080p/playlist.m3u8")
-// in the same order as the input metas. M2: each media playlist lives in
-// its own rung subdir, so the URI is "{rend}/playlist.m3u8".
-func pickRungMediaURIs(metas []RenditionMeta) []string {
 	out := make([]string, len(metas))
 	for i, m := range metas {
 		out[i] = fmt.Sprintf("%s/playlist.m3u8", resolveRung(m.Rendition))
@@ -158,24 +146,24 @@ func ladderRank(label string, order map[string]int) int {
 	return len(order) // unknown labels sort last
 }
 
-// channelDir returns the channel root directory. M2: the channel root holds
-// the master playlist (playlist.m3u8) + one subdir per rung ({ch}/{rend}/),
-// each with its own media playlist + seg_N.ts files.
+// channelDir returns the channel root directory. M3.2: the channel root
+// holds the master playlist (playlist.m3u8) + one subdir per rendition
+// ({ch}/{rend}/), each with its own media playlist + seg_N.ts files.
 func channelDir(tmpDir, channelID string) string {
 	return fmt.Sprintf("%s/%s", tmpDir, channelID)
 }
 
-// rungDir returns the per-rung directory for a channel
-// ({TMP_DIR}/{ch}/{rend}/). M2: each rung downloads its own seg_N.ts files
-// and writes its own media playlist here.
+// rungDir returns the per-rendition subdir for a channel
+// (`{TMP_DIR}/{ch}/{rend}/`). M3.2: each rendition downloads its own
+// `seg_{seq}.ts` files and writes its own `playlist.m3u8` here.
 func rungDir(tmpDir, channelID, rendition string) string {
 	return fmt.Sprintf("%s/%s/%s", tmpDir, channelID, resolveRung(rendition))
 }
 
-// rungMediaRedisKey returns the per-rung media playlist Redis key
-// (e.g. "simlive:hls:ch1:rendition:360p"). The legacy flat
+// renditionMediaRedisKey returns the per-rendition media playlist Redis
+// key (e.g. "simlive:hls:ch1:rendition:360p"). The flat
 // "simlive:hls:ch1" key is reserved for the master playlist.
-func rungMediaRedisKey(channelID, rendition string) string {
+func renditionMediaRedisKey(channelID, rendition string) string {
 	return fmt.Sprintf("simlive:hls:%s:rendition:%s", channelID, resolveRung(rendition))
 }
 

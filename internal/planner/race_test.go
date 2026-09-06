@@ -33,8 +33,8 @@ import (
 // core guarantee that makes concurrent channel walking safe.
 func TestSegmentProcessor_IsolatesPerCallState(t *testing.T) {
 	p := &Planner{}
-	spA := &SegmentProcessor{planner: p, channelID: "A", currentRendition: "360p", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
-	spB := &SegmentProcessor{planner: p, channelID: "B", currentRendition: "720p", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
+	spA := &SegmentProcessor{planner: p, channelID: "A", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
+	spB := &SegmentProcessor{planner: p, channelID: "B", horizon: utils.EndOfDay(time.Now().Add(24 * time.Hour))}
 
 	// Advance A's walk state; B must be untouched.
 	spA.runningTime = 1000

@@ -25,7 +25,7 @@ func TestSegmentItem_Rendition_OmitsWhenEmpty(t *testing.T) {
 // survives a JSON round-trip when set. This is the inverse of the omitempty
 // contract: explicit values must be preserved.
 func TestSegmentItem_Rendition_Roundtrip(t *testing.T) {
-	s := SegmentItem{Sequence: 42, StoragePath: "x", Duration: 6.0, Rendition: "720p"}
+	s := SegmentItem{Sequence: 42, StoragePath: "x", Duration: 6.0, Renditions: []string{"720p"}}
 	b, err := json.Marshal(s)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -37,8 +37,8 @@ func TestSegmentItem_Rendition_Roundtrip(t *testing.T) {
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Rendition != "720p" {
-		t.Fatalf("Rendition = %q, want 720p", out.Rendition)
+	if out.Renditions[0] != "720p" {
+		t.Fatalf("Rendition = %q, want 720p", out.Renditions)
 	}
 }
 
@@ -51,8 +51,8 @@ func TestSegmentItem_LegacyUnmarshal_NoRenditionField(t *testing.T) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if s.Rendition != "" {
-		t.Fatalf("legacy member: Rendition = %q, want empty", s.Rendition)
+	if len(s.Renditions) == 0 {
+		t.Fatalf("legacy member: Rendition = %q, want empty", s.Renditions)
 	}
 	if s.Sequence != 7 {
 		t.Fatalf("Sequence = %d, want 7", s.Sequence)
@@ -63,8 +63,8 @@ func TestSegmentItem_LegacyUnmarshal_NoRenditionField(t *testing.T) {
 // different renditions marshal+unmarshal independently. This is the
 // invariant that lets the engine dispatch by tag without losing members.
 func TestSegmentItem_Rendition_MultiRung(t *testing.T) {
-	a := SegmentItem{Sequence: 1, Rendition: "360p"}
-	b := SegmentItem{Sequence: 2, Rendition: "720p"}
+	a := SegmentItem{Sequence: 1, Renditions: []string{"360p"}}
+	b := SegmentItem{Sequence: 2, Renditions: []string{"720p"}}
 
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
@@ -78,8 +78,8 @@ func TestSegmentItem_Rendition_MultiRung(t *testing.T) {
 	var ar, br SegmentItem
 	_ = json.Unmarshal(ab, &ar)
 	_ = json.Unmarshal(bb, &br)
-	if ar.Rendition != "360p" || br.Rendition != "720p" {
-		t.Fatalf("roundtrip lost rendition: a=%q b=%q", ar.Rendition, br.Rendition)
+	if ar.Renditions[0] != "360p" || br.Renditions[0] != "720p" {
+		t.Fatalf("roundtrip lost rendition: a=%q b=%q", ar.Renditions, br.Renditions)
 	}
 }
 

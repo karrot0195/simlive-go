@@ -20,7 +20,9 @@ import (
 )
 
 func main() {
-	godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Failed to load .env file: %v", err)
+	}
 
 	settings := utils.GetSettings()
 
@@ -31,7 +33,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect DB: %v", err)
 	}
-	db.AutoMigrate(&models.PlayoutChannel{})
+
+	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
+		log.Fatalf("Failed to migrate DB: %v", err)
+	}
 
 	// 2. Connect Redis
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
@@ -180,7 +185,8 @@ func main() {
 
 			if strings.Contains(channelID, "..") || strings.Contains(channelID, "/") ||
 				strings.Contains(rend, "..") || strings.Contains(rend, "/") ||
-				strings.Contains(segmentFile, "..") || strings.Contains(segmentFile, "/") {
+				strings.Contains(segmentFile, "..") || strings.Contains(segmentFile, "/") ||
+				strings.Contains(segmentFile, `\`) {
 				c.String(http.StatusBadRequest, "Invalid path")
 				return
 			}
@@ -220,7 +226,10 @@ func main() {
 	})
 
 	log.Println("🚀 SimLive Engine Server running on http://localhost:8080")
-	r.Run(":8080")
+
+	if err := r.Run(":8080"); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
 
 // corsMiddleware returns a Gin middleware that enables CORS for any
