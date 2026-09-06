@@ -100,7 +100,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 	defer ticker.Stop()
 
 	channelDir := filepath.Join(e.tmpDir, channelID)
-	logger := utils.GetLogger(fmt.Sprintf("PLANNER:%s", channelID))
+	logger := utils.GetLogger(fmt.Sprintf("ENGINE:%s", channelID))
 	if err := os.MkdirAll(channelDir, 0755); err != nil {
 		return
 	}
@@ -160,6 +160,13 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			// Master uses the union of renditions present + the static ladder
 			// so hls.js always sees a valid variant list.
 			e.generateMasterPlaylist(ctx, channelID, meta)
+
+			liveSeg := int64(-1)
+			if len(candidateSegs) > 0 {
+				liveSeg = candidateSegs[0].Sequence
+			}
+			logger.Info(fmt.Sprintf("[INFO] channel=%s live_segment=%d download_ahead=%d active_rungs=%d segments_in_window=%d",
+				channelID, liveSeg, e.downloadAhead, len(meta), len(candidateSegs)))
 		}
 	}
 }
@@ -440,12 +447,12 @@ func (e *Engine) prepareSegmentFromSource(dir string, seg models.SegmentItem, de
 	}
 
 	if seg.IsAd || len(seg.SliceInserts) > 0 {
-		e.applySliceEvents(seg, dest)
+		e.applySliceEvents(seg, dest, channelID)
 	}
 	return nil
 }
 
-func (e *Engine) applySliceEvents(seg models.SegmentItem, dest string) {
+func (e *Engine) applySliceEvents(seg models.SegmentItem, dest, channelID string) {
 	// Convert SpliceInsert events to SpliceEvent format for TSDuck injection
 	events := seg.SliceInserts
 	currentFile := dest
@@ -467,10 +474,10 @@ func (e *Engine) applySliceEvents(seg models.SegmentItem, dest string) {
 			// Replace current file with injected version
 			err := os.Rename(tempFile, currentFile)
 			if err != nil {
-				log.Printf("Failed to move %s to %s: %v", tempFile, currentFile, err)
+				log.Printf("[SCTE35] event=rename_failed channel=%s temp=%s dest=%s error=%v", channelID, tempFile, currentFile, err)
 				return
 			}
-			log.Printf("[%d] Injected pmt for %s", seg.Sequence, currentFile)
+			log.Printf("[SCTE35] event=pmt_injected channel=%s segment=%d file=%s", channelID, seg.Sequence, currentFile)
 		}
 
 		return
@@ -483,7 +490,7 @@ func (e *Engine) applySliceEvents(seg models.SegmentItem, dest string) {
 
 		success := utils.InjectSpliceEvent(currentFile, tempFile, xml)
 		if !success {
-			log.Printf("Splice injection failed for %s", dest)
+			log.Printf("[SCTE35] event=splice_injection_failed channel=%s file=%s", channelID, dest)
 			if _, err := os.Stat(tempFile); err == nil {
 				os.Remove(tempFile)
 			}
@@ -496,7 +503,7 @@ func (e *Engine) applySliceEvents(seg models.SegmentItem, dest string) {
 			log.Printf("Failed to move %s to %s: %v", tempFile, currentFile, err)
 			return
 		}
-		log.Printf("Injected %s splice event into %s", se.Type, currentFile)
+		log.Printf("[SCTE35] event=splice_injected channel=%s file=%s event_type=%s", channelID, currentFile, se.Type)
 	}
 }
 

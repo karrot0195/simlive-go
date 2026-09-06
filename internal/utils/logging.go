@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -12,19 +13,26 @@ type Logger = *slog.Logger
 
 // GetLogger returns a configured slog.Logger that outputs to both console and a rotating log file.
 func GetLogger(logName string) *slog.Logger {
-	// 1. Configure rotating file writer
-	fileWriter := &lumberjack.Logger{
-		Filename:   "/tmp/logs/" + logName + ".log",
-		MaxSize:    500,  // Megabytes before rotating
-		MaxAge:     3,    // Days to retain old log files
-		MaxBackups: 10,   // Maximum number of old log files to retain
-		Compress:   true, // Compress rotated files with gzip
+	_ = os.MkdirAll("/tmp/logs", 0755)
+
+	channelWriter := &lumberjack.Logger{
+		Filename:   filepath.Join("/tmp/logs", logName+".log"),
+		MaxSize:    500,
+		MaxAge:     7,
+		MaxBackups: 10,
+		Compress:   true,
 	}
 
-	// 2. Combine stdout (console) and file into a single MultiWriter
-	multiWriter := io.MultiWriter(os.Stdout, fileWriter)
+	verboseWriter := &lumberjack.Logger{
+		Filename:   "/tmp/logs/verbose.log",
+		MaxSize:    500,
+		MaxAge:     7,
+		MaxBackups: 10,
+		Compress:   true,
+	}
 
-	// 3. Pass the combined multiWriter to slog JSONHandler
+	multiWriter := io.MultiWriter(os.Stdout, channelWriter, verboseWriter)
+
 	logger := slog.New(slog.NewJSONHandler(multiWriter, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))

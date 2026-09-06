@@ -108,8 +108,8 @@ func logMetrics(ctx context.Context, p *planner.Planner, channels []models.Playo
 		if cursor > 0 {
 			cursorStr = time.Unix(cursor, 0).UTC().Format("2006-01-02T15:04:05Z")
 		}
-		log.Printf("[METRIC] channel=%s name=%q zset_size=%d cursor=%s",
-			ch.ID, ch.Name, size, cursorStr)
+		log.Printf("[METRIC] channel=%s name=%q zset_size=%d cursor=%s live_segment=%d download_ahead=%d",
+			ch.ID, ch.Name, size, cursorStr, cursor, 5)
 	}
 }
 

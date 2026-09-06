@@ -12,6 +12,15 @@
 
 ---
 
+## 2026-09-06 — Logging module: per-channel + verbose aggregate
+
+**Context:** User asked to implement logging module to planner and engines — separate log per channel, all logs to verbose, clean up in time.
+**Change:** Updated `internal/utils/logging.go` (`GetLogger` writes stdout + per-channel file + `/tmp/logs/verbose.log`, 500MB rotate, 7-day retention). Planner uses `PLANNER:{ch.ID}`; engine uses `ENGINE:{channelID}`.
+**Files touched:** `internal/utils/logging.go`, `internal/planner/planner.go`, `internal/engine/engine.go`
+**Notes:** Build passes (`go build ./...`). Cleanup automatic via lumberjack.
+
+---
+
 ## 2026-08-30 09:35 — Documentation pass: memory log created + drift audit
 
 **Context:** User invoked the skill to "summary the current context → update into 3 files" (`docs/memories.md`, `docs/specification.md`, `instructions`). This is the **first session entry** — no prior `docs/memories.md` existed, so this file is being created fresh.

@@ -395,9 +395,10 @@ paths:
             - 360p
             - 720p
             - 1080p
-            - 360p.m3u8
-            - 720p.m3u8
-            - 1080p.m3u8
+        description: |
+          Ladder rung (`hlsRungs` in `internal/api/handler.go`:
+          `360p`, `720p`, `1080p`). The `.m3u8` suffix is part of the
+          URL path (`/playlist.m3u8`), not the `rendition` param.
         description: |
           Ladder rung. Gin strips the `.m3u8` suffix via the wildcard
           literal so `playlist_360p.m3u8` → `rend="360p"`. Anything

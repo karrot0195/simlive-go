@@ -99,13 +99,13 @@ func InjectSpliceEvent(inputFile string, outputFile string, xmlContent string) b
 	// Tạo file XML tạm thời để chứa nội dung
 	xmlFile, err := os.CreateTemp("", "scte35_*.xml")
 	if err != nil {
-		log.Printf("Failed to create temp XML file: %v", err)
+		log.Printf("[SCTE35] event=tsduck_xml_create_failed error=%v", err)
 		return false
 	}
 	defer os.Remove(xmlFile.Name())
 
 	if _, err := xmlFile.WriteString(xmlContent); err != nil {
-		log.Printf("Failed to write XML content: %v", err)
+		log.Printf("[SCTE35] event=tsduck_xml_write_failed error=%v", err)
 		return false
 	}
 	xmlFile.Close()
@@ -121,7 +121,7 @@ func InjectSpliceEvent(inputFile string, outputFile string, xmlContent string) b
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()
 	if err != nil {
-		log.Printf("TSDuck injection failed for %s: %v", inputFile, err)
+		log.Printf("[SCTE35] event=tsduck_injection_failed file=%s error=%v", inputFile, err)
 		return false
 	}
 
@@ -135,11 +135,11 @@ func InjectSpliceEvent(inputFile string, outputFile string, xmlContent string) b
 		cmd.Stderr = os.Stderr
 		err := cmd.Run()
 		if err != nil {
-			log.Printf("SCTE-35 splice verification failed for %s: %v", outputFile, err)
+			log.Printf("[SCTE35] event=splice_verification_failed file=%s error=%v", outputFile, err)
 		}
 	}
 
-	log.Printf("TSDuck injection succeeded for %s", inputFile)
+	log.Printf("[SCTE35] event=tsduck_injection file=%s status=success", inputFile)
 	return true
 }
 
@@ -157,10 +157,10 @@ func ConfigurePmtForScte35(inputFile string, outputFile string) bool {
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		log.Printf("PMT configuration failed for %s: %v", inputFile, err)
+		log.Printf("[SCTE35] event=pmt_config_failed file=%s error=%v", inputFile, err)
 		return false
 	}
-	log.Printf("PMT configuration succeeded for %s", inputFile)
+	log.Printf("[SCTE35] event=pmt_config_success file=%s", inputFile)
 	return true
 }
 
