@@ -114,7 +114,9 @@ func logMetrics(ctx context.Context, p *planner.Planner, channels []models.Playo
 }
 
 func main() {
-	godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Failed to load .env file: %v", err)
+	}
 
 	settings := utils.GetSettings()
 
@@ -125,7 +127,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect DB: %v", err)
 	}
-	db.AutoMigrate(&models.PlayoutChannel{})
+
+	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
+		log.Fatalf("Failed to migrate DB: %v", err)
+	}
 
 	// 2. Connect Redis
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})

@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -33,7 +34,7 @@ func TestEnginePrepareEnv_DefaultPreservesCache(t *testing.T) {
 		t.Fatalf("plant sentinel: %v", err)
 	}
 
-	PrepareEnv(nil, nil) // rdb is nil; the no-op early-return handles it
+	PrepareEnv(context.TODO(), nil) // rdb is nil; the no-op early-return handles it
 
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Errorf("sentinel was removed by PrepareEnv (default = preserve); err=%v", err)
@@ -52,7 +53,7 @@ func TestEnginePrepareEnv_OptInRemovesCache(t *testing.T) {
 		t.Fatalf("plant sentinel: %v", err)
 	}
 
-	PrepareEnv(nil, nil)
+	PrepareEnv(context.TODO(), nil)
 
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
 		t.Errorf("sentinel survived PrepareEnv with ENABLE_CLEAN_UP=true; want removed")

@@ -34,11 +34,6 @@ const (
 )
 
 type channelState struct {
-	mu          sync.Mutex
-	firstSeq    int64
-	lastSeq     int64
-	lastEndTime int64
-	initialized bool
 }
 
 var RENDITIONMAP = []string{
@@ -66,7 +61,6 @@ type Engine struct {
 	workerPool    chan struct{}
 	enableCleanup bool
 	states        map[string]*channelState
-	statesMu      sync.Mutex
 
 	// Active on-disk window controls (SIMLIVE_KEEP_BEHIND, SIMLIVE_DOWNLOAD_AHEAD).
 	// Total on-disk files per channel <= keepBehind + PlaylistWindowSize + downloadAhead.
@@ -176,9 +170,11 @@ func (e *Engine) fetchTimeline(ctx context.Context, channelID string, nowUnix in
 	redisKey := fmt.Sprintf("simlive:timeline:%s", channelID)
 	min := fmt.Sprintf("%d", nowUnix-300)
 	max := fmt.Sprintf("%d", nowUnix+120)
-	items, err := e.rdb.ZRangeByScore(ctx, redisKey, &redis.ZRangeBy{
-		Min: min,
-		Max: max,
+	items, err := e.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:     redisKey,
+		Start:   min,
+		Stop:    max,
+		ByScore: true,
 	}).Result()
 	if err != nil || len(items) == 0 {
 		return nil

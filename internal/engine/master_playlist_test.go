@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-
-	"simlive/internal/models"
 )
 
 // ctxWithTimeout is a small helper for redis ops in this file.
@@ -414,19 +412,3 @@ func TestActiveRungMeta_FallsBackToActiveLadder(t *testing.T) {
 }
 
 // --- helpers ---------------------------------------------------------------
-
-func keysOf(m map[string][]models.SegmentItem) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
-}
-
-func seqsOf(segs []models.SegmentItem) []int64 {
-	out := make([]int64, len(segs))
-	for i, s := range segs {
-		out[i] = s.Sequence
-	}
-	return out
-}

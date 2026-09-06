@@ -34,15 +34,6 @@ func (r *spawnRecorder) spawn(_ context.Context) func(string, context.Context) {
 	}
 }
 
-// cancelForID returns the cancel func the reconciler stored in the
-// task map for the given channel id, or nil if the channel isn't
-// tracked.
-func cancelForID(tasks *map[string]context.CancelFunc, mu *sync.Mutex, id string) context.CancelFunc {
-	mu.Lock()
-	defer mu.Unlock()
-	return (*tasks)[id]
-}
-
 func (r *spawnRecorder) count() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()

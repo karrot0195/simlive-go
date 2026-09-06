@@ -456,13 +456,6 @@ func (sp *SegmentProcessor) timelineKey() string {
 	return timelineKeyFor(sp.channelID)
 }
 
-// flushBatch flushes the processor's pipeline. Mirrors the old
-// Planner.flushBatch(pipe, ctx).
-func (sp *SegmentProcessor) flushBatch() error {
-	_, err := sp.pipe.Exec(context.Background())
-	return err
-}
-
 // flush is the final step of ProcessEPGToTimeline: it sets the timeline
 // key's TTL and flushes the pipeline. Mirrors the old
 // Planner.flushRedisPipeline.
@@ -551,7 +544,9 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context) {
 			Member: string(member),
 		})
 	}
-	sp.pipe.BatchProcess(ctx)
+	if err := sp.pipe.BatchProcess(ctx); err != nil {
+		log.Printf("[Planner] BatchProcess error: %v", err)
+	}
 	if _, err := sp.pipe.Exec(context.Background()); err != nil {
 		log.Printf("[Planner] synchSegmentIntoRedis Exec: %v", err)
 	}

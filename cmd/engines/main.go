@@ -56,7 +56,9 @@ func PrepareEnv(ctx context.Context, rdb *redis.Client) {
 }
 
 func main() {
-	godotenv.Load()
+	if err := godotenv.Load(); err != nil {
+		log.Fatalf("Failed to load .env file: %v", err)
+	}
 
 	settings := utils.GetSettings()
 	maxWorkers, _ := strconv.Atoi(utils.GetEnv("MAX_WORKERS", "10"))
@@ -68,7 +70,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to connect DB: %v", err)
 	}
-	db.AutoMigrate(&models.PlayoutChannel{})
+
+	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
+		log.Fatalf("Failed to migrate DB: %v", err)
+	}
 
 	// 2. Connect Redis
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})

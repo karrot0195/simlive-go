@@ -8,7 +8,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -50,8 +49,6 @@ func prepareRetryMaxMs() int {
 var ErrEndOfTimeline = errors.New("end of timeline reached - processing complete")
 
 type renditionPair struct {
-	vod string
-	ads string
 }
 
 type Planner struct {
@@ -62,7 +59,6 @@ type Planner struct {
 	bucketName string
 	adsBucket  string
 
-	rendMu      sync.RWMutex
 	rendCache   map[string]renditionPair
 	ladderCache map[string]map[string]renditionPair
 
@@ -194,7 +190,12 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 }
 
 func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
-	items, err := p.rdb.ZRevRange(ctx, timelineKeyFor(channelID), 0, 0).Result()
+	items, err := p.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
+		Key:   timelineKeyFor(channelID),
+		Start: 0,
+		Stop:  0,
+		Rev:   true,
+	}).Result()
 	if err != nil || len(items) == 0 {
 		return 0
 	}
@@ -352,11 +353,7 @@ func (p *Planner) MarkChannelLiveForChannel(ctx context.Context, channelID strin
 }
 
 func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) error {
-	cursor := p.getCursor(ctx, ch.ID)
 	nowUnix := time.Now().Unix()
-	if cursor < nowUnix {
-		cursor = nowUnix
-	}
 	lookahead := nowUnix + LOOKAHEAD_SECONDS
 	p.setCursor(ctx, ch.ID, lookahead)
 	return nil

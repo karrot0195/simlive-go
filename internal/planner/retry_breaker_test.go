@@ -118,10 +118,6 @@ func TestMarkChannelLive_RespectsDB(t *testing.T) {
 	}
 }
 
-func ctxForTest() context.Context {
-	return context.Background()
-}
-
 // failureKey exposes the per-channel failure counter key for tests so we can
 // clean up the Redis key after each test (the planner doesn't expose a
 // public Delete helper for it).
