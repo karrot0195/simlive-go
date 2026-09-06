@@ -1,8 +1,36 @@
 import { createApp } from 'vue'
-import App from './App.vue'
+import { createPinia } from 'pinia'
 
-import './style.css'
+import 'vuetify/styles'
+import { createVuetify } from 'vuetify'
+import * as components from 'vuetify/components'
+import * as directives from 'vuetify/directives'
+import colors from 'vuetify/util/colors'
+import '@mdi/font/css/materialdesignicons.css'
 
-import '@videojs/html/live-video/skin.css'
+const vuetify = createVuetify({
+  components,
+  directives,
+  theme: {
+    themes: {
+      light: {
+        colors: {
+          primary: colors.grey.base,
+          secondary: colors.brown.base
+        }
+      }
+    }
+  }
+})
 
-createApp(App).mount('#app')
+// @ts-ignore
+import App from '@/App.vue'
+import router from './router'
+import './assets/index.css'
+const app = createApp(App)
+
+app.use(createPinia())
+app.use(router)
+app.use(vuetify)
+
+app.mount('#app')

@@ -1,0 +1,3 @@
+@espx:registry=http://128.199.149.51:4873/
+//128.199.149.51:4873/:_auth="basic_auth_token"
+//128.199.149.51:4873/:always-auth=true
