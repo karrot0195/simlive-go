@@ -20,35 +20,11 @@ import (
 	"simlive/internal/utils"
 )
 
-const (
-	WindowItemSize      = 50
-	AdInsertionInterval = 30 // seconds
-	RedisExpiryHours    = 26
-	WindowBufferSeconds = 120
-	RETENTION_SECONDS   = 7200
-	LOOKAHEAD_SECONDS   = 7200
-
-	defaultMaxPrepareRetries = 3
-	defaultPrepareRetryBase  = 500  // ms
-	defaultPrepareRetryMax   = 8000 // ms
-
-	failureInactivateThreshold = 5
-	failureCounterKey          = "planner:failures:%s"
-)
-
-func maxPrepareRetries() int {
-	return utils.GetEnvInt("MAX_PREPARE_RETRIES", defaultMaxPrepareRetries)
-}
-func prepareRetryBaseMs() int {
-	return utils.GetEnvInt("PREPARE_RETRY_BASE_MS", defaultPrepareRetryBase)
-}
-func prepareRetryMaxMs() int {
-	return utils.GetEnvInt("PREPARE_RETRY_MAX_MS", defaultPrepareRetryMax)
-}
-
 var ErrEndOfTimeline = errors.New("end of timeline reached - processing complete")
 
-type renditionPair struct {
+type LastSegmentState struct {
+	Sequence    int64
+	RunningTime float64
 }
 
 type Planner struct {
@@ -59,9 +35,6 @@ type Planner struct {
 	bucketName string
 	adsBucket  string
 
-	rendCache   map[string]renditionPair
-	ladderCache map[string]map[string]renditionPair
-
 	isBlockingProcessing bool
 	processingSegments   []models.SegmentItem
 	adsId                uint64
@@ -70,24 +43,42 @@ type Planner struct {
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
-		db:          db,
-		rdb:         rdb,
-		espx:        espx,
-		rclone:      rclone,
-		bucketName:  "espx-video-lib:espx-video-lib",
-		adsBucket:   "espx-video-lib:espx-video-lib/ads-v3",
-		rendCache:   make(map[string]renditionPair),
-		ladderCache: make(map[string]map[string]renditionPair),
-		logger:      utils.GetLogger("PLANNER"),
+		db:         db,
+		rdb:        rdb,
+		espx:       espx,
+		rclone:     rclone,
+		bucketName: utils.GetSettings().VideoBucket,
+		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),
+		logger:     utils.GetLogger("PLANNER"),
+	}
+}
+
+// CleanChannelData deletes all Redis keys associated with a channel
+func (p *Planner) CleanChannelData(ctx context.Context, channelID string) {
+	if p.rdb == nil {
+		return
+	}
+	timelineKey := timelineKeyFor(channelID)
+	cursorKey := fmt.Sprintf("planner:cursor:%s", channelID)
+	failKey := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
+
+	if err := p.rdb.Del(ctx, timelineKey, cursorKey, failKey).Err(); err != nil {
+		log.Printf("[Planner] CleanChannelData(%s) error: %v", channelID, err)
+	} else {
+		log.Printf("[Planner] Cleaned up all Redis data for channel=%s", channelID)
 	}
 }
 
 func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.PlayoutChannel, dateStr string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	callStartedAt := time.Now()
 
 	loc := utils.GetLocFor(channel.ContentTimezone)
 	processDate := utils.StartOfDay(callStartedAt).In(loc)
-	if parsed, err := time.ParseInLocation("2006-01-02", dateStr, loc); err == nil {
+	if parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD, dateStr, loc); err == nil {
 		processDate = utils.StartOfDay(parsed)
 	}
 	horizon := utils.EndOfDay(processDate)
@@ -97,19 +88,22 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		return err
 	}
 
-	p.logger.Info(fmt.Sprintf("pulled schedule data %s (%s)", processDate, time.Duration(time.Since(callStartedAt)).String()))
+	p.logger.Info(fmt.Sprintf("pulled schedule data %s (%s)", processDate, time.Since(callStartedAt).String()))
 
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
 	adSegments, _ := p.loadAdSegments()
-	lastSeq := p.getLastSequenceNumber(ctx, channel.ID)
+
+	// Fetch last sequence and running time from Redis to guarantee sequence & time continuity across days
+	lastState := p.getLastSegmentState(ctx, channel.ID)
 
 	processor := &SegmentProcessor{
 		planner:         p,
 		pipe:            p.rdb.Pipeline(),
 		ctx:             ctx,
 		nowUnix:         float64(callStartedAt.Unix()),
-		sequenceCounter: lastSeq,
+		sequenceCounter: lastState.Sequence,
+		runningTime:     lastState.RunningTime,
 		adSegments:      adSegments,
 		channelID:       channel.ID,
 		horizon:         horizon,
@@ -117,25 +111,32 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	}
 
 	for _, item := range schedules.Data {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if isEndOfTimeline(processor.horizon, processor.runningTime) {
 			break
 		}
-		if err := processor.ProcessScheduleItem(item, channel, callStartedAt); err == ErrEndOfTimeline {
-			break
+		if err := processor.ProcessScheduleItem(item, channel, callStartedAt); err != nil {
+			if errors.Is(err, ErrEndOfTimeline) {
+				break
+			}
+			return err
 		}
 	}
 
 	p.logger.Info(fmt.Sprintf("finished plan for %s", processDate))
-	if err := processor.flush(); err != nil {
-		return err
-	}
-	return nil
+	return processor.flush()
 }
 
 func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	adsMasterM3u8Path := fmt.Sprintf("%s/vod.m3u8", p.adsBucket)
 
 	renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
+	if len(renditions) == 0 {
+		return nil, fmt.Errorf("no renditions found for ads master: %s", adsMasterM3u8Path)
+	}
+
 	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, renditions[0])
 	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
 	if err != nil {
@@ -143,11 +144,9 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	}
 
 	lines := strings.Split(m3u8Content, "\n")
-	adSegments := make([]models.SegmentItem, 0, 5)
+	adSegments := make([]models.SegmentItem, 0)
 	var currentDuration float64
 	var ptsStart, ptsEnd int64
-
-	// Convert []*string to []string for Renditions field
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -181,15 +180,15 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 				Renditions:  renditions,
 			})
 			currentDuration = 0
-			if len(adSegments) == 5 {
-				return adSegments, nil
-			}
 		}
 	}
 	return adSegments, nil
 }
 
-func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
+func (p *Planner) getLastSegmentState(ctx context.Context, channelID string) LastSegmentState {
+	if p.rdb == nil {
+		return LastSegmentState{Sequence: 0, RunningTime: 0}
+	}
 	items, err := p.rdb.ZRangeArgs(ctx, redis.ZRangeArgs{
 		Key:   timelineKeyFor(channelID),
 		Start: 0,
@@ -197,13 +196,20 @@ func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) i
 		Rev:   true,
 	}).Result()
 	if err != nil || len(items) == 0 {
-		return 0
+		return LastSegmentState{Sequence: 0, RunningTime: 0}
 	}
 	var seg models.SegmentItem
 	if err := json.Unmarshal([]byte(items[0]), &seg); err == nil {
-		return seg.Sequence
+		return LastSegmentState{
+			Sequence:    seg.Sequence,
+			RunningTime: seg.MediaEnd,
+		}
 	}
-	return 0
+	return LastSegmentState{Sequence: 0, RunningTime: 0}
+}
+
+func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
+	return p.getLastSegmentState(ctx, channelID).Sequence
 }
 
 func isEndOfTimeline(horizon time.Time, runningTime float64) bool {
@@ -229,22 +235,32 @@ func (p *Planner) HasDateInTimeline(ctx context.Context, channelID string, daySt
 	if err != nil {
 		return false, err
 	}
-	if n > 0 {
-		return true, nil
-	}
-	return false, nil
+	return n > 0, nil
 }
 
 func (p *Planner) HasLegacyTimeline(ctx context.Context, channelID string) (bool, error) {
-	return p.hasLegacyTimeline(ctx, channelID)
+	if p.rdb == nil {
+		return false, nil
+	}
+	key := timelineKeyFor(channelID)
+	items, err := p.rdb.ZRange(ctx, key, 0, 0).Result()
+	if err != nil || len(items) == 0 {
+		return false, err
+	}
+	var probe struct {
+		Rendition string `json:"rendition"`
+	}
+	if err := json.Unmarshal([]byte(items[0]), &probe); err != nil {
+		return true, nil
+	}
+	return probe.Rendition == "", nil
 }
 
 func (p *Planner) DeleteTimeline(ctx context.Context, channelID string) error {
 	if p.rdb == nil {
 		return nil
 	}
-	key := timelineKeyFor(channelID)
-	return p.rdb.Del(ctx, key).Err()
+	return p.rdb.Del(ctx, timelineKeyFor(channelID)).Err()
 }
 
 func (p *Planner) getCursor(ctx context.Context, channelID string) int64 {
@@ -260,7 +276,7 @@ func (p *Planner) setCursor(ctx context.Context, channelID string, ts int64) {
 }
 
 func (p *Planner) incrFailureCounter(ctx context.Context, channelID string) int64 {
-	key := fmt.Sprintf(failureCounterKey, channelID)
+	key := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
 	n, err := p.rdb.Incr(ctx, key).Result()
 	if err != nil {
 		log.Printf("[Planner] INCR(%s) error: %v", key, err)
@@ -271,22 +287,10 @@ func (p *Planner) incrFailureCounter(ctx context.Context, channelID string) int6
 }
 
 func (p *Planner) resetFailureCounter(ctx context.Context, channelID string) {
-	key := fmt.Sprintf(failureCounterKey, channelID)
+	key := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
 	if err := p.rdb.Del(ctx, key).Err(); err != nil {
 		log.Printf("[Planner] DEL(%s) error: %v", key, err)
 	}
-}
-
-func (p *Planner) getFailureCounter(ctx context.Context, channelID string) int64 {
-	key := fmt.Sprintf(failureCounterKey, channelID)
-	v, err := p.rdb.Get(ctx, key).Int64()
-	if err != nil {
-		if err != redis.Nil {
-			log.Printf("[Planner] GET(%s) error: %v", key, err)
-		}
-		return 0
-	}
-	return v
 }
 
 func (p *Planner) markChannelInactive(channelID string) error {
@@ -301,7 +305,7 @@ func (p *Planner) markChannelInactive(channelID string) error {
 	}
 	if res.RowsAffected > 0 {
 		log.Printf("[Planner] channel=%s marked INACTIVE after %d consecutive failures",
-			channelID, failureInactivateThreshold)
+			channelID, utils.GetPlannerSettings().FailureInactivateThreshold)
 	}
 	return nil
 }
@@ -322,7 +326,7 @@ func (p *Planner) markChannelLive(channelID string) error {
 	return nil
 }
 
-func (p *Planner) handlePrepareResult(ctx context.Context, channelID string, err error) {
+func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID string, err error) {
 	if err == nil {
 		p.resetFailureCounter(ctx, channelID)
 		if dbErr := p.markChannelLive(channelID); dbErr != nil {
@@ -331,15 +335,11 @@ func (p *Planner) handlePrepareResult(ctx context.Context, channelID string, err
 		return
 	}
 	count := p.incrFailureCounter(ctx, channelID)
-	if count >= int64(failureInactivateThreshold) {
+	if count >= utils.GetPlannerSettings().FailureInactivateThreshold {
 		if dbErr := p.markChannelInactive(channelID); dbErr != nil {
 			log.Printf("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)
 		}
 	}
-}
-
-func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID string, err error) {
-	p.handlePrepareResult(ctx, channelID, err)
 }
 
 func (p *Planner) ResetFailureCounterForChannel(ctx context.Context, channelID string) {
@@ -354,47 +354,43 @@ func (p *Planner) MarkChannelLiveForChannel(ctx context.Context, channelID strin
 
 func (p *Planner) ProcessWindow(ctx context.Context, ch models.PlayoutChannel) error {
 	nowUnix := time.Now().Unix()
-	lookahead := nowUnix + LOOKAHEAD_SECONDS
+	lookahead := nowUnix + utils.GetPlannerSettings().LookaheadSeconds
 	p.setCursor(ctx, ch.ID, lookahead)
 	return nil
 }
 
 func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
-	cutoff := fmt.Sprintf("%d", time.Now().Unix()-RETENTION_SECONDS)
+	cutoff := fmt.Sprintf("%d", time.Now().Unix()-utils.GetPlannerSettings().RetentionSeconds)
 	key := timelineKeyFor(channelID)
 	if _, err := p.rdb.ZRemRangeByScore(ctx, key, "-inf", cutoff).Result(); err != nil {
 		log.Printf("[Planner] ZREMRANGEBYSCORE(%s, -inf, %s) error: %v", key, cutoff, err)
 	}
 }
 
-func retryBackoffDelay(i int, base, maxDelay time.Duration) time.Duration {
-	if i < 1 {
-		return 0
-	}
-	delay := base * (1 << (i - 1))
-	if delay > maxDelay {
-		return maxDelay
-	}
-	return delay
-}
-
 func (p *Planner) ProcessEPGToTimelineWithRetry(ctx context.Context, ch models.PlayoutChannel, dateStr string) error {
-	attempts := maxPrepareRetries()
+	settings := utils.GetPlannerSettings()
+	attempts := settings.MaxPrepareRetries
 	if attempts < 1 {
 		attempts = 1
 	}
-	base := time.Duration(prepareRetryBaseMs()) * time.Millisecond
-	maxDelay := time.Duration(prepareRetryMaxMs()) * time.Millisecond
+	base := time.Duration(settings.PrepareRetryBaseMs) * time.Millisecond
+	maxDelay := time.Duration(settings.PrepareRetryMaxMs) * time.Millisecond
 
 	var lastErr error
 	for i := 1; i <= attempts; i++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if lastErr = p.ProcessEPGToTimeline(ctx, ch, dateStr); lastErr == nil {
 			return nil
 		}
 		if i == attempts {
 			break
 		}
-		delay := retryBackoffDelay(i, base, maxDelay)
+		delay := base * (1 << (i - 1))
+		if delay > maxDelay {
+			delay = maxDelay
+		}
 		log.Printf("[Planner] channel=%s date=%s attempt=%d/%d failed: %v (sleeping %s)",
 			ch.ID, dateStr, i, attempts, lastErr, delay)
 		select {
@@ -410,44 +406,10 @@ func (p *Planner) TimelineSize(ctx context.Context, channelID string) int64 {
 	if p.rdb == nil {
 		return 0
 	}
-
-	return 1
+	n, _ := p.rdb.ZCard(ctx, timelineKeyFor(channelID)).Result()
+	return n
 }
 
 func (p *Planner) LastProcessedCursor(ctx context.Context, channelID string) int64 {
 	return p.getCursor(ctx, channelID)
-}
-
-// hasLegacyTimeline reports whether the ZSET simlive:timeline:{ch} contains
-// at least one member whose JSON has no "rendition" field. Used on the first
-// planner tick after M1 ships to detect pre-upgrade timelines and DEL the
-// key so ProcessEPGToTimeline repopulates with tags. Best-effort: an empty
-// ZSET (no members at all) returns false so cold starts aren't flushed.
-func (p *Planner) hasLegacyTimeline(ctx context.Context, channelID string) (bool, error) {
-	if p.rdb == nil {
-		return false, nil
-	}
-	// M2: check every active rung's ZSET. A legacy (pre-M1) timeline lives
-	// under the flat simlive:timeline:{ch} key; the per-rung keys are new.
-	// If ANY rung key holds a member without a rendition tag, treat the
-	// channel as legacy so the caller flushes + repopulates.
-	key := timelineKeyFor(channelID)
-	items, err := p.rdb.ZRange(ctx, key, 0, 0).Result()
-	if err != nil {
-		return false, err
-	}
-	// Probe the first member for the rendition field. Use a minimal struct
-	// instead of models.SegmentItem so we don't drag the full model import
-	// (also makes the field-check explicit).
-	var probe struct {
-		Rendition string `json:"rendition"`
-	}
-	if err := json.Unmarshal([]byte(items[0]), &probe); err != nil {
-		// Unparseable -- treat as legacy so we don't serve garbage.
-		return true, nil
-	}
-	if probe.Rendition == "" {
-		return true, nil
-	}
-	return false, nil
 }

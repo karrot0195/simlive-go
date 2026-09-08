@@ -58,7 +58,7 @@ func main() {
 	// in another dependency -- the behaviour we need is just a few headers.
 	r.Use(corsMiddleware())
 
-	tmpDir := utils.GetEnv("TMP_DIR", os.TempDir())
+	tmpDir := utils.GetSettings().TMPDir
 
 	// Serve the built Vue 3 + Video.js player from client/dist/.
 	// The build emits an index.html + hashed assets under /assets/*. We

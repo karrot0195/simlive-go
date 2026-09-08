@@ -14,23 +14,7 @@ const isActive = (routeName) => {
 const isSuperAdmin = localStorage.getItem('is_super_admin') === 'true'
 
 const allMenuItems = [
-  { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' },
-  {
-    name: 'vm-monitoring',
-    path: '/vm-monitoring',
-    label: 'Monitoring',
-    icon: 'mdi-monitor-dashboard'
-  },
-  { name: 'vm-action', path: '/vm-action', label: 'Action', icon: 'mdi-play-box' },
-  {
-    name: 'mapping-data',
-    path: '/mapping-data',
-    label: 'Mapping Data',
-    icon: 'mdi-database-eye',
-    adminOnly: true
-  },
-  { name: 'tmp-data', path: '/tmp-data', label: 'Files', icon: 'mdi-folder-open', adminOnly: true },
-  { name: 'logs', path: '/logs', label: 'Logs', icon: 'mdi-text-box-multiple', adminOnly: true }
+  { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' }
 ]
 
 const menuItems = computed(() => {

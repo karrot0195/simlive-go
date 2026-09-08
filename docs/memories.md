@@ -12,6 +12,54 @@
 
 ---
 
+## 2026-09-06 — Engine fix: advertise only the playhead window (keepBehind no longer leaked into playlist)
+
+**Context:** The media playlist's first advertised segment 404'd ("missing 1 ts"). Root cause: `generateRenditionPlaylist` was fed `downloadSegs` (the whole bounded on-disk superset = keepBehind + window + ahead ≈ 15 segs) instead of `candidateSegs` (the 5-seg playhead window). So `#EXT-X-MEDIA-SEQUENCE` anchored at the *trailing keepBehind* edge, which `syncLocalCacheDir` evicted on the next tick → the first advertised segment got deleted while the playlist still referenced it.
+
+**Change:**
+- `StartPlayoutLoop` (engine.go): pass `candidateSegs` (playhead window) to `generateRenditionPlaylist` for the ADVERTISED media playlist; `downloadSegs` (keepBehind+window+ahead superset) is still what `syncAndPreparePerRendition` downloads/prepares and what GC keeps on disk — so the advertised window is always a subset of the on-disk set.
+- Kept the index-based `RENDITIONMAP[i]` mapping. Confirmed a `SegmentItem.Renditions` holds the per-rung **storage tier dirs** (`["L_0","L_1","L_2"]` for VOD, `["L2","L1","L0"]` for ads) in ladder order — NOT quality labels. Attempting `groupSegsByRendition` (keying on those raw labels) wrote playlists into nonexistent `L_0/`/`L1/` dirs and failed silently; reverted. The correct behaviour is `RENDITIONMAP[i]` → `{360p,720p,1080p}`.
+- Added `lookBehindSegment` (1 segment before the window anchor) and threaded it through `buildMediaPlaylistBody` (variadic `behind ...*models.SegmentItem`) so the SCTE-35/DATERANGE edge detection on the window's FIRST advertised segment (which inspects `segments[i-1]`) sees a real neighbour. The behind segment is never advertised.
+
+**Files touched:**
+- `internal/engine/engine.go` (modified: tick-loop window wiring, `lookBehindSegment`, `generateRenditionPlaylist` signature export)
+- `internal/engine/scte35.go` (modified: `buildMediaPlaylistBody` variadic `behind` param for window-front edge detection)
+- `internal/engine/rendition.go` (modified: reverted `groupSegsByRendition` to its commented-out state since its label keying is wrong for storage-tier renditions)
+- `internal/engine/cue_tag_test.go` (modified: `TestBuildMediaPlaylistBody_LookBehindEdgeDetection`)
+- `internal/engine/master_playlist_test.go` (modified: `TestLookBehindSegment_ReturnsPrev` / `_FirstIsNil`)
+
+**Notes — verified state vs. doc:**
+- Confirmed on-disk contract matches the user's expectation: current=51 → advertised `51–55`, on-disk `47–60` (5 behind + 5 window + 5 ahead); every advertised seg exists on disk; behind/ahead stay warm but unadvertised. All 3 rung `playlist.m3u8` files are now written.
+- `go test ./internal/engine/...` passes (incl. the new look-behind tests).
+
+**Notes — drift findings remaining (follow-up candidates):**
+- Bounded-window spec text still describes the playlist as a "5-segment sliding window" from the full `downloadSegs` superset; the code now advertises precisely `candidateSegs`. `docs/specification.md` §5 step 4/6 was updated to reflect "advertise only the playhead window" — verify on next spec pass if any residual wording remains.
+- Docs still reference `groupSegsByRendition` (in `docs/300826_0620-multi-rendition-abr-ladder.md` and the summary). It now exists only as a commented-out helper (storage-tier labels can't be used as rung keys). A follow-up should reconcile those references to the index-based `RENDITIONMAP[i]` mapping.
+- **Timeline key drift (pre-existing, NOT fixed this session):** the engine reads the FLAT `simlive:timeline:{ch}` key (`fetchTimeline`), while the planner writes per-rung `simlive:timeline:{ch}:{rend}` keys. `internal/planner/race_test.go` still asserts per-rung keys and fails. Follow-up: reconcile the engine read to per-rung keys or make the planner write the flat key.
+
+---
+
+## 2026-09-06 — Stop/delete cleanup completeness + planner warm-pickup
+
+**Context:** Two gaps surfaced after the earlier purge fix:
+1. Setting `status="INACTIVE"` via `PUT/PATCH /api/channels/:id` was just a column flip — it never forced `is_active=false`, never purged Redis. So the planner kept pushing new timeline data ("old data cleaned, new data still push") and the channel's HLS keys stayed in Redis ("redis for hls of that channel still here").
+2. Adding/starting a channel (`/api/channels`) made the engine reconciler (5s poll) start immediately, but the planner slept `PLANNER_INTERVAL` (5m) between ticks, so a new channel waited up to 5m before being planned.
+
+**Change:**
+- `internal/api/handler.go`: extracted shared `applyChannelUpdate(c,id,req,verb)` used by both `UpdateChannel` (PUT) and `PatchChannel` (PATCH). When `status` is set to `"INACTIVE"` it now forces `is_active=false` (so the planner + engine reconciler both drop the channel) and purges the channel's Redis data (`purgeChannelRedisData`) — mirroring `StopChannel`. Non-INACTIVE updates behave exactly as before.
+- `cmd/planner/main.go`: rewrote the cron loop to a warm-pickup loop. It polls the DB every 3s (`pollInterval`) but only runs a **full tick** when (a) the active-channel set changed (added/started/stopped) OR (b) `PLANNER_INTERVAL` elapsed. A change-tick does NOT shift the periodic schedule, so 24h day-rollover (`ProcessWindow`) can't be starved by churn.
+- `internal/api/handler_test.go`: updated `TestPurgeChannelRedisData_RemovesAllKeyFamiliesExceptBreaker` to match the now 4-key purge (master HLS + flat timeline + renditions + cursor) instead of the removed 6 per-rung/5-family keys.
+
+**Files touched:** `internal/api/handler.go`, `internal/api/handler_test.go`, `cmd/planner/main.go`, `docs/memories.md`
+
+**Notes — verified state vs. doc:**
+- `go build ./...` OK; `go test ./cmd/planner/...`, `go test ./internal/api/...`, `go test ./internal/engine/...` all pass.
+- `go test ./internal/planner/...` has ONE pre-existing failure: `TestStampSliceEvents_OnVODAndAdSegments` (SCTE-35 event ID mismatch, `scte35_stamping_test.go:529`). This is UNRELATED to this session — `git diff HEAD -- internal/planner/` is empty; the engine's flat-timeline/`fetchTimeline` design drift (noted below) is the likely cause.
+- **Pre-existing drift (NOT fixed, follow-up):** the engine reads the FLAT `simlive:timeline:{ch}` key (`fetchTimeline`), possibly vs. planner per-rung writes. `internal/planner/race_test.go` + the scte35 failure suggest the planner test harness still expects per-rung keys. Reconcile engine read vs. planner write next session.
+- The planner warm-pickup deliberately keeps the periodic cadence wall-clock-locked so the day-rollover prepare isn't delayed by channel churn.
+
+---
+
 ## 2026-09-06 — Logging module: per-channel + verbose aggregate
 
 **Context:** User asked to implement logging module to planner and engines — separate log per channel, all logs to verbose, clean up in time.
@@ -266,7 +314,7 @@
 **Change:**
 - **`simlive-plan` skill:**
   - `.github/skills/simlive-plan/SKILL.md` — header description, Outputs section, Step 1 (scaffolder path note), Step 5 (cross-link example), Conventions table (filename pattern), Example prompts list — all updated to use `ddMMyy_HHmm-…`. Added a "Why the `_HHmm` suffix?" callout pointing at the same-day uniqueness rationale.
-  - `.github/skills/simlive-plan/assets/plan-template-full.md` and `plan-template-short.md` — header comment + the `Continues / Supersedes` example now reference `ddMMyy_HHmm-…`.
+  - `.github/skills/simlive-plan/assets/plan-template-full.md` and `plan-template-short.md` — header comment + the `Continues / Supersedes` example now references `ddMMyy_HHmm-…`.
   - `.github/skills/simlive-plan/references/simlive-conventions.md` — header preamble now lists the 7 actually-existing plans under the new naming scheme and notes the new pattern explicitly.
   - `.github/skills/simlive-plan/scripts/scaffold-plan.sh` — `DATE_PREFIX` now `%d%m%y_%H%M` (GNU date) with `%y%m%d_%H%M` fallback for BSD/macOS. The script's own header comment documents the new pattern.
 - **Renamed the 7 existing plan files** in `docs/` from the legacy `ddMMyy-` form to `ddMMyy_HHmm-` using the file's last-modified time (UTC) as the canonical timestamp:
@@ -419,7 +467,7 @@ After this fix:
 **Context:** User reported (again, after the previous warm-start fix): "when i start 2 playout -> only 1 playout channel has data -> it take long time for engines can has data to start". The previous fix (warm-start by default) addressed the **restart** scenario; this fix addresses the **concurrent** scenario.
 
 **Root cause (the actual bug):**
-The Planner's `ProcessEPGToTimeline` mutates shared per-call state on the Planner struct — `globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID` — and the `SegmentProcessor` it constructs reads that state via `sp.planner.*` on **every schedule item**. None of those fields were guarded by a mutex. The `cmd/planner/main.go` cron loop runs channels in parallel up to `PLANNER_WORKERS` (default **4**), so with 2 active channels:
+The Planner's `ProcessEPGToTimeline` mutates shared per-call state on the Planner struct — `globalRunningTime`, `totalSegmentsAdded`, `processDate`, `horizon`, `channelID` — and the `SegmentProcessor` it constructs reads that state via `sp.planner.*` on **every schedule item**. None of those fields were guarded by a mutex. The `cmd/planner/main.go cron loop runs channels in parallel up to `PLANNER_WORKERS` (default **4**), so with 2 active channels:
 1. The cron loop dispatches 2 goroutines, each calling `ProcessEPGToTimeline` for one channel.
 2. The two goroutines race on `globalRunningTime` — the second one resets it to 0 mid-walk of the first, causing the first to start over.
 3. The `SegmentProcessor` reads stale or zeroed-out `p.processDate` and `p.horizon`, walking the EPG with the wrong boundaries.
@@ -466,7 +514,7 @@ A `NOTE` block at `internal/planner/planner.go:122` already documented this haza
 
 **Notes — operator-facing summary (the answer to the user's question):**
 
-The reason "only 1 has data" was a **race in the planner**, not the engine cache or the start endpoint. With `PLANNER_WORKERS=4` (the old default), starting 2 playout channels caused the planner to dispatch 2 parallel `ProcessEPGToTimeline` calls. Both calls mutated the Planner's shared state (`globalRunningTime`, `processDate`, `horizon`, `channelID`) without locking, and the `SegmentProcessor` reads that state on every schedule item. The two parallel calls clobbered each other's state mid-walk — typically, the second channel's reset of `globalRunningTime=0` caused the first channel's EPG walk to start over, and the final `flushRedisPipeline` wrote whichever channel ID happened to be in `p.channelID` at that moment. End state: one channel had a (partial) timeline, the other had nothing.
+The reason "only 1 has data" was a **race in the planner**, not the engine cache or the start endpoint. With `PLANNER_WORKERS=4` (the old default), starting 2 playout channels caused the planner to dispatch 2 parallel `ProcessEPGToTimeline` calls. Both calls mutated the Planner's shared state (`globalRunningTime`, `processDate`, `horizon`, `channelID`) without locking, and the `SegmentProcessor` reads that state on every schedule item. The two parallel calls clobbered each other's state mid-walk — typically, the second channel's reset of `globalRunningTime=0` caused the first channel's EPG walk to start over, and the final `flushRedisPipeline` wrote whichever channel ID happened to be in `p.channelID` at that moment. End state: one channel had a (partial) timeline, the other had nothing. **Exactly the "only 1 has data" symptom.**
 
 **The fix has three layers:**
 

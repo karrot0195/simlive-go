@@ -7,10 +7,10 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/simlive-go
-ExecStart=/root/simlive-go/cmd/planner
+ExecStart=/root/simlive-go/bin/planner
 Restart=always
 RestartSec=10
-EnvironmentFile=/root/simlive-go/config/.env
+EnvironmentFile=/root/simlive-go/.env
 Environment=LOG_ROTATE_DAYS=3
 
 # Core environment variables

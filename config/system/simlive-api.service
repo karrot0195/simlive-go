@@ -7,10 +7,10 @@ Wants=network.target
 Type=simple
 User=root
 WorkingDirectory=/root/simlive-go
-ExecStart=/root/simlive-go/cmd/api
+ExecStart=/root/simlive-go/bin/api
 Restart=always
 RestartSec=10
-EnvironmentFile=/root/simlive-go/config/.env
+EnvironmentFile=/root/simlive-go/.env
 Environment=LOG_ROTATE_DAYS=3
 
 # Log rotation configuration

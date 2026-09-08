@@ -44,7 +44,8 @@ const (
 // IsActive is read by both the planner's and the engine's cron loops and
 // is written by the REST API (manual start/stop) plus the planner's
 // breaker (markChannelInactive), which flips is_active=false after
-// `failureInactivateThreshold` consecutive (channel, date) failures.
+// `PlannerSettings.FailureInactivateThreshold` consecutive (channel, date)
+// failures.
 type PlayoutChannel struct {
 	ID              string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	Name            string    `gorm:"type:varchar(255);not null" json:"name"`

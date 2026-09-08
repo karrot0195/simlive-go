@@ -1,29 +1,39 @@
 #!/bin/bash
+set -euo pipefail
 
-allFiles=$(find ./config -type f)
+DIR=$(dirname $(dirname "$0"))
 
-SERVER=$1
+echo "access $DIR"
 
-PROJECT_PATH=/root/simlive-go
+cd "$DIR"
+
+SERVER=${1:-}
 
 if [ -z "$SERVER" ]; then
-    echo "Please provide a server name as an argument."
+    echo "Error: Please provide a server name or IP address as an argument." >&2
     exit 1
 fi
 
+PROJECT_PATH="/root/simlive-go"
+SSH_KEY="~/.ssh/espx_vultr"
+SSHCMD="ssh -i $SSH_KEY root@$SERVER"
+SCPCMD="scp -i $SSH_KEY"
 
-ssh root@$SERVER """
-mkdir -p $PROJECT_PATH
-"""
+echo "synch rclone"
+$SSHCMD "mkdir -p $PROJECT_PATH; mkdir -p /root/.config/rclone"
+$SCPCMD -r ./rclone root@$SERVER:/root/.config
 
-for file in $allFiles; do
-    echo "Processing file: $file"
-    scp $file root@$SERVER:$PROJECT_PATH
-done
+echo "synch system"
+$SCPCMD -r ./system/* root@$SERVER:/etc/systemd/system/
 
-ssh root@$SERVER """
-cd $PROJECT_PATH
-./scripts/start_service.sh
-"""
+echo "synch app"
+$SCPCMD -r ./bin root@$SERVER:$PROJECT_PATH/bin
 
+echo "synch env"
+$SCPCMD -r ./.env root@$SERVER:$PROJECT_PATH
 
+echo "synch compose"
+$SCPCMD -r ./docker-compose.yml  root@$SERVER:$PROJECT_PATH
+
+echo "synch script"
+$SCPCMD -r ./scripts/start_service.sh  root@$SERVER:$PROJECT_PATH

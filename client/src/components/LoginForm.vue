@@ -32,6 +32,7 @@ const handleLogin = async () => {
 
     tempToken.value = response.data.access_token
 
+    console.log('Login successful:', tempToken.value)
     accounts.value = (
       await client.get(`${API_BASE_URL}${API_PATHS.ACCOUNTS}`, {
         headers: {

@@ -2,6 +2,8 @@
 
 Generated from `internal/api/handler.go` (canonical source). All endpoints served by `cmd/api/main.go` (`http://localhost:8080` default; see `client/src/constants/index.ts`).
 
+> **NOTE vs. `swagger.yaml`:** the swagger file in this repo is **out of date** for the HLS surface. The Go server (`cmd/api/main.go`) uses the **nested** rung path (`/live/{ch}/{rend}/playlist.m3u8`, `/live/{ch}/{rend}/{seg_N.ts}`), not the flat `playlist_{rend}` / flat `/{segment}` shape the swagger describes. The client (`src/libs/hls.ts`) follows the server. Update the swagger file when the routes change — and do not regenerate client URLs from it.
+
 ---
 
 ## 1. Base URLs
@@ -10,7 +12,7 @@ Generated from `internal/api/handler.go` (canonical source). All endpoints serve
 |---|---|---|
 | `API` | `http://localhost:8080/api` | REST CRUD + start/stop |
 | `LIVE_API` | `http://localhost:8080/live` | HLS master + per-rung playlists + `.ts` segments |
-| `REST_API` | `https://api2.espx.cloud/api/v2` | ESPX upstream (`ChannelEpgPanel.vue`) |
+| `REST_API` | `https://api2.espx.cloud/api/v2` | Legacy ESPX upstream (no longer used by the client) |
 
 ---
 
@@ -26,6 +28,8 @@ Status flow (planner = SINGLE writer of `LIVE`):
 ---
 
 ## 3. REST Endpoints (`/api/*`)
+
+All routes are registered on `r.Group("/api")` in `cmd/api/main.go`. Client paths in `src/libs/api.ts` are relative to `baseURL: API` (= `…/api`) and are prefixed with `/channels` so the final URL is `…/api/channels…`.
 
 ### POST /api/channels — Create / Upsert
 Body: `{"channel_id":"..."}` (validated vs ESPX). Response `200`: `{"message":"...","data":{...PlayoutChannel...}}`. Errors: `400` (invalid/ESPX missing), `500` (DB).
@@ -87,9 +91,19 @@ Reads `simlive:hls:{ch}` (Redis); falls back to `{TMP_DIR}/{ch}/playlist.m3u8`. 
 
 ## 6. Client Usage Patterns (workspace)
 
-- `ChannelEpgPanel.vue`: `restClient.get('/accounts/channels...')` (ESPX); `client.get('/start-live-channels?id=...')` (legacy start); `restClient.patch(..., {is_playout_assigned:...})`.
-- `LiveStream.vue`: `LIVE_API + '/' + node.uuid + '/playout.m3u8'` (master); resolves `#EXT-X-STREAM-INF` → media playlist; parses `#EXT-X-DATERANGE` + `#EXT-X-SCTE35`; keeps last 50 segments.
-- `LiveNodePanel.vue`: `client.get('/node-lives')`; `/node-lives/{uuid}/reset`; `/node-lives/{uuid}` delete; `LIVE_API` for `copyNodeLink`.
+The legacy `/node-lives` family (`client.get('/node-lives')`, `/node-lives/{uuid}/reset`, `/node-lives/{uuid}` DELETE, and the `/sse/node-live` SSE feed) is **not implemented in the Go server** and **not in `swagger.yaml`**. It was removed from the client.
+
+Current client surface:
+
+- `ChannelEpgPanel.vue`:
+  - `api.listChannels({ is_active: true, page_size: 100 })` → visible list.
+  - `api.listESpxChannels()` → "Add Channel" picker, filtered to `registered[id] !== true`.
+  - `channelStore.startChannel(id)` → flips `status=PREPARE`.
+  - `channelStore.stopChannel(id)` → flips `status=INACTIVE`.
+  - `channelStore.addChannel(channelId)` → `POST /api/channels`.
+- `StreamPanel.vue`: still calls the legacy `/start_live?name=&m3u8Url=` (VOD→live launcher, not yet ported). The HLS link it surfaces uses `masterPlaylistUrl()` from `src/libs/hls.ts`.
+- `LiveStream.vue`: `<source :src="masterPlaylistUrl(node.uuid)">`. Polls the master, resolves the `#EXT-X-STREAM-INF` media playlist, parses `#EXT-X-DATERANGE` + `#EXT-X-SCTE35`, keeps last 50 segments.
+- `SimulatedLive.vue`: drives the right-hand HLS player from the channels store — picks the first channel with `status ∈ {LIVE, PREPARE}` and falls back to the first active row. Polls `api.listChannels({ is_active: true })` every 5s (replaces the old SSE feed).
 
 ---
 

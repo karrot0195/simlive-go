@@ -15,6 +15,14 @@
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/engines/main.go",
             "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Start API",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/api/main.go",
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }

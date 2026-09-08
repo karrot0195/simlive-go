@@ -1,77 +1,52 @@
 <script setup lang="ts">
-import { client, restClient } from '@/libs/client'
+import { api } from '@/libs/api'
+import { masterPlaylistUrl } from '@/libs/hls'
 import { useChannelsStores } from '@/stores/channels'
-import { useNodesStore } from '@/stores/nodes'
-import { get } from 'lodash'
 import { computed, onMounted, ref } from 'vue'
-const playoutChannels = ref<any[]>([])
-const channelAvaialbelAssigned = ref<any[]>([])
-const nodeStore = useNodesStore()
-const nodes = computed(() => nodeStore.data)
-const nodeIds = computed(() =>
-  nodes.value
-    .filter((i) => i.status !== 'ended')
-    .map((i) => {
-      let uuid = i.uuid?.match(/([a-z]+)-([a-z]+)-(.*)/)?.at(-1)
-      if (uuid) return uuid
-      return i.uuid
-    })
-)
+import { useRoute, useRouter } from 'vue-router'
+import type { ESPXChannelListItem, PlayoutChannel, PlayoutChannelStatus } from '@/types/api'
+
+type ChannelWithLive = PlayoutChannel & { isLive?: boolean }
 
 const channelStore = useChannelsStores()
+const playoutChannels = computed<PlayoutChannel[]>(() => channelStore.data)
+const channelAvaialbelAssigned = ref<ESPXChannelListItem[]>([])
+const loading = ref(false)
+
+const isLiveStatus = (status: PlayoutChannelStatus | undefined) =>
+  status === 'LIVE' || status === 'PREPARE'
 
 const fetchData = async () => {
-  const data = get(
-    await restClient.get(
-      '/accounts/channels?$eager=[channelEpg]&$limit=100&$sort[channel.date_created]=-1&is_virtual=false&is_playout_assigned=true',
-      {
-        headers: {
-          Authorization: localStorage.getItem('token') || ''
-        }
-      }
-    ),
-    'data.data'
-  )
+  loading.value = true
+  try {
+    const [active, esp] = await Promise.all([
+      api.listChannels({ page_size: 100 }),
+      api.listESpxChannels()
+    ])
+    channelStore.setValues(active.data)
 
-  const data2 = get(
-    await restClient.get(
-      '/accounts/channels?$eager=[channelEpg]&$limit=100&$sort[channel.date_created]=-1&is_virtual=false&is_playout_assigned=false&$withoutNoPodAssign',
-      {
-        headers: {
-          Authorization: localStorage.getItem('token') || ''
-        }
-      }
-    ),
-    'data.data'
-  )
-
-  const accounts = playoutChannels.value.reduce((acc: any, item: any) => {
-    if (item.account && !acc[item.account?.id]) {
-      acc[item.account?.id] = item.account
-    }
-    return acc
-  }, {})
-
-  playoutChannels.value = data
-  channelAvaialbelAssigned.value = data2
-
-  channelStore.setValues(playoutChannels.value)
-  accounts.value = Object.values(accounts)
+    const registeredSet = new Set(
+      Object.entries(esp.registered)
+        .filter(([, v]) => v)
+        .map(([id]) => id)
+    )
+    channelAvaialbelAssigned.value = esp.data.filter((c) => !registeredSet.has(c.id))
+  } finally {
+    loading.value = false
+  }
 }
+
 onMounted(async () => {
-  fetchData()
+  await fetchData()
 })
 
-const sortedData = computed(() => {
-  let beforeItems = []
-  let afterItems = []
+const sortedData = computed<ChannelWithLive[]>(() => {
+  const beforeItems: ChannelWithLive[] = []
+  const afterItems: ChannelWithLive[] = []
 
   for (const item of playoutChannels.value) {
-    if (checkChannelLive(item.id)) {
-      beforeItems.push({
-        ...item,
-        isLive: true
-      })
+    if (isLiveStatus(item.status)) {
+      beforeItems.push({ ...item, isLive: true })
     } else {
       afterItems.push(item)
     }
@@ -79,63 +54,73 @@ const sortedData = computed(() => {
   return beforeItems.concat(afterItems)
 })
 
-const onClick = async (item: any) => {
+const onClick = async (item: PlayoutChannel) => {
   loading.value = true
   try {
-    await client.get(`/start-live-channels?id=${get(item, 'id')}`)
+    await channelStore.startChannel(item.id)
+    await router.push({ query: { ...route.query, channel: item.id } })
+    emit('switch', item.id)
+    await fetchData()
   } finally {
     loading.value = false
   }
 }
 
-const loading = ref(false)
-
-const checkChannelLive = (channelId: string) => nodeIds.value.some((i) => i === channelId)
-const openAddChannel = ref(false)
-const selected = ref<any>(null)
-const openAddChannelFn = () => (openAddChannel.value = true)
-
-const addChannel = async () => {
-  loading.value = true
-  openAddChannel.value = false
+const addChannel = async (channelId: string) => {
   try {
-    await restClient.patch(
-      '/accounts/channels/' + selected.value,
-      {
-        is_playout_assigned: true
-      },
-      {
-        headers: {
-          Authorization: localStorage.getItem('token') || ''
-        }
-      }
-    )
+    await channelStore.addChannel(channelId)
+    await fetchData()
   } finally {
-    loading.value = false
-    selected.value = null
-    fetchData()
+    console.log("added channel")
   }
 }
 
-const removeChannel = async (channelId: string) => {
+/** Hard-delete a stopped channel (soft-deletes via DELETE /api/channels/{id}). */
+const deleteChannel = async (channelId: string) => {
   loading.value = true
   try {
-    await restClient.patch(
-      '/accounts/channels/' + channelId,
-      {
-        is_playout_assigned: false
-      },
-      {
-        headers: {
-          Authorization: localStorage.getItem('token') || ''
-        }
-      }
-    )
+    await channelStore.removeChannel(channelId)
+    await fetchData()
   } finally {
     loading.value = false
-    fetchData()
   }
 }
+
+/** Stop a live channel (flip is_active=false, status=INACTIVE). */
+const stopChannel = async (channelId: string) => {
+  loading.value = true
+  try {
+    await channelStore.stopChannel(channelId)
+    await fetchData()
+  } finally {
+    loading.value = false
+  }
+}
+
+/** Restart: stop then immediately start a live channel. */
+const restartChannel = async (channelId: string) => {
+  loading.value = true
+  try {
+    await channelStore.stopChannel(channelId)
+    await channelStore.startChannel(channelId)
+    await fetchData()
+  } finally {
+    loading.value = false
+  }
+}
+
+/** Copy the HLS master playlist URL to clipboard. */
+const copyUrl = async (channelId: string) => {
+  const url = masterPlaylistUrl(channelId)
+  await navigator.clipboard.writeText(url)
+}
+
+const route = useRoute()
+const router = useRouter()
+
+const emit = defineEmits<{
+  (e: 'switch', id: string): void
+}>()
 </script>
 
 <template>
@@ -147,8 +132,7 @@ const removeChannel = async (channelId: string) => {
     </v-overlay>
     <div>
       <p class="text-h6">
-        List Playout Channel
-        <v-icon @click="openAddChannelFn">mdi-plus</v-icon>
+        List Playout Channel 
       </p>
       <v-list max-height="300">
         <v-list-item
@@ -156,54 +140,79 @@ const removeChannel = async (channelId: string) => {
           :key="item.id"
           :title="item.name"
           class="ma-3 bg-gray-200 cursor-pointer hover:bg-gray-600 hover:text-white"
-          :disabled="item.isLive"
-          :class="{ 'bg-red-500': item.isLive }"
+          :class="{ 'bg-red-500': route.query.channel === item.id }"
         >
-          <template #prepend>
-            <img class="h-[50px] w-[70px] ml-2" :src="item.img_url" alt="" />
-          </template>
           <template #title>
             <span>
               {{ item.name }}
+              <span class="text-xs ml-2 opacity-70">({{ item.status }})</span>
+              <v-icon
+                size="x-small"
+                class="ml-1 hover:cursor-pointer hover:text-blue"
+                title="Copy HLS URL"
+                @click.stop="copyUrl(item.id)"
+                >mdi-content-copy</v-icon
+              >
             </span>
           </template>
           <template #append>
             <div class="flex flex-row gap-2">
               <v-icon
-                class="hover:cursor-pointer hover:text-red"
+                v-if="route.query.channel !== item.id"
+                class="hover:cursor-pointer hover:text-blue"
                 @click="onClick(item)"
-                v-if="!item.isLive"
-                >mdi-play</v-icon
+                title="Select / Switch"
+                >mdi-play-circle</v-icon
               >
-              <v-icon
-                class="hover:cursor-pointer hover:text-red"
-                @click="removeChannel(item.id)"
-                v-if="!item.isLive"
-                >mdi-minus</v-icon
-              >
+              <!-- Live / PREPARE: show Stop + Restart -->
+              <template v-if="item.isLive">
+                <v-icon
+                  class="hover:cursor-pointer hover:text-red"
+                  @click="stopChannel(item.id)"
+                  title="Stop"
+                  >mdi-stop</v-icon
+                >
+                <v-icon
+                  class="hover:cursor-pointer hover:text-blue"
+                  @click="restartChannel(item.id)"
+                  title="Restart"
+                  >mdi-refresh</v-icon
+                >
+              </template>
+              <!-- Inactive / Error: show Play + Delete -->
+              <template v-else>
+                <v-icon
+                  class="hover:cursor-pointer hover:text-green"
+                  @click="onClick(item)"
+                  title="Start"
+                  >mdi-play</v-icon
+                >
+                <v-icon
+                  class="hover:cursor-pointer hover:text-red"
+                  @click="deleteChannel(item.id)"
+                  title="Delete"
+                  >mdi-delete</v-icon
+                >
+              </template>
             </div>
           </template>
         </v-list-item>
       </v-list>
-
-      <v-dialog v-model:model-value="openAddChannel" max-width="600px">
-        <v-card>
-          <v-card-title>Add Channel</v-card-title>
-          <v-card-text>
-            <v-select
-              v-model="selected"
-              :items="channelAvaialbelAssigned"
-              item-title="name"
-              item-value="id"
-            >
-            </v-select>
-          </v-card-text>
-          <v-card-actions>
-            <v-btn @click="openAddChannel = false">Cancel</v-btn>
-            <v-btn @click="addChannel">Save</v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-dialog>
+      <p>Channel Awaiting Assignment: ({{ channelAvaialbelAssigned.length }})</p>
+      <v-list>
+        <v-list-item
+          v-for="(item) in channelAvaialbelAssigned"
+          :key="item.id"
+          class="ma-3 bg-gray-200  hover:bg-gray-600 hover:text-white"
+        >
+        <template #title>
+          <div class="flex justify-between">
+            {{ item.name }}
+            <v-icon class="cursor-pointer" @click="addChannel(item.id)">mdi-plus</v-icon>
+            </div>
+        </template>
+        </v-list-item>
+      </v-list>
     </div>
   </div>
 </template>

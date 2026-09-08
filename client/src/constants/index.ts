@@ -1,7 +1,6 @@
 const envs: any = {
   default: {
     restAPI: 'https://api2.espx.cloud/api/v2',
-    // restAPI: 'http://localhost:3030/api/v2',
     cdnLive: 'http://localhost:8080/live',
     api: 'http://localhost:8080/api'
   },

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import _, { map } from 'lodash'
 import { client } from '../libs/client'
-import { LIVE_API } from '@/constants'
+import { masterPlaylistUrl } from '@/libs/hls'
 // @ts-ignore
 
 const vodUrlList = ref<string[]>([])
@@ -19,7 +19,7 @@ const startLive = async () => {
       `/start_live?name=${campaignName.value}&m3u8Url=${vodUrlList.value.join(',')}`
     )
     liveLink.value = '/?nodeId=' + data.data.uuid
-    hlsLink.value = `${LIVE_API}/${data.data.uuid}/playout.m3u8`
+    hlsLink.value = masterPlaylistUrl(data.data.uuid)
   } catch (error) {
     console.error(error)
   } finally {

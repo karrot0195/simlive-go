@@ -227,9 +227,24 @@ func buildCueInLine(breakStart, durSec float64) string {
 //     insertAdsIfNeeded. See
 //     docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
 //     §3.2.
-func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (string, error) {
+//
+// buildMediaPlaylistBody renders the body of a media playlist (header +
+// EXTM3U + DATERANGE + per-segment SCTE-35 + EXTINF/URI lines). Only the
+// ADVERTISED `segments` get an EXTINF + URI line and drive the
+// #EXT-X-MEDIA-SEQUENCE (anchored at segments[0]). `behind` (optional) is
+// the segment immediately before segments[0] in the timeline; it is used
+// ONLY for SCTE-35/DATERANGE edge detection (as the "previous" segment of
+// the first advertised segment) and is never emitted as an EXTINF line, so
+// a player never fetches a segment that is not part of the playhead window.
+// Variadic so legacy callers (and tests) that pass no look-behind still compile.
+func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int, behind ...*models.SegmentItem) (string, error) {
 	if len(segments) == 0 {
 		return "", fmt.Errorf("buildMediaPlaylistBody: empty segments")
+	}
+
+	var lookBehind *models.SegmentItem
+	if len(behind) > 0 {
+		lookBehind = behind[0]
 	}
 
 	header := "#EXTM3U\n"
@@ -245,27 +260,28 @@ func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (
 		// Edge detection. Use the previous segment's IsAd, not the
 		// current's, because we emit the marker BEFORE the segment
 		// that starts the new state (first ad => CUE-OUT, first VOD
-		// after ads => CUE-IN). The very first segment (i==0) has
-		// no previous; if it is an ad we still emit CUE-OUT so the
-		// player sees the break boundary on a cold start.
+		// after ads => CUE-IN). For the very first advertised segment
+		// (i==0) the "previous" is the `lookBehind` segment from the
+		// timeline; if nil (the anchor is the timeline's first
+		// segment) and the first segment is an ad we still emit CUE-OUT
+		// so the player sees the break boundary on a cold start.
+		var prev *models.SegmentItem
 		if i == 0 {
-			if seg.IsAd {
-				body.WriteString(buildCueOutLine(seg.AdBreakStart, seg.AdBreakDuration))
-				body.WriteString("\n")
-			}
+			prev = lookBehind
 		} else {
-			prev := segments[i-1]
-			switch {
-			case !prev.IsAd && seg.IsAd:
-				body.WriteString(buildCueOutLine(seg.AdBreakStart, seg.AdBreakDuration))
-				body.WriteString("\n")
-			case prev.IsAd && !seg.IsAd:
-				// CUE-IN carries the *previous* (last ad) break's
-				// metadata, since the CUE-IN is the end of THAT
-				// break, not the start of the next VOD segment.
-				body.WriteString(buildCueInLine(prev.AdBreakStart, prev.AdBreakDuration))
-				body.WriteString("\n")
-			}
+			prev = &segments[i-1]
+		}
+		prevIsAd := prev != nil && prev.IsAd
+		switch {
+		case !prevIsAd && seg.IsAd:
+			body.WriteString(buildCueOutLine(seg.AdBreakStart, seg.AdBreakDuration))
+			body.WriteString("\n")
+		case prevIsAd && !seg.IsAd:
+			// CUE-IN carries the *previous* (last ad) break's
+			// metadata, since the CUE-IN is the end of THAT
+			// break, not the start of the next VOD segment.
+			body.WriteString(buildCueInLine(prev.AdBreakStart, prev.AdBreakDuration))
+			body.WriteString("\n")
 		}
 		// Per-segment #EXT-X-SCTE35 lines (NEW). The planner
 		// stamps 1-2 SpliceInserts on each segment that participates

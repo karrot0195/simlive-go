@@ -226,7 +226,7 @@ An infinite 1-second tick loop managing playout state:
 2. **Clock Sync:** Check current system epoch timestamp (`currentTime`).
 3. **Sliding Window Selector:**
 * Query Redis for segments within `[now - 300s, now + 120s]` (score = `media_start`) **per rung**: the engine reads `simlive:timeline:{ch}:{rend}` for each active rung (from `activeRungMeta`, which falls back to the hard-coded `ActiveLadder` if planner metadata is missing).
-* **M2 (per-rung segment cache):** Each rung downloads its OWN `seg_N.ts` files into its OWN subdir `{TMP_DIR}/{ch}/{rend}/` from that rung's VOD dir (via each member's `StoragePath`). The master playlist `playlist.m3u8` advertises all 3 rungs via `#EXT-X-STREAM-INF` (360p/720p/1080p); per-rung media playlists `{ch}/{rend}/playlist.m3u8` each reference that rung's OWN `seg_N.ts` files. `groupSegsByRendition` rescues empty `Rendition` to `DefaultRendition` (`360p`) for legacy timeline members.
+* **M2 (per-rung segment cache):** Each rung downloads its OWN `seg_N.ts` files into its OWN subdir `{TMP_DIR}/{ch}/{rend}/` from that rung's VOD dir (via each member's `StoragePath`). The master playlist `playlist.m3u8` advertises all 3 rungs via `#EXT-X-STREAM-INF` (360p/720p/1080p); per-rung media playlists `{ch}/{rend}/playlist.m3u8` each reference that rung's OWN `seg_N.ts` files. Rung selection maps `SegmentItem.Renditions[i]` (the per-rung STORAGE tier dirs `L_0/L_1/L_2` for VOD, `L2/L1/L0` for ads) by index → `RENDITIONMAP[i]` = `{360p,720p,1080p}`; empty `Rendition` rescues to `DefaultRendition` (`360p`). (The legacy `groupSegsByRendition` helper is commented-out — its label keying does not fit the storage-tier rendition fields.)
 
 
 4. **Segment Fetcher (Worker Pool, async):**
@@ -247,7 +247,9 @@ An infinite 1-second tick loop managing playout state:
 
 6. **HLS Dynamic Playlist Builder:**
 * Generate live `playlist.m3u8` (5-segment sliding window) with `#EXT-X-TARGETDURATION` from the longest segment.
-* Increment `#EXT-X-MEDIA-SEQUENCE` based on the first segment's sequence.
+* The ADVERTISED window is exactly `candidateSegs` — the 5-segment playhead window centered on `now` (`current .. current+PlaylistWindowSize`). This is intentionally NOT the full `downloadSegs` on-disk superset (`keepBehind + window + ahead`): anchoring `#EXT-X-MEDIA-SEQUENCE` at the current segment means the trailing keepBehind edge is never advertised, so it can be safely evicted by `syncLocalCacheDir` without 404-ing a referenced segment.
+* Increment `#EXT-X-MEDIA-SEQUENCE` based on the first segment's sequence (the playhead anchor).
+* The first advertised segment gets 1 look-behind segment (`lookBehindSegment`) threaded into `buildMediaPlaylistBody` (variadic `behind ...*models.SegmentItem`) so the SCTE-35/DATERANGE edge detection (which inspects `segments[i-1]`) sees a real neighbour; the behind segment is never advertised.
 * **Only advertises prepared segments** (those with a `.pts` marker) so players never request in-progress files; keeps the previous playlist while nothing is ready.
 * Written atomically to `{TMP_DIR}/{playout_id}/playlist.m3u8`, served by the API at `http://localhost:8080/live/{channelID}/playlist.m3u8`.
 

@@ -5,7 +5,6 @@
 package api
 
 import (
-	"context"
 	"log"
 	"net/http"
 	"os"
@@ -31,51 +30,8 @@ const (
 	maxListPageSize     = 100
 )
 
-// breakerKeyPrefix mirrors the planner's per-channel breaker counter
-// Redis key prefix (`internal/planner/planner.go` failureCounterKey =
-// "planner:failures:%s"). The planner already imports the api package
-// (for ESPXClient), so we cannot import the planner constant here
-// without inverting the dependency — instead, both sides pin the same
-// string and TestBreakerKeyPrefix_MatchesPlanner is the contract test
-// that keeps them in sync.
-const breakerKeyPrefix = "planner:failures:"
-
-// hlsRedisKeyPrefix is the common prefix for the HLS playlist keys
-// written by the engine (master + per-rung media playlists). The shape
-// is:
-//
-//	simlive:hls:{ch}                          <- master playlist
-//	simlive:hls:{ch}:rendition:{360p|720p|1080p}  <- media playlist per rung
-//
-// We pin the prefix here (and the known ladder set) instead of importing
-// the helpers from internal/engine, because the api package is a
-// dependency of neither the planner nor the engine and we don't want to
-// invert the layering. If the ladder grows, update hlsRungs here and in
-// internal/engine/rendition.go.
-const hlsRedisKeyPrefix = "simlive:hls:"
-
-// timelineRedisKeyPrefix, renditionsRedisKeyPrefix, and cursorRedisKeyPrefix
-// mirror the prefixes the planner writes. Purge-on-stop needs to know
-// all of them so a stopped channel leaves no stale state behind.
-// The breaker counter key (breakerKeyPrefix above) is INTENTIONALLY
-// preserved across stop — see StartChannel for the rationale.
-const (
-	timelineRedisKeyPrefix   = "simlive:timeline:"
-	renditionsRedisKeyPrefix = "simlive:renditions:"
-	cursorRedisKeyPrefix     = "planner:cursor:"
-)
-
-var hlsRungs = []string{"360p", "720p", "1080p"}
-
-// plannerTickHint reads `PLANNER_INTERVAL` (same env var the
-// `cmd/planner` binary honours) and returns a short human-readable
-// hint string for the `[api] channel=... started` log line. Falls
-// back to "5m" if the env var is unset or unparseable — the planner
-// does the same in `cmd/planner/main.go plannerInterval()`. We
-// intentionally duplicate the parse rather than call into the planner
-// (the api package is a dependency of neither the planner nor the
-// engine, and the two-line string-parsing logic is not worth a new
-// shared package).
+// plannerTickHint reads `PLANNER_INTERVAL` and returns a short human-readable
+// hint string for the `[api] channel=... started` log line. Falls back to "5m" if unset or unparseable.
 func plannerTickHint() string {
 	raw := os.Getenv("PLANNER_INTERVAL")
 	if raw == "" {
@@ -87,97 +43,29 @@ func plannerTickHint() string {
 	return raw + " (unparseable; planner will use 5m default)"
 }
 
-// purgeChannelRedisData DELs every per-channel Redis key the planner +
-// engine write for `id`, so a stopped / soft-deleted channel leaves
-// no stale data behind. The keys purged are:
-//
-//	simlive:hls:{ch}                              (engine master playlist)
-//	simlive:hls:{ch}:rendition:{360p|720p|1080p}  (engine per-rung media playlists)
-//	simlive:timeline:{ch}:{360p|720p|1080p}       (planner per-rung ZSETs — M2)
-//	simlive:renditions:{ch}                       (planner per-channel ladder metadata)
-//	planner:cursor:{ch}                           (planner per-channel lookahead cursor)
-//
-// INTENTIONALLY PRESERVED:
-//
-//	planner:failures:{ch}  — the per-channel failure-breaker counter.
-//	StartChannel DELs this on the next start, so a stop → start cycle
-//	always behaves like a fresh attempt. Preserving it across stop
-//	means an operator who inspects the counter via `redis-cli GET
-//	planner:failures:{ch}` sees the same value as before the stop.
-//
-// Best-effort, same shape as the breaker DEL in StartChannel: a Redis
-// blip is logged at `[api]` but the DB flip is the durable part of
-// the operation and the call still returns success. The next planner
-// tick on a re-started channel will repopulate the timeline +
-// renditions + cursor keys; the engine will repopulate the HLS keys
-// on its first tick. If the channel stays stopped, no writer touches
-// the keys, so a stale key can't persist.
-//
-// Disk cache note: the `{TMP_DIR}/{ch}/` directory is NOT touched
-// here. The engine reconciler cancels the per-channel goroutine
-// within ~5s of `stop` and the goroutine's last `syncLocalCacheDir`
-// pass evicts the bounded active window on shutdown. Disk space is
-// recovered within that window; the on-disk `.ts` files vanish too.
-func (h *ChannelHandler) purgeChannelRedisData(id string) {
-	if h.rdb == nil {
-		return
-	}
-	keys := make([]string, 0, 1+len(hlsRungs)+len(hlsRungs)+3)
-	keys = append(keys, hlsRedisKeyPrefix+id)
-	for _, r := range hlsRungs {
-		keys = append(keys, hlsRedisKeyPrefix+id+":rendition:"+r)
-		keys = append(keys, timelineRedisKeyPrefix+id+":"+r)
-	}
-	keys = append(keys,
-		timelineRedisKeyPrefix+id,
-		renditionsRedisKeyPrefix+id,
-		cursorRedisKeyPrefix+id,
-	)
-	// Fresh context so a client-side cancellation on the HTTP request
-	// doesn't abort the Redis call (same pattern as StartChannel).
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := h.rdb.Del(ctx, keys...).Err(); err != nil {
-		log.Printf("[api] purgeChannelRedisData(%s): DEL %v error: %v", id, keys, err)
-	}
-}
-
-// allowedStatuses is the closed set of Status values the API will accept
-// on PUT/PATCH. The planner may set Status='ERROR' via its own breaker,
-// but the manual surface rejects it so a bad operator click cannot
-// masquerade as a planner-determined error state. The lifecycle is:
-// PREPARE (started, waiting for first planner data) → LIVE (timeline in
-// Redis, engine serving) → INACTIVE (stopped).
+// allowedStatuses is the closed set of Status values the API will accept on PUT/PATCH.
 var allowedStatuses = map[string]bool{
 	"PREPARE":  true,
 	"LIVE":     true,
 	"INACTIVE": true,
 }
 
-// ChannelHandler is the REST surface for /api/channels/* . It owns CRUD
-// over the playout_channels table plus the manual start/stop operations.
-// The planner reads the same columns (is_active, status) so a manual
-// flip takes effect on the next planner tick (default 5m,
-// PLANNER_INTERVAL).
+// ChannelHandler is the REST surface for /api/channels/* . It owns CRUD over the playout_channels table plus the manual start/stop operations.
+// The planner reads the same columns (is_active, status) so a manual flip takes effect on the next planner tick.
 type ChannelHandler struct {
 	db   *gorm.DB
 	espx *ESPXClient
 	rdb  *redis.Client
 }
 
-// NewChannelHandler wires the dependencies. `rdb` may be nil — start/stop
-// then log a warning and continue (a Redis blip should never 5xx the
-// operator; the DB flip is the durable part of the operation).
+// NewChannelHandler wires the dependencies. `rdb` may be nil — start/stop then log a warning and continue (a Redis blip should never 5xx the operator; the DB flip is the durable part of the operation).
 func NewChannelHandler(db *gorm.DB, espx *ESPXClient, rdb *redis.Client) *ChannelHandler {
 	return &ChannelHandler{db: db, espx: espx, rdb: rdb}
 }
 
 // ----- Path guard --------------------------------------------------------
 
-// channelIDGuard returns true and writes a 400 to the response when the
-// :id path param contains `..` or `/`. Mirrors the spirit of the
-// path-guard checks already in use on the /live/* routes
-// (cmd/api/main.go). Every /api/channels/:id route MUST call this first.
+// channelIDGuard returns true and writes a 400 to the response when the :id path param contains `..` or `/`. Mirrors the spirit of the path-guard checks already in use on the /live/* routes (cmd/api/main.go). Every /api/channels/:id route MUST call this first.
 func channelIDGuard(c *gin.Context, id string) bool {
 	if strings.Contains(id, "..") || strings.Contains(id, "/") {
 		c.String(http.StatusBadRequest, "Invalid channel ID")
@@ -188,10 +76,9 @@ func channelIDGuard(c *gin.Context, id string) bool {
 
 // ----- POST /api/channels (create / upsert) ------------------------------
 
-// CreateOrUpsertChannel is the renamed RegisterChannel. Same behaviour:
-// validate the channel ID against the ESPX detail endpoint, then upsert
-// the playout_channels row. Renamed for naming consistency with the
-// other CRUD verbs (List, Get, Update, Patch, Delete).
+// CreateOrUpsertChannel validates the channel ID against the ESPX API
+// and upserts the playout_channels row. Renamed for naming consistency
+// with other CRUD verbs.
 func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 	var req models.CreateChannelReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -199,19 +86,15 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		return
 	}
 
-	// 1. Validate Channel ID against the ESPX API
+	// Validate Channel ID against the ESPX API
 	detail, err := h.espx.GetChannelDetailWithEPG(req.ChannelID)
 	if err != nil || detail.ID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in ESPX API"})
 		return
 	}
 
-	// 2. Map data for DB storage. IsActive defaults to true via the GORM
-	// column default; we set it explicitly so the upsert is deterministic
-	// when the row already exists and is_active was previously false
-	// (e.g. the operator POST'd to revive a stopped channel). Status
-	// starts at 'PREPARE' — the planner flips it to 'LIVE' on the next
-	// tick once timeline data is in Redis.
+	// Map data for DB storage. Status starts at 'PREPARE' — the planner
+	// flips it to 'LIVE' on the next tick once timeline data is in Redis.
 	channel := models.PlayoutChannel{
 		ID:              detail.ID,
 		Name:            detail.Name,
@@ -223,7 +106,7 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		UpdatedAt:       time.Now(),
 	}
 
-	// 3. Upsert into the Database. The `is_active` column is referenced
+	// Upsert into the Database. The `is_active` column is referenced
 	// by name here (and matches the PlayoutChannel.IsActive struct field's
 	// gorm:"column:is_active" tag) so GORM updates the column even on
 	// existing rows.
@@ -315,10 +198,7 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 
 // ----- GET /api/channels/esp (list ESPX channels) -----------------------
 
-// ListESpxChannels proxies ESPX API 1 and annotates each item with a
-// `registered` boolean (true if the channel is already in our local
-// playout_channels table). Single SELECT id ... IN (...) keeps the
-// round-trip count constant in the fleet size.
+// ListESpxChannels proxies ESPX API 1 and annotates each item with a `registered` boolean (true if the channel is already in our local playout_channels table). Single SELECT id ... IN (...) keeps the round-trip count constant in the fleet size.
 func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
 	items, err := h.espx.ListESpxChannels()
 	if err != nil {
@@ -336,8 +216,7 @@ func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
 		if err := h.db.Model(&models.PlayoutChannel{}).
 			Where("id IN ?", ids).
 			Pluck("id", &existing).Error; err != nil {
-			// Don't fail the whole response on a DB blip — return the ESPX
-			// list with all `registered` set to false.
+			// Don't fail the whole response on a DB blip — return the ESPX list with all `registered` set to false.
 			log.Printf("[api] ListESpxChannels: SELECT id IN (...) error: %v", err)
 		} else {
 			for _, id := range existing {
@@ -376,33 +255,19 @@ func (h *ChannelHandler) GetChannel(c *gin.Context) {
 
 // ----- PUT /api/channels/:id (full update) ------------------------------
 
-// UpdateChannel does a full replace of the mutable fields on the
-// identified row. Required-field semantics: the body is read into
-// UpdateChannelReq (pointer fields) so the caller can choose to
-// "clear" a string field by passing an empty string. A pointer set to
-// nil is treated as "leave alone" — the same semantics as PATCH, so
-// PUT is really a "PATCH with all the body fields present" and the
-// distinction is largely cosmetic. We still validate Status when
-// present.
-func (h *ChannelHandler) UpdateChannel(c *gin.Context) {
-	id := c.Param("id")
-	if !channelIDGuard(c, id) {
-		return
-	}
-	var req models.UpdateChannelReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
-		return
-	}
-	if req.Status != nil && !allowedStatuses[*req.Status] {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be PREPARE, LIVE, or INACTIVE)"})
-		return
-	}
-
-	cols, vals := updateColumnsAndValues(&req)
+// UpdateChannel does a full replace of the mutable fields on the identified row.
+// Setting `status=INACTIVE` is a stop: force is_active=false so the planner and engine drop the channel on their next poll.
+func (h *ChannelHandler) applyChannelUpdate(c *gin.Context, id string, req *models.UpdateChannelReq, verb string) {
+	cols, vals := updateColumnsAndValues(req)
 	if len(cols) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No updatable fields provided"})
 		return
+	}
+
+	// Setting status=INACTIVE is a stop: force is_active=false so the planner and engine drop the channel on their next poll.
+	if req.Status != nil && *req.Status == "INACTIVE" {
+		cols = append(cols, "is_active")
+		vals = append(vals, false)
 	}
 
 	// updated_at always bumps.
@@ -423,10 +288,28 @@ func (h *ChannelHandler) UpdateChannel(c *gin.Context) {
 
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read updated channel"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read " + verb + " channel"})
 		return
 	}
+
 	c.JSON(http.StatusOK, row)
+}
+
+func (h *ChannelHandler) UpdateChannel(c *gin.Context) {
+	id := c.Param("id")
+	if !channelIDGuard(c, id) {
+		return
+	}
+	var req models.UpdateChannelReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		return
+	}
+	if req.Status != nil && !allowedStatuses[*req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be PREPARE, LIVE, or INACTIVE)"})
+		return
+	}
+	h.applyChannelUpdate(c, id, &req, "updated")
 }
 
 // ----- PATCH /api/channels/:id (partial update) -------------------------
@@ -449,33 +332,7 @@ func (h *ChannelHandler) PatchChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status (must be PREPARE, LIVE, or INACTIVE)"})
 		return
 	}
-
-	cols, vals := updateColumnsAndValues(&req)
-	if len(cols) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No updatable fields provided"})
-		return
-	}
-	cols = append(cols, "updated_at")
-	vals = append(vals, time.Now())
-
-	res := h.db.Model(&models.PlayoutChannel{}).
-		Where("id = ?", id).
-		Updates(assignmentMap(cols, vals))
-	if res.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to patch channel"})
-		return
-	}
-	if res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Channel not found"})
-		return
-	}
-
-	var row models.PlayoutChannel
-	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read patched channel"})
-		return
-	}
-	c.JSON(http.StatusOK, row)
+	h.applyChannelUpdate(c, id, &req, "patched")
 }
 
 // updateColumnsAndValues is the shared "which fields of UpdateChannelReq
@@ -525,9 +382,7 @@ func assignmentMap(cols []string, vals []interface{}) map[string]interface{} {
 
 // ----- DELETE /api/channels/:id (soft delete) ---------------------------
 
-// DeleteChannel is a soft delete: flip is_active=false, status='INACTIVE'
-// and best-effort DEL the channel's HLS playlist keys in Redis so a
-// soft-deleted channel's stale playlists are not served by /live/*.
+// DeleteChannel is a soft delete: flip is_active=false, status='INACTIVE'.
 // The row is preserved in the DB so audit history is intact. Idempotent
 // — a second DELETE on an already-soft-deleted row returns 204 (not 404).
 func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
@@ -542,10 +397,7 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete channel"})
 		return
 	}
-	// Purge the channel's Redis data regardless of RowsAffected — a
-	// soft-deleted row (or a re-DELETE on one) should not leave stale
-	// HLS playlists, timeline, renditions metadata, or cursor behind.
-	h.purgeChannelRedisData(id)
+
 	// 204 whether the row existed or not (idempotent). RowsAffected can
 	// be 0 both for "not found" and for "row exists but already
 	// is_active=false"; we deliberately do not distinguish.
@@ -617,13 +469,13 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 	// Best-effort: clear the breaker counter. Use a fresh context so a
 	// client-side cancellation on the HTTP request doesn't abort the
 	// Redis call.
-	if h.rdb != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		if err := h.rdb.Del(ctx, breakerKeyPrefix+id).Err(); err != nil {
-			log.Printf("[api] StartChannel: DEL %s%s error: %v", breakerKeyPrefix, id, err)
-		}
-		cancel()
-	}
+	// if h.rdb != nil {
+	// 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// 	if err := h.rdb.Del(ctx, breakerKeyPrefix+id).Err(); err != nil {
+	// 		log.Printf("[api] StartChannel: DEL %s%s error: %v", breakerKeyPrefix, id, err)
+	// 	}
+	// 	cancel()
+	// }
 
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
@@ -662,7 +514,9 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	// the row was already stopped — a stopped channel should not have
 	// live playlists, timeline, renditions metadata, or cursor cached.
 	// Best-effort, logged on failure.
-	h.purgeChannelRedisData(id)
+	// h.purgeChannelRedisData(id)
+	// h.purgeChannelDiskData(id)
+
 	if res.RowsAffected == 0 {
 		var row models.PlayoutChannel
 		if err := h.db.First(&row, "id = ?", id).Error; err != nil {
@@ -687,3 +541,13 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, row)
 }
+
+// func (h *ChannelHandler) purgeChannelDiskData(id string) {
+// 	tmpDir := utils.GetEnv("TMP_DIR", os.TempDir())
+// 	dir := filepath.Join(tmpDir, id)
+// 	if err := os.RemoveAll(dir); err != nil {
+// 		log.Printf("[api] purgeChannelDiskData(%s): remove %s error: %v", id, dir, err)
+// 	} else {
+// 		log.Printf("[api] purgeChannelDiskData(%s): removed %s", id, dir)
+// 	}
+// }

@@ -218,13 +218,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onBeforeUnmount, ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, onBeforeUnmount, ref, computed, watch } from 'vue'
 import videojs from 'video.js'
 import 'videojs-contrib-quality-menu'
 import 'video.js/dist/video-js.css'
 
-import { LIVE_API } from '@/constants'
+import { masterPlaylistUrl } from '@/libs/hls'
 import * as parser from 'm3u8-parser'
 
 const props = defineProps({
@@ -232,11 +231,9 @@ const props = defineProps({
   type: { type: String, required: true }
 })
 
-const router = useRouter()
 const isSuperAdmin = computed(() => localStorage.getItem('is_super_admin') === 'true')
 
-const src = computed(() => LIVE_API + '/' + props.node?.uuid + '/playout.m3u8')
-const videoPlayer = ref(null)
+const src = computed(() => masterPlaylistUrl(props.node?.id))
 let player = ref<any>(null)
 const currentSegment = ref<any>(null)
 const allSegments = ref<any[]>([])
@@ -246,7 +243,6 @@ const selectedSegmentTags = ref<any>(null)
 const mediaPlaylistUrl = ref<string>('')
 const isLivePlaylist = ref<boolean>(false)
 const maxSegmentsToKeep = 50 // Keep last 50 segments for live streams
-const segmentsListWrapper = ref<HTMLElement | null>(null)
 const seenSegmentUris = ref<Set<string>>(new Set())
 
 // Computed property to display segments (already in newest-first order)
@@ -272,8 +268,7 @@ const formatDateTime = (dateTime: string) => {
 }
 
 const extractSegmentNumber = (uri: string) => {
-  // Extract segment number from URI like /segments/400 or segments/400
-  const match = uri.match(/segments\/(\d+)/)
+  const match = uri.match(/seg_(\d+)(?:\.ts)?$/) || uri.match(/(\d+)(?:\.ts)?$/)
   return match ? match[1] : null
 }
 
@@ -291,18 +286,14 @@ const extractCueElapsed = (cueOutContTag: string) => {
 }
 
 const navigateToTmpData = (segment: any) => {
-  // Parse segment URI to extract filename
-  // Expected format: L2/segments/337.ts or similar patterns
   const uri = segment.uri
+  const filenameMatch = uri.match(/seg_(\d+)(?:\.ts)?$/) || uri.match(/(\d+)(?:\.ts)?$/)
 
-  // Extract filename without extension (e.g., 337 from 337.ts)
-  const filenameMatch = uri.match(/\/(\d+)(?:\.ts)?$/)
-
-  if (filenameMatch && props.node?.uuid) {
+  if (filenameMatch && props.node?.id) {
     const filename = filenameMatch[1]
     const queryParams = new URLSearchParams({
       folder: 'data',
-      path: props.node.uuid,
+      path: props.node.id,
       filename: filename
     })
 
@@ -314,34 +305,25 @@ const fetchM3u8Content = async () => {
   try {
     let urlToFetch = src.value
 
-    // If we already know the media playlist URL, use that
     if (mediaPlaylistUrl.value) {
       urlToFetch = mediaPlaylistUrl.value
     }
 
-    console.log('Fetching m3u8 from:', urlToFetch)
     const response = await fetch(urlToFetch)
     const content = await response.text()
-    console.log('M3U8 content length:', content.length)
 
-    // Check if this is a master playlist (contains #EXT-X-STREAM-INF)
     if (content.includes('#EXT-X-STREAM-INF')) {
-      console.log('This is a master playlist, finding media playlist...')
       const lines = content.split('\n')
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim()
         if (!line.startsWith('#') && line.includes('.m3u8')) {
-          // Found media playlist reference
           const baseUrl = urlToFetch.substring(0, urlToFetch.lastIndexOf('/') + 1)
           mediaPlaylistUrl.value = baseUrl + line
-          console.log('Found media playlist:', mediaPlaylistUrl.value)
-          // Fetch the actual media playlist
           await fetchM3u8Content()
           return
         }
       }
     } else {
-      // This is a media playlist with segments
       rawM3u8Content.value = content
       parseM3u8Tags()
     }
@@ -353,23 +335,17 @@ const fetchM3u8Content = async () => {
 const parseM3u8Tags = () => {
   if (!rawM3u8Content.value) return
 
-  // Use m3u8-parser library
   const m3u8Parser = new parser.Parser()
   m3u8Parser.push(rawM3u8Content.value)
   m3u8Parser.end()
 
   const parsedManifest = m3u8Parser.manifest
-  console.log('Parsed manifest:', parsedManifest)
-
-  // Check if this is a live playlist (no EXT-X-ENDLIST)
   isLivePlaylist.value = !parsedManifest.endList
 
   if (!parsedManifest.segments || parsedManifest.segments.length === 0) {
-    console.warn('No segments found in manifest')
     return
   }
 
-  // Also parse raw tags manually for complete information
   const lines = rawM3u8Content.value.split('\n')
   const rawSegmentTags: any = {}
   let currentSegmentTags: string[] = []
@@ -387,16 +363,13 @@ const parseM3u8Tags = () => {
     }
   }
 
-  // Combine parsed segments with raw tags
   const segmentsWithTags = parsedManifest.segments.map((segment: any, index: number) => {
     const rawTags = rawSegmentTags[index] || []
 
-    // Parse cue-out/cue-in tags from raw tags
     const cueOut = rawTags.find((t: string) => t.includes('SCTE35-OUT'))
     const cueIn = rawTags.find((t: string) => t.includes('SCTE35-IN') && !t.includes('SCTE35-OUT'))
     const cueOutCont = rawTags.find((t: string) => t.includes('SCTE35-OUT-CONT'))
 
-    // Parse DATERANGE for SCTE35 info
     let dateRangeInfo: any = null
     if (segment.dateRange) {
       const dateRangeTag = rawTags.find((t: string) => t.includes('EXT-X-DATERANGE'))
@@ -435,8 +408,6 @@ const parseM3u8Tags = () => {
     }
   })
 
-  // Update existing segments with tag information from m3u8
-  // This enriches segments that were added by trackCurrentSegment
   segmentsWithTags.forEach((parsedSeg) => {
     const existingIndex = allSegments.value.findIndex((s) => {
       const segmentNum1 = extractSegmentNumber(parsedSeg.uri)
@@ -445,19 +416,13 @@ const parseM3u8Tags = () => {
     })
 
     if (existingIndex >= 0) {
-      // Enrich existing segment with parsed tags
       allSegments.value[existingIndex] = {
         ...allSegments.value[existingIndex],
         ...parsedSeg,
-        uri: allSegments.value[existingIndex].uri // Keep original URI format
+        uri: allSegments.value[existingIndex].uri
       }
     }
   })
-
-  console.log(
-    `Parsed m3u8: ${segmentsWithTags.length} segments, Current history: ${allSegments.value.length}`
-  )
-  console.log('Sample segment:', segmentsWithTags[0])
 }
 
 const selectSegment = (segment: any) => {
@@ -486,39 +451,28 @@ const updatePlaylistInfo = () => {
 }
 
 const trackCurrentSegment = () => {
-  if (!player.value) {
-    return
-  }
+  if (!player.value) return
 
   const tech = player.value.tech({ IWillNotUseThisInPlugins: true })
-  if (!tech || !tech.vhs) {
-    return
-  }
+  if (!tech || !tech.vhs) return
 
   const vhs = tech.vhs
   const playlist = vhs.playlists?.media()
 
-  if (!playlist || !playlist.segments || playlist.segments.length === 0) {
-    return
-  }
+  if (!playlist || !playlist.segments || playlist.segments.length === 0) return
 
-  // Update playlist info
   updatePlaylistInfo()
 
   let currentSegmentUri: string | null = null
   let segment = null
   let segmentIndex = -1
 
-  // Method 1: Get URI from textTracks (most reliable for current segment)
   try {
     const textTracks = tech.textTracks_
     if (textTracks && textTracks[0] && textTracks[0].activeCues && textTracks[0].activeCues[0]) {
       const activeCue = textTracks[0].activeCues[0]
       if (activeCue.value && activeCue.value.uri) {
         currentSegmentUri = activeCue.value.uri as string
-        console.log('✓ textTracks URI:', currentSegmentUri)
-
-        // Now find the full segment data from playlist by matching URI
         const foundIndex = playlist.segments.findIndex((seg: any) => {
           const segNum1 = extractSegmentNumber(currentSegmentUri as string)
           const segNum2 = extractSegmentNumber(seg.uri)
@@ -528,7 +482,6 @@ const trackCurrentSegment = () => {
         if (foundIndex >= 0) {
           segmentIndex = foundIndex
           segment = playlist.segments[foundIndex]
-          console.log('✓ Found full segment data at index', foundIndex)
         }
       }
     }
@@ -536,7 +489,6 @@ const trackCurrentSegment = () => {
     console.log('textTracks error:', e)
   }
 
-  // Method 2: Fallback to VHS mediaIndex
   if (!currentSegmentUri) {
     if (vhs.playlistController_ && typeof vhs.playlistController_.mediaIndex === 'number') {
       segmentIndex = vhs.playlistController_.mediaIndex
@@ -547,11 +499,9 @@ const trackCurrentSegment = () => {
     if (segmentIndex >= 0 && segmentIndex < playlist.segments.length) {
       segment = playlist.segments[segmentIndex]
       currentSegmentUri = segment.uri
-      console.log('✓ VHS index:', segmentIndex, currentSegmentUri)
     }
   }
 
-  // Method 3: Fallback to time calculation
   if (!currentSegmentUri) {
     const currentTime = player.value.currentTime()
     let accumulatedTime = 0
@@ -564,32 +514,22 @@ const trackCurrentSegment = () => {
         segmentIndex = i
         segment = playlist.segments[i]
         currentSegmentUri = segment.uri
-        console.log('✓ Time calc:', segmentIndex, currentSegmentUri)
         break
       }
     }
   }
 
-  // If we found a segment
   if (currentSegmentUri && segment) {
     const segmentNumber = extractSegmentNumber(currentSegmentUri)
-    console.log('Segment number extracted:', segmentNumber)
 
-    // Find matching segment with tags from parsed m3u8
     let matchingSegment = allSegments.value.find((s) => {
       const segmentNum1 = extractSegmentNumber(currentSegmentUri)
       const segmentNum2 = extractSegmentNumber(s.uri)
-      const matches = segmentNum1 && segmentNum2 && segmentNum1 === segmentNum2
-      return matches
+      return segmentNum1 && segmentNum2 && segmentNum1 === segmentNum2
     })
 
-    if (matchingSegment) {
-      console.log('✓ Found matching segment with tags')
-    }
-
-    // Set current segment with VHS data + parsed m3u8 tags
     currentSegment.value = {
-      uri: currentSegmentUri.split('/').slice(-3).join('/'),
+      uri: currentSegmentUri.split('/').pop() || currentSegmentUri,
       duration: segment.duration || 0,
       programDateTime:
         segment.dateTimeString ||
@@ -611,18 +551,11 @@ const trackCurrentSegment = () => {
       rawTags: segment?.rawTags || []
     }
 
-    // Add this segment to history if not already present
     if (!seenSegmentUris.value.has(currentSegmentUri)) {
-      console.log('➕ Adding segment #' + segmentNumber + ' to history')
       seenSegmentUris.value.add(currentSegmentUri)
-
-      // Create a copy of the segment data to avoid reference issues
       const segmentCopy = { ...currentSegment.value }
-
-      // Add to the beginning of the array (newest first)
       allSegments.value.unshift(segmentCopy)
 
-      // Keep only last N segments
       if (allSegments.value.length > maxSegmentsToKeep) {
         const removed = allSegments.value.pop()
         if (removed) {
@@ -630,14 +563,12 @@ const trackCurrentSegment = () => {
         }
       }
     } else {
-      // Update existing segment with latest info
       const existingIndex = allSegments.value.findIndex((s) => {
         const segmentNum1 = extractSegmentNumber(currentSegmentUri)
         const segmentNum2 = extractSegmentNumber(s.uri)
         return segmentNum1 && segmentNum2 && segmentNum1 === segmentNum2
       })
       if (existingIndex >= 0) {
-        // Create a copy to avoid reference issues
         allSegments.value[existingIndex] = { ...currentSegment.value }
       }
     }
@@ -647,11 +578,28 @@ const trackCurrentSegment = () => {
 let m3u8FetchInterval: any = null
 let segmentTrackingInterval: any = null
 
-const startM3u8Polling = () => {
-  // Fetch immediately
-  fetchM3u8Content()
+watch(
+  () => props.node?.id,
+  (newId, oldId) => {
+    if (!player.value || newId === oldId) return
 
-  // Then fetch every 2 seconds to get updated playlist
+    currentSegment.value = null
+    allSegments.value = []
+    playlistInfo.value = null
+    rawM3u8Content.value = ''
+    mediaPlaylistUrl.value = ''
+    seenSegmentUris.value = new Set()
+
+    if (props.node.status === 'LIVE' || props.node.status === 'PREPARE') {
+      reloadVideo()
+      fetchM3u8Content()
+    }
+  },
+  { flush: 'post' }
+)
+
+const startM3u8Polling = () => {
+  fetchM3u8Content()
   m3u8FetchInterval = setInterval(() => {
     fetchM3u8Content()
   }, 2000)
@@ -665,20 +613,20 @@ onMounted(() => {
           limitRenditionByPlayerDimensions: false
         },
         vhs: {
-          // Note: Video.js v7/v8 uses 'vhs' instead of 'hls' in the config object
-          limitRenditionByPlayerDimensions: false, // Allows high-res playback even if the player element is small
-          smoothQualityChange: true, // Smoother transitions when switching qualities
-          overrideNative: true, // Uses Video.js managed playback engine over native Safari/iOS where possible for consistency
+          limitRenditionByPlayerDimensions: false,
+          smoothQualityChange: true, // Enabled for smoother quality transitions during live watching
+          overrideNative: true,
 
-          // Live stream specific tuning
-          liveSyncDurationCount: 3, // Number of segments from the end to start playback (3 is standard for stability)
-          fastQualityChange: true // Drops lower quality buffered frames immediately when a higher quality is selected
+          // Smooth live streaming configuration
+          liveSyncDurationCount: 3, // Maintains a 3-segment buffer to minimize stalling
+          liveMaxLatencyDurationCount: 6, // Prevents drifting too far behind the live edge
+          fastQualityChange: true, // Instantly clears low-res buffer when stepping up or down
+          bandwidth: 100000 // Initial bandwidth hint favoring low quality start
         }
       },
       controls: true,
       autoplay: true,
       preload: 'auto'
-      // liveui: true
     })
 
     player.value.on('ready', () => {
@@ -686,14 +634,44 @@ onMounted(() => {
       ;(window as any).vjsPlayer = player.value
       player.value.qualityMenu()
 
-      // Start polling m3u8 for all segments
+      // Auto-select lowest resolution by default
+      const selectLowestResolution = () => {
+        const qualityLevels = (player.value as any).qualityLevels()
+        if (!qualityLevels || qualityLevels.length === 0) return
+
+        let minIdx = -1
+        let minHeight = Infinity
+        let minBandwidth = Infinity
+
+        for (let i = 0; i < qualityLevels.length; i++) {
+          const level = qualityLevels[i]
+          const height = level.height || Infinity
+          const bandwidth = level.bandwidth || Infinity
+
+          if (height < minHeight || (height === minHeight && bandwidth < minBandwidth)) {
+            minHeight = height
+            minBandwidth = bandwidth
+            minIdx = i
+          }
+        }
+
+        if (minIdx >= 0) {
+          qualityLevels.selectedIndex = minIdx
+          console.log(`Default rendition set to lowest resolution index: ${minIdx} (${minHeight}p)`)
+        }
+      }
+
+      // Try setting lowest quality immediately, then listen for dynamic additions
+      selectLowestResolution()
+      const qualityLevels = (player.value as any).qualityLevels()
+      if (qualityLevels) {
+        qualityLevels.on('addqualitylevel', selectLowestResolution)
+      }
+
       startM3u8Polling()
 
-      // Start tracking current segment immediately and then every second
-      console.log('Starting segment tracking interval')
       trackCurrentSegment()
       segmentTrackingInterval = setInterval(() => {
-        console.log('Segment tracking tick')
         trackCurrentSegment()
       }, 1000)
     })
@@ -706,24 +684,11 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  console.log('destroying')
-
-  // Clear m3u8 polling interval
-  if (m3u8FetchInterval) {
-    clearInterval(m3u8FetchInterval)
-  }
-
-  // Clear segment tracking interval
-  if (segmentTrackingInterval) {
-    clearInterval(segmentTrackingInterval)
-  }
-
-  if (player.value) {
-    player.value.dispose()
-  }
+  if (m3u8FetchInterval) clearInterval(m3u8FetchInterval)
+  if (segmentTrackingInterval) clearInterval(segmentTrackingInterval)
+  if (player.value) player.value.dispose()
 })
 </script>
-
 <style scoped>
 /* Main Layout */
 .livestream-container {

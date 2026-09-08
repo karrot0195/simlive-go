@@ -52,8 +52,20 @@ A simulated-live (24/7 linear) HLS playout system in Go:
       `#EXT-X-INDEPENDENT-SEGMENTS`) → Redis `simlive:hls:{ch}`
     - 1 per-rung media playlist `{ch}/{rend}/playlist.m3u8` (references
       that rung's OWN `seg_N.ts` files) → Redis
-      `simlive:hls:{ch}:rendition:{rend}`. The `groupSegsByRendition`
-  helper rescues empty `Rendition` to `DefaultRendition = "360p"`. The
+      `simlive:hls:{ch}:rendition:{rend}`. **The media playlist
+      advertises ONLY the playhead window (`candidateSegs`,
+      current..current+window)**, NOT the whole on-disk superset — this
+      keeps `#EXT-X-MEDIA-SEQUENCE` anchored at the current segment so
+      the trailing keepBehind edge is never advertised-then-evicted
+      (404 fix). Each `SegmentItem.Renditions` holds the per-rung
+      STORAGE tier dirs (`["L_0","L_1","L_2"]` VOD / `["L2","L1","L0"]`
+      ads) in ladder order, so rung selection maps index →
+      `RENDITIONMAP[i]` = `{360p,720p,1080p}` (NOT
+      `groupSegsByRendition` keyed on the raw tier labels). The first
+      advertised segment also gets a 1-seg `lookBehindSegment` context
+      so `buildMediaPlaylistBody`'s SCTE-35/DATERANGE edge detection
+      (which inspects `segments[i-1]`) sees a real neighbour.
+      The
   per-channel ladder is resolved via `activeRungMeta` (planner metadata
   → hard-coded `ActiveLadder` fallback) so the master always lists 3
   rungs even before the planner has run.
@@ -177,14 +189,19 @@ walked by the planner and served by the engine),
   SegmentItem roundtrip, per-segment splice-insert emission (2
   pre-rolls on their VOD positions, slice-point before first ad
   EXTINF, cue-in on the last ad, no `#EXT-X-SCTE35` for segments
-  with empty `SliceInserts`, all 4 events in chronological order).
+  with empty `SliceInserts`, all 4 events in chronological order),
+  and `TestBuildMediaPlaylistBody_LookBehindEdgeDetection` (the
+  window's first advertised segment uses the 1-seg `behind` context
+  for CUE-IN/CUE-OUT edge detection without advertising the behind
+  seg; `#EXT-X-MEDIA-SEQUENCE` anchors at the first advertised seg).
 - `internal/engine/master_playlist_test.go` — `TestBuildMasterPlaylist_...`
   + `TestBuildMasterPlaylist_ThreeRungs` (pure),
   `TestActiveLadder_HasThreeRungs` (pure),
-  `TestSortRungsByLadder` (pure), `TestGroupSegsByRendition_...`
-  (pure), `TestPickRenditionURIs` / `TestRungPlaylistFilename` /
+  `TestSortRungsByLadder` (pure), `TestPickRenditionURIs` /
+  `TestRungPlaylistFilename` /
   `TestChannelDirAndRedisKeys` (pure, M2: `{rend}/playlist.m3u8` URIs +
   `rungDir`),
+  `TestLookBehindSegment_ReturnsPrev` / `_FirstIsNil` (pure),
   `TestSyncLocalCacheDir_PerRungDir` (pure, `t.TempDir()`),
   `TestGenerateMasterPlaylist_ThreeRungs` (Redis end-to-end),
   `TestGenerateMasterPlaylist_ColdStartEmptyMetadata` (Redis),
