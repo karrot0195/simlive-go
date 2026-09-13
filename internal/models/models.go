@@ -71,11 +71,11 @@ type ESPXChannelListItem struct {
 
 type SpliceInsert struct {
 	Type               string  `json:"type"`
-	EventID            int64   `json:"eventId"`
+	EventID            uint32  `json:"eventId"`
 	SpliceTimePTS      int64   `json:"spliceTimePts"`
 	SpliceTimeSeconds  float64 `json:"spliceTimeSeconds"`
 	Duration           float64 `json:"duration"`
-	UniqueProgramID    int64   `json:"uniqueProgramId"`
+	UniqueProgramID    uint32  `json:"uniqueProgramId"`
 	SegmentationTypeID int     `json:"segmentationTypeId"`
 }
 
@@ -98,7 +98,7 @@ type SegmentItem struct {
 	// The engine uses it to rewrite the .ts PTS/DTS (ffmpeg -copyts -output_ts_offset)
 	// so DTS stays continuous across VOD + ads without depending on the absolute epoch.
 	// nil on legacy segments that lack this field (engine falls back to MediaStart).
-	PtsOffset *float64 `json:"pts_offset,omitempty"`
+	PtsOffset float64 `json:"pts_offset,omitempty"`
 
 	// Renditions is the active quality rung this segment was prepared under
 	// (e.g. "360p", "720p", "1080p"). The planner writes it on every member
@@ -133,7 +133,8 @@ type SegmentItem struct {
 	// round-trip to JSON unchanged and pre-existing timeline members
 	// remain valid without a flush.
 	IsAd            bool    `json:"is_ad,omitempty"`
-	AdBreakID       string  `json:"ad_break_id,omitempty"`
+	AdType          string  `json:"ad_type,omitempty"`
+	AdBreakID       uint32  `json:"ad_break_id,omitempty"`
 	AdBreakStart    float64 `json:"ad_break_start,omitempty"`
 	AdBreakDuration float64 `json:"ad_break_duration,omitempty"`
 

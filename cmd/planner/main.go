@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"os"
 	"sync"
 	"time"
 
@@ -21,72 +19,26 @@ import (
 	"simlive/internal/utils"
 )
 
+const DIFF_TIME_AHEAD = 3
+
 var logger = utils.GetLogger("PLANNER")
-
-func PrepareEnv(ctx context.Context, db *gorm.DB, rdb *redis.Client) {
-	cleanUp := utils.GetEnv("ENABLE_CLEAN_UP", "") == "true"
-	if cleanUp {
-		logger.Info("[Planner] startup: ENABLE_CLEAN_UP=true, flushing all Redis keys + removing TMP_DIR")
-		if rdb != nil {
-			rdb.FlushAll(ctx)
-		}
-		tmpDir := utils.GetEnv("TMP_DIR", os.TempDir())
-		os.RemoveAll(tmpDir)
-		if db != nil {
-			db.Model(&models.PlayoutChannel{}).
-				Where("is_active = ?", true).
-				Update("status", "PREPARE")
-		}
-		return
-	}
-	logger.Info("[Planner] startup: preserving all Redis keys + TMP_DIR cache")
-}
-
-func plannerInterval() time.Duration {
-	d, err := time.ParseDuration(utils.GetEnv("PLANNER_INTERVAL", "5m"))
-	if err != nil || d <= 0 {
-		return 5 * time.Minute
-	}
-	return d
-}
-
-func plannerWorkerCount() int {
-	n := utils.GetEnvInt("PLANNER_WORKERS", 4)
-	if n < 1 {
-		return 1
-	}
-	return n
-}
-
-func logMetrics(ctx context.Context, p *planner.Planner, channels []models.PlayoutChannel) {
-	for _, ch := range channels {
-		size := p.TimelineSize(ctx, ch.ID)
-		cursor := p.LastProcessedCursor(ctx, ch.ID)
-		cursorStr := "none"
-		if cursor > 0 {
-			cursorStr = time.Unix(cursor, 0).UTC().Format("2006-01-02T15:04:05Z")
-		}
-		logger.Info("[METRIC] channel=%s name=%q zset_size=%d cursor=%s live_segment=%d download_ahead=%d",
-			ch.ID, ch.Name, size, cursorStr, cursor, 5)
-	}
-}
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		logger.Warn("Failed to load .env file: %v", err)
+		logger.VWarning(fmt.Sprintf("Failed to load .env file: %v", err))
 	}
 
 	settings := utils.GetSettings()
 
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+	DBDNS := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
 		settings.DBHost, settings.DBUser, settings.DBPassword, settings.DBName, settings.DBPort)
-	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	db, err := gorm.Open(postgres.Open(DBDNS), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect DB: %v", err)
+		logger.VFatalf("Failed to connect DB: %v", err)
 	}
 
 	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
-		log.Fatalf("Failed to migrate DB: %v", err)
+		logger.VFatalf("Failed to migrate DB: %v", err)
 	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
@@ -97,7 +49,7 @@ func main() {
 
 	mainCtx := context.Background()
 
-	PrepareEnv(mainCtx, db, rdb)
+	prepareEnv(logger, mainCtx, db, rdb)
 
 	var wg sync.WaitGroup
 
@@ -107,7 +59,7 @@ func main() {
 		interval := plannerInterval()
 		workers := plannerWorkerCount()
 		const pollInterval = 1 * time.Second
-		logger.Info(fmt.Sprintf("[Planner] cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval))
+		logger.VInfo("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval)
 
 		var inFlightMu sync.Mutex
 		inFlight := make(map[string]struct{})
@@ -115,17 +67,17 @@ func main() {
 		var cancelMu sync.Mutex
 		cancelMap := make(map[string]context.CancelFunc)
 
-		process := func(chCtx context.Context, ch models.PlayoutChannel) {
-			loc := utils.GetLocFor(ch.ContentTimezone)
-			nowInCh := time.Now().In(loc)
+		processRunner := func(chCtx context.Context, ch models.PlayoutChannel) {
+			location := utils.GetTimeLocation(ch.ContentTimezone)
+			nowInCh := time.Now().In(location)
 			today := utils.StartOfDay(nowInCh)
 			endOfDay := utils.EndOfDay(nowInCh)
-			tomorrow := utils.StartOfDay(nowInCh.Add(3 * time.Hour))
+			tomorrow := utils.StartOfDay(nowInCh.Add(DIFF_TIME_AHEAD * time.Hour))
 
-			isDiffDate := tomorrow.After(endOfDay)
+			isOverToday := tomorrow.After(endOfDay)
 
-			logger.Info(fmt.Sprintf("[Planner] Processing active channel: %s (%s), today=%s tomorrow=%s",
-				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
+			logger.VInfo("Processing active channel: %s (%s), today=%s tomorrow=%s",
+				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD))
 
 			// 1. Check if today has data (skips if present, plans if missing)
 			prepareDateWithRetry(chCtx, plannerSvc, ch, today)
@@ -135,7 +87,7 @@ func main() {
 				return
 			}
 
-			if isDiffDate {
+			if isOverToday {
 				logger.Info(fmt.Sprintf("process for tomorrow %s", tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
 				prepareDateWithRetry(chCtx, plannerSvc, ch, tomorrow)
 				if chCtx.Err() != nil {
@@ -200,10 +152,10 @@ func main() {
 			if len(activeChannels) == 0 {
 				return
 			}
-			logger.Info(fmt.Sprintf("[Planner] tick: %d active channel(s)", len(activeChannels)))
-			logMetrics(mainCtx, plannerSvc, activeChannels)
+			logger.VInfo("tick: %d active channel(s)", len(activeChannels))
+			logMetrics(logger, mainCtx, plannerSvc, activeChannels)
 
-			runPlannerTick(mainCtx, activeChannels, workers, &inFlightMu, inFlight, &cancelMu, cancelMap, process)
+			runPlannerTick(mainCtx, activeChannels, workers, &inFlightMu, inFlight, &cancelMu, cancelMap, processRunner)
 		}
 
 		nextInterval := time.Now().Add(interval)
@@ -293,7 +245,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 		return
 	}
 
-	loc := utils.GetLocFor(ch.ContentTimezone)
+	loc := utils.GetTimeLocation(ch.ContentTimezone)
 	day := date.In(loc)
 	dayStart := utils.StartOfDay(day)
 	dayEnd := utils.EndOfDay(day)

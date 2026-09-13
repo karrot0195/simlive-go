@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"simlive/internal/configs"
 	"simlive/internal/models"
 	"simlive/internal/utils"
 	"strconv"
@@ -14,14 +15,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const (
-	SegTypePlacementOpportunityStart = 0x30
-	SegTypeAdvertisementStart        = 0x34
-	SegTypeAdvertisementEnd          = 0x35
-	PTS_DURATION                     = (1001.0 / 24000.0) * 90000.0
-)
-
 var PreRollDelaysSec = []float64{8, 4}
+var PreRollCUEINDelaysSec = []float64{4}
 
 type SegmentProcessor struct {
 	planner         *Planner
@@ -39,9 +34,9 @@ type SegmentProcessor struct {
 	horizon            time.Time
 
 	currentPtsOffset float64
-	timelineBase     float64
+	// timelineBase     float64
 
-	logger utils.Logger
+	logger *utils.Logger
 }
 
 func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
@@ -93,9 +88,7 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 	}
 
 	lines := strings.Split(m3u8Content, "\n")
-	var currentDuration float64
 	var ptsStart, ptsEnd int64
-	firstSegmentInStream := true
 
 	for _, line := range lines {
 		if err := sp.ctx.Err(); err != nil {
@@ -104,12 +97,12 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 
 		line = strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(line, "#EXTINF:"):
-			durStr := strings.TrimPrefix(line, "#EXTINF:")
-			durStr = strings.Split(durStr, ",")[0]
-			if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
-				currentDuration = dur
-			}
+		// case strings.HasPrefix(line, "#EXTINF:"):
+		// 	durStr := strings.TrimPrefix(line, "#EXTINF:")
+		// 	durStr = strings.Split(durStr, ",")[0]
+		// 	if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
+		// 		currentDuration = dur
+		// 	}
 		case strings.HasPrefix(line, "#EXT-X-PTS-RANGE:"):
 			ptsRange := strings.TrimPrefix(line, "#EXT-X-PTS-RANGE:")
 			parts := strings.Split(ptsRange, "-")
@@ -123,47 +116,34 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 			}
 
 			sp.processingVerifyNearingAds(sp.runningTime)
-
-			if err := sp.insertAdsIfNeeded(sp.runningTime); err != nil {
+			spliceEvent, err := sp.insertAdsIfNeeded(sp.runningTime)
+			if err != nil {
 				return err
 			}
 
-			if firstSegmentInStream {
-				targetPtsStart := sp.runningTime * 90000.0
-				sp.currentPtsOffset = targetPtsStart - float64(ptsStart)
-				firstSegmentInStream = false
-			}
+			segmentPtsOffset := sp.currentPtsOffset
 
-			adjustedPtsStart := float64(ptsStart) + sp.currentPtsOffset
-			adjustedPtsEnd := float64(ptsEnd) + sp.currentPtsOffset
+			adjustedPtsStart := float64(ptsStart)
+			adjustedPtsEnd := float64(ptsEnd)
+			calculatedDuration := (adjustedPtsEnd - adjustedPtsStart) / configs.TICKS
 
-			mediaStart := adjustedPtsStart / 90000.0
-			mediaEnd := adjustedPtsEnd / 90000.0
-			calculatedDuration := mediaEnd - mediaStart
-			if calculatedDuration <= 0 {
-				calculatedDuration = currentDuration
-			}
+			mediaStart := sp.runningTime
+			mediaEnd := sp.runningTime + calculatedDuration
 
-			if sp.runningTime > mediaStart {
-				mediaStart = sp.runningTime
-				mediaEnd = mediaStart + calculatedDuration
-			}
-
-			if err := sp.processSegment(streamID, upstreamRends, line, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd); err != nil {
+			if err := sp.processSegment(streamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
 				return err
 			}
 
 			sp.runningTime = mediaEnd
+			sp.currentPtsOffset = sp.currentPtsOffset + calculatedDuration
 		}
 	}
 	return nil
 }
 
-func (sp *SegmentProcessor) processSegment(streamID string, renditions []string, line string, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64) error {
+func (sp *SegmentProcessor) processSegment(streamID string, renditions []string, line string, ptsOffset float64, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64, spliceEvent *models.SpliceInsert) error {
 	sp.sequenceCounter++
 	segmentPath := fmt.Sprintf("%s/%s/%s/%s", sp.planner.bucketName, streamID, "{rendition}", line)
-	ptsOffset := sp.setTimelineBase(mediaStart)
-
 	segment := models.SegmentItem{
 		Sequence:    sp.sequenceCounter,
 		StoragePath: segmentPath,
@@ -173,8 +153,14 @@ func (sp *SegmentProcessor) processSegment(streamID string, renditions []string,
 		PtsEnd:      ptsEnd,
 		MediaStart:  mediaStart,
 		MediaEnd:    mediaEnd,
-		PtsOffset:   &ptsOffset,
+		PtsOffset:   ptsOffset,
 		Renditions:  renditions,
+	}
+
+	if spliceEvent != nil {
+		segment.AdType = "in"
+		segment.AdBreakID = spliceEvent.EventID
+		appendSpliceInsertUnique(&segment, *spliceEvent)
 	}
 
 	if mediaStart >= (sp.nowUnix - float64(utils.GetPlannerSettings().WindowBufferSeconds)) {
@@ -187,34 +173,28 @@ func (sp *SegmentProcessor) processSegment(streamID string, renditions []string,
 	return nil
 }
 
-func (sp *SegmentProcessor) setTimelineBase(mediaStart float64) float64 {
-	if sp.timelineBase == 0 {
-		sp.timelineBase = mediaStart
-	}
-	return mediaStart - sp.timelineBase
-}
-
 func (sp *SegmentProcessor) processingVerifyNearingAds(actualStartTime float64) {
 	interval := utils.GetPlannerSettings().AdInsertionInterval
-	if (actualStartTime - sp.lastAdTime) > float64(interval-12) {
+	if !sp.planner.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > float64(interval-12) {
 		sp.planner.isBlockingProcessing = true
 	} else if sp.planner.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > 8 {
 		sp.planner.isBlockingProcessing = false
 	}
 }
 
-func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
+func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.SpliceInsert, error) {
 	interval := utils.GetPlannerSettings().AdInsertionInterval
 	if len(sp.adSegments) == 0 || actualStartTime < sp.nowUnix || (actualStartTime-sp.lastAdTime) < float64(interval) {
-		return nil
+		return nil, nil
 	}
 
 	breakStart := sp.runningTime
+	currentPtsOffset := sp.currentPtsOffset
 	breakDuration := totalBreakDuration(sp.adSegments)
-	breakID := fmt.Sprintf("adbreak-%d", int64(breakStart))
 
 	for _, delay := range PreRollDelaysSec {
 		preRollPts := breakStart - delay
+		preRollPtsOffset := currentPtsOffset - delay
 		if preRollPts < 0 {
 			continue
 		}
@@ -224,13 +204,14 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 		}
 		ev := models.SpliceInsert{
 			Type:               "out",
-			EventID:            int64(sp.planner.adsId),
-			SpliceTimePTS:      int64(preRollPts * 90000.0),
+			EventID:            (sp.planner.adsId),
+			SpliceTimePTS:      int64(preRollPtsOffset * 90000.0),
 			SpliceTimeSeconds:  preRollPts,
 			Duration:           breakDuration,
-			UniqueProgramID:    int64(sp.planner.adsId),
-			SegmentationTypeID: SegTypePlacementOpportunityStart,
+			UniqueProgramID:    (sp.planner.adsId),
+			SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_START,
 		}
+		sp.planner.processingSegments[idx].AdBreakID = sp.planner.adsId
 		appendSpliceInsertUnique(&sp.planner.processingSegments[idx], ev)
 	}
 
@@ -238,63 +219,89 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) error {
 
 	for i, adSeg := range sp.adSegments {
 		if err := sp.ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		if isEndOfTimeline(sp.horizon, sp.runningTime) {
-			return ErrEndOfTimeline
+			return nil, ErrEndOfTimeline
 		}
 
 		sp.sequenceCounter++
+		currentPtsOffset = sp.currentPtsOffset
 		adItem := adSeg
 		adItem.Sequence = sp.sequenceCounter
 
 		adItem.MediaStart = sp.runningTime
 		adItem.MediaEnd = sp.runningTime + adItem.Duration
 		adItem.StartTime = int64(adItem.MediaStart)
-		ptsOffset := sp.setTimelineBase(adItem.MediaStart)
-		adItem.PtsOffset = &ptsOffset
+		adItem.PtsOffset = currentPtsOffset
 
 		adItem.IsAd = true
-		adItem.AdBreakID = breakID
+		adItem.AdBreakID = sp.planner.adsId
 		adItem.AdBreakStart = breakStart
 		adItem.AdBreakDuration = breakDuration
 
 		if i == 0 {
+			adItem.AdType = "out"
 			appendSpliceInsertUnique(&adItem, models.SpliceInsert{
 				Type:               "out",
-				EventID:            int64(sp.planner.adsId),
+				EventID:            (sp.planner.adsId),
 				SpliceTimePTS:      int64(breakStart * 90000.0),
 				SpliceTimeSeconds:  breakStart,
 				Duration:           breakDuration,
-				UniqueProgramID:    int64(sp.planner.adsId),
-				SegmentationTypeID: SegTypeAdvertisementStart,
-			})
-		}
-
-		if i == len(sp.adSegments)-1 {
-			appendSpliceInsertUnique(&adItem, models.SpliceInsert{
-				Type:               "in",
-				EventID:            int64(sp.planner.adsId),
-				SpliceTimePTS:      int64(breakEnd * 90000.0),
-				SpliceTimeSeconds:  breakEnd,
-				UniqueProgramID:    int64(sp.planner.adsId),
-				SegmentationTypeID: SegTypeAdvertisementEnd,
-				Duration:           breakDuration,
+				UniqueProgramID:    (sp.planner.adsId),
+				SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_START,
 			})
 		}
 
 		if err := sp.addSegment(sp.ctx, adItem.MediaStart, adItem); err != nil {
-			return err
+			return nil, err
 		}
 
 		sp.runningTime = adItem.MediaEnd
+		sp.currentPtsOffset = sp.currentPtsOffset + adItem.Duration
 		sp.totalSegmentsAdded++
 		sp.totalAdsAdded++
+	}
+	// inject preroll cue in event
+	for _, delay := range PreRollCUEINDelaysSec {
+		preRollPts := breakEnd - delay
+		preRollPtsOffset := sp.currentPtsOffset - delay
+
+		if preRollPts < 0 {
+			continue
+		}
+
+		idx, ok := findSegmentContainingPts(sp.planner.processingSegments, preRollPts)
+		if !ok {
+			continue
+		}
+		ev := models.SpliceInsert{
+			Type:               "in",
+			EventID:            (sp.planner.adsId),
+			SpliceTimePTS:      int64(preRollPtsOffset * 90000.0),
+			SpliceTimeSeconds:  preRollPts,
+			Duration:           breakDuration,
+			UniqueProgramID:    (sp.planner.adsId),
+			SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_END,
+		}
+		sp.planner.processingSegments[idx].AdBreakID = sp.planner.adsId
+		appendSpliceInsertUnique(&sp.planner.processingSegments[idx], ev)
+	}
+
+	// return CUE in for inject to next segment
+	cueOutEvent := &models.SpliceInsert{
+		Type:               "in",
+		EventID:            (sp.planner.adsId),
+		SpliceTimePTS:      int64(breakEnd * 90000.0),
+		SpliceTimeSeconds:  breakEnd,
+		UniqueProgramID:    (sp.planner.adsId),
+		SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_END,
+		Duration:           breakDuration,
 	}
 
 	sp.lastAdTime = sp.runningTime
 	sp.planner.adsId++
-	return nil
+	return cueOutEvent, nil
 }
 
 func (sp *SegmentProcessor) timelineKey() string {
@@ -343,6 +350,14 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context) {
 			log.Printf("[Planner] json.Marshal(SegmentItem) failed: %v", err)
 			continue
 		}
+
+		if utils.IsDev() {
+			t := time.Unix(int64(segment.RunningTime), 0)
+
+			sp.logger.VInfo("[Sequence %d] %s IsAd=%t ptsOffset=%f %s",
+				segment.Sequence, t.Format(time.TimeOnly), segment.IsAd, segment.PtsOffset, segment.TimeText)
+		}
+
 		sp.pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
 			Score:  float64(segment.RunningTime),
 			Member: string(member),

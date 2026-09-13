@@ -34,7 +34,7 @@ func TestSegmentItem_AdFields_RoundTrip(t *testing.T) {
 		StoragePath:     "espx-video-lib:espx-video-lib/ads-v3/L2/seg_42.ts",
 		Duration:        6.0,
 		IsAd:            true,
-		AdBreakID:       "adbreak-1725014400",
+		AdBreakID:       1,
 		AdBreakStart:    1725014400,
 		AdBreakDuration: 30,
 	}
@@ -83,7 +83,7 @@ func TestSegmentItem_LegacyUnmarshal_NoAdFields(t *testing.T) {
 	if s.IsAd {
 		t.Fatalf("legacy member: IsAd = true, want false")
 	}
-	if s.AdBreakID != "" || s.AdBreakStart != 0 || s.AdBreakDuration != 0 {
+	if s.AdBreakID != 0 || s.AdBreakStart != 0 || s.AdBreakDuration != 0 {
 		t.Fatalf("legacy member: ad fields should be zero-valued, got %+v", s)
 	}
 }

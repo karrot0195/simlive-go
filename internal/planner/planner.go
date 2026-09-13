@@ -37,8 +37,8 @@ type Planner struct {
 
 	isBlockingProcessing bool
 	processingSegments   []models.SegmentItem
-	adsId                uint64
-	logger               utils.Logger
+	adsId                uint32
+	logger               *utils.Logger
 }
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
@@ -76,7 +76,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	callStartedAt := time.Now()
 
-	loc := utils.GetLocFor(channel.ContentTimezone)
+	loc := utils.GetTimeLocation(channel.ContentTimezone)
 	processDate := utils.StartOfDay(callStartedAt).In(loc)
 	if parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD, dateStr, loc); err == nil {
 		processDate = utils.StartOfDay(parsed)
@@ -93,6 +93,10 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
 	adSegments, _ := p.loadAdSegments()
+
+	if utils.IsDev() {
+		adSegments = adSegments[0:5]
+	}
 
 	// Fetch last sequence and running time from Redis to guarantee sequence & time continuity across days
 	lastState := p.getLastSegmentState(ctx, channel.ID)

@@ -13,25 +13,6 @@ import (
 	"simlive/internal/models"
 )
 
-// SCTE-35 builder / decoder helpers used by the engine to emit
-// #EXT-X-DATERANGE tags with splice_insert payloads on VOD<->ad
-// transitions. Wraps the Comcast scte35-go library
-// (github.com/Comcast/scte35-go/pkg/scte35, Apache-2.0) and exposes a
-// small, testable surface.
-//
-// See docs/300826-implement-scte35-cue-markers.md for the design and
-// tmp/SCTE35Utils.ts for the tag string format this mirrors.
-
-// buildSpliceInsert returns the base64 splice_info_section for a
-// single splice_insert cue. out=true produces a CUE-OUT (OON=true,
-// BreakDuration set); out=false produces a CUE-IN (OON=false, no
-// BreakDuration so the player returns to network immediately).
-//
-// durSec is the break length in seconds and is only meaningful for
-// CUE-OUT; for CUE-IN it is accepted for API symmetry but ignored
-// (the library elides BreakDuration when duration_flag is unset).
-// durSec is converted to 90kHz ticks for the BreakDuration.Duration
-// field per ANSI/SCTE 35.
 func buildSpliceInsert(eventID uint32, durSec float64, out bool) (string, error) {
 	si := &scte35.SpliceInsert{
 		SpliceEventID:              eventID,
@@ -136,34 +117,20 @@ func formatBreakDuration(durSec float64) string {
 	return s
 }
 
-// buildCueOutLine composes the CUE-OUT #EXT-X-DATERANGE line that is
-// emitted *before* the first ad segment's #EXTINF. Mirrors
-// tmp/SCTE35Utils.ts generateCUE_OUT.
-//
-// ID = adbreak-<int64(breakStart)>
-// CLASS = "com.apple.hls.avails"  (Apple HLS Interstitials spec)
-// START-DATE = RFC3339 UTC
-// SCTE35-OUT = base64 splice_insert (OON=true, SpliceImmediateFlag=true,
-//
-//	BreakDuration.AutoReturn=true, BreakDuration=uint64(durSec*90000))
-//
-// DURATION = seconds, UNQUOTED, TRAILING (threefive gotcha)
-// END-ON-NEXT = YES  (the break ends at the next CUE-IN)
-//
-// On buildSpliceInsert error the SCTE35-OUT attribute is omitted so
-// the rest of the playlist (and the DURATION/END-ON-NEXT metadata
-// the player still needs) survives; an error is logged.
-func buildCueOutLine(breakStart, durSec float64) string {
-	id := fmt.Sprintf("adbreak-%d", int64(breakStart))
-	start := formatBreakStartDate(breakStart)
+func buildCueOutLine(seg models.SegmentItem) string {
+	id := seg.AdBreakID
+	durSec := seg.AdBreakDuration
+	start := formatBreakStartDate(seg.AdBreakStart)
 	dur := formatBreakDuration(durSec)
-	b64, err := buildSpliceInsert(adBreakEventID(breakStart), durSec, true)
+
+	b64, err := buildSpliceInsert(id, durSec, true)
 	if err != nil {
-		log.Printf("[Engine] CUE-OUT splice_insert encode failed (id=%s): %v -- emitting DATERANGE without SCTE35-OUT", id, err)
-		return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%s",CLASS="com.apple.hls.avails",START-DATE="%s",DURATION=%s,END-ON-NEXT=YES`,
+		log.Printf("[Engine] CUE-OUT splice_insert encode failed (id=%d): %v -- emitting DATERANGE without SCTE35-OUT", id, err)
+		return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%d",CLASS="com.apple.hls.avails",START-DATE="%s",DURATION=%s,END-ON-NEXT=YES`,
 			id, start, dur)
 	}
-	return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%s",CLASS="com.apple.hls.avails",START-DATE="%s",SCTE35-OUT="%s",DURATION=%s,END-ON-NEXT=YES`,
+
+	return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%d",CLASS="com.apple.hls.avails",START-DATE="%s",SCTE35-OUT="%s",DURATION=%s,END-ON-NEXT=YES`,
 		id, start, b64, dur)
 }
 
@@ -178,74 +145,30 @@ func buildCueOutLine(breakStart, durSec float64) string {
 //
 // CUE-IN does not carry CLASS or END-ON-NEXT -- the CUE-OUT's
 // END-ON-NEXT=YES tells the player where the break ends.
-func buildCueInLine(breakStart, durSec float64) string {
-	id := fmt.Sprintf("adbreak-%d", int64(breakStart))
-	start := formatBreakStartDate(breakStart)
+func buildCueInLine(seg models.SegmentItem) string {
+	id := seg.AdBreakID
+	start := formatBreakStartDate(seg.AdBreakStart)
+	durSec := seg.AdBreakDuration
 	dur := formatBreakDuration(durSec)
-	b64, err := buildSpliceInsert(adBreakEventID(breakStart), durSec, false)
+	b64, err := buildSpliceInsert(id, durSec, false)
 	if err != nil {
-		log.Printf("[Engine] CUE-IN splice_insert encode failed (id=%s): %v -- emitting DATERANGE without SCTE35-IN", id, err)
-		return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%s",START-DATE="%s",DURATION=%s`,
+		log.Printf("[Engine] CUE-IN splice_insert encode failed (id=%d): %v -- emitting DATERANGE without SCTE35-IN", id, err)
+		return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%d",START-DATE="%s",DURATION=%s`,
 			id, start, dur)
 	}
-	return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%s",START-DATE="%s",SCTE35-IN="%s",DURATION=%s`,
+	return fmt.Sprintf(`#EXT-X-DATERANGE:ID="%d",START-DATE="%s",SCTE35-IN="%s",DURATION=%s`,
 		id, start, b64, dur)
 }
 
-// buildMediaPlaylistBody renders the per-rung media playlist body.
-// Pure: same input -> same output. Same purity contract as
-// buildMasterPlaylist (rendition.go#L86-L105), so it can be
-// unit-tested without Redis / the disk cache.
-//
-// segments must be sorted by Sequence ascending (the caller in
-// generateHLSPlaylist already sorts and filters to the .pts-prepared
-// subset, so we don't re-filter here). The DATERANGE detection runs
-// on these prepared segments so a CUE-OUT never references a
-// segment not in the playlist.
-//
-// Tag format mirrors tmp/SCTE35Utils.ts:
-//
-//   - CUE-OUT (VOD -> ad) emitted BEFORE the first ad EXTINF.
-//
-//   - CUE-IN  (ad -> VOD) emitted BEFORE the first VOD EXTINF after
-//     the break, reusing the break's id, start, and duration.
-//
-//   - DURATION is always UNQUOTED and TRAILING (threefive TagParser
-//     parses a line as quoted-vs-unquoted by its last char; trailing
-//     unquoted is what works -- see tmp/SCTE35Utils.ts#L51-L59).
-//
-//   - Per-segment #EXT-X-SCTE35 lines emitted BEFORE the segment's
-//     #EXTINF (and AFTER any DATERANGE the edge detection already
-//     produced) for every entry in seg.SliceInserts. The format
-//     is:
-//
-//     #EXT-X-SCTE35:CUE="<base64>",TYPE=<segType>,ID="<adbreak-id>"
-//
-//     See buildSpliceInsertLine for the rationale. These carry
-//     the pre-roll (0x30), slice-point (0x34), and cue-in (0x35)
-//     splice events stamped by the planner's
-//     insertAdsIfNeeded. See
-//     docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
-//     §3.2.
-//
-// buildMediaPlaylistBody renders the body of a media playlist (header +
-// EXTM3U + DATERANGE + per-segment SCTE-35 + EXTINF/URI lines). Only the
-// ADVERTISED `segments` get an EXTINF + URI line and drive the
-// #EXT-X-MEDIA-SEQUENCE (anchored at segments[0]). `behind` (optional) is
-// the segment immediately before segments[0] in the timeline; it is used
-// ONLY for SCTE-35/DATERANGE edge detection (as the "previous" segment of
-// the first advertised segment) and is never emitted as an EXTINF line, so
-// a player never fetches a segment that is not part of the playhead window.
-// Variadic so legacy callers (and tests) that pass no look-behind still compile.
 func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int, behind ...*models.SegmentItem) (string, error) {
 	if len(segments) == 0 {
 		return "", fmt.Errorf("buildMediaPlaylistBody: empty segments")
 	}
 
-	var lookBehind *models.SegmentItem
-	if len(behind) > 0 {
-		lookBehind = behind[0]
-	}
+	// var lookBehind *models.SegmentItem
+	// if len(behind) > 0 {
+	// 	lookBehind = behind[0]
+	// }
 
 	header := "#EXTM3U\n"
 	header += "#EXT-X-VERSION:3\n"
@@ -256,31 +179,17 @@ func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int, b
 	var body strings.Builder
 	body.WriteString(header)
 
-	for i, seg := range segments {
-		// Edge detection. Use the previous segment's IsAd, not the
-		// current's, because we emit the marker BEFORE the segment
-		// that starts the new state (first ad => CUE-OUT, first VOD
-		// after ads => CUE-IN). For the very first advertised segment
-		// (i==0) the "previous" is the `lookBehind` segment from the
-		// timeline; if nil (the anchor is the timeline's first
-		// segment) and the first segment is an ad we still emit CUE-OUT
-		// so the player sees the break boundary on a cold start.
-		var prev *models.SegmentItem
-		if i == 0 {
-			prev = lookBehind
-		} else {
-			prev = &segments[i-1]
-		}
-		prevIsAd := prev != nil && prev.IsAd
+	for _, seg := range segments {
+
 		switch {
-		case !prevIsAd && seg.IsAd:
-			body.WriteString(buildCueOutLine(seg.AdBreakStart, seg.AdBreakDuration))
+		case seg.IsAd && seg.AdType == "out":
+			body.WriteString(buildCueOutLine(seg))
 			body.WriteString("\n")
-		case prevIsAd && !seg.IsAd:
+		case seg.IsAd && seg.AdType == "in":
 			// CUE-IN carries the *previous* (last ad) break's
 			// metadata, since the CUE-IN is the end of THAT
 			// break, not the start of the next VOD segment.
-			body.WriteString(buildCueInLine(prev.AdBreakStart, prev.AdBreakDuration))
+			body.WriteString(buildCueInLine(seg))
 			body.WriteString("\n")
 		}
 		// Per-segment #EXT-X-SCTE35 lines (NEW). The planner
@@ -338,17 +247,12 @@ func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int, b
 // §3.2.1 for the design rationale.
 func buildSpliceInsertLine(seg models.SegmentItem, ev models.SpliceInsert) string {
 	id := seg.AdBreakID
-	if id == "" {
-		// Fallback: derive the same adbreak-<n> string the planner's
-		// adBreakIDFor would have produced for this event's PTS.
-		id = fmt.Sprintf("adbreak-%d", int64(ev.SpliceTimeSeconds))
-	}
 	out := ev.Type == "out"
 	b64, err := buildSpliceInsert(uint32(ev.EventID), ev.Duration, out)
 	if err != nil {
-		log.Printf("[Engine] per-segment SCTE-35 encode failed (id=%s, type=0x%x): %v -- emitting #EXT-X-SCTE35 without CUE",
+		log.Printf("[Engine] per-segment SCTE-35 encode failed (id=%d, type=0x%x): %v -- emitting #EXT-X-SCTE35 without CUE",
 			id, ev.SegmentationTypeID, err)
-		return fmt.Sprintf(`#EXT-X-SCTE35:TYPE=%d,ID="%s"`, ev.SegmentationTypeID, id)
+		return fmt.Sprintf(`#EXT-X-SCTE35:TYPE=%d,ID="%d"`, ev.SegmentationTypeID, id)
 	}
-	return fmt.Sprintf(`#EXT-X-SCTE35:CUE="%s",TYPE=%d,ID="%s"`, b64, ev.SegmentationTypeID, id)
+	return fmt.Sprintf(`#EXT-X-SCTE35:CUE="%s",TYPE=%d,ID="%d"`, b64, ev.SegmentationTypeID, id)
 }

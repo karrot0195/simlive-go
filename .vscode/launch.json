@@ -5,7 +5,7 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/cmd/planner/main.go",
+            "program": "${workspaceFolder}/cmd/planner",
             "envFile": "${workspaceFolder}/.env"
         },
         {
@@ -13,7 +13,7 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/cmd/engines/main.go",
+            "program": "${workspaceFolder}/cmd/engines",
             "envFile": "${workspaceFolder}/.env"
         },
         {
@@ -21,7 +21,15 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}/cmd/api/main.go",
+            "program": "${workspaceFolder}/cmd/api",
+            "envFile": "${workspaceFolder}/.env"
+        },
+         {
+            "name": "Start STE35",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/scte35-verifier",
             "envFile": "${workspaceFolder}/.env"
         }
     ]

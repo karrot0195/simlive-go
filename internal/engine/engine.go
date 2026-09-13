@@ -465,7 +465,7 @@ func (e *Engine) applySliceEvents(seg models.SegmentItem, dest, channelID string
 	if len(events) == 0 {
 		if seg.IsAd {
 			tempFile := fmt.Sprintf("%s.splice.tmp", currentFile)
-			success := utils.ConfigurePmtForScte35(currentFile, tempFile)
+			success := utils.ConfigurePmtForScte35(seg, currentFile, tempFile)
 			if !success {
 				log.Printf("Splice injection failed for %s", dest)
 				if _, err := os.Stat(tempFile); err == nil {
@@ -488,9 +488,8 @@ func (e *Engine) applySliceEvents(seg models.SegmentItem, dest, channelID string
 	for i := range events {
 		se := events[i]
 		tempFile := fmt.Sprintf("%s.splice%d.tmp", currentFile, i)
-		xml := utils.GenerateSpliceInsertXml(se)
 
-		success := utils.InjectSpliceEvent(currentFile, tempFile, xml)
+		success := utils.InjectSpliceEvent(currentFile, tempFile, se)
 		if !success {
 			log.Printf("[SCTE35] event=splice_injection_failed channel=%s file=%s", channelID, dest)
 			if _, err := os.Stat(tempFile); err == nil {
@@ -517,25 +516,27 @@ func (e *Engine) markPrepared(marker string) error {
 }
 
 func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) error {
-	target := seg.MediaStart
-	if seg.PtsOffset != nil {
-		target = *seg.PtsOffset
-	}
-
-	offset := target - float64(seg.PtsStart)/90000.0
+	offset := seg.PtsOffset
 	tmp := dest + ".rew.tmp"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+
+	tsOffset := strconv.FormatFloat(offset, 'f', 6, 64)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-v", "error",
 		"-i", dest,
 		"-c", "copy",
-		"-copyts",
+		// "-copyts",
 		"-muxdelay", "0",
 		"-muxpreload", "0",
-		"-output_ts_offset", strconv.FormatFloat(offset, 'f', 6, 64),
+		"-output_ts_offset", tsOffset,
 		"-f", "mpegts",
 		tmp)
+
+	if utils.IsDev() {
+		fullCommand := cmd.String()
+		fmt.Println(fullCommand)
+	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))

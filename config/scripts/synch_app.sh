@@ -1,23 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+echo "build all app"
+make build
+
 DIR=$(dirname $(dirname "$0"))
-
-echo "access $DIR"
-
-cd "$DIR"
-
-SERVER=${1:-}
-
-if [ -z "$SERVER" ]; then
-    echo "Error: Please provide a server name or IP address as an argument." >&2
-    exit 1
-fi
-
-PROJECT_PATH="/root/simlive-go"
-SSH_KEY="~/.ssh/espx_vultr"
-SSHCMD="ssh -i $SSH_KEY root@$SERVER"
-SCPCMD="scp -i $SSH_KEY"
+source $DIR/scripts/utils.sh
 
 echo "synch app"
-$SCPCMD -r ./bin root@$SERVER:$PROJECT_PATH/bin
+$SSHCMD "rm -rf $PROJECT_PATH/bin/*"
+$SCPCMD -r $DIR/bin/* root@$SERVER:$PROJECT_PATH/bin

@@ -117,7 +117,7 @@ func GetSettings() *Settings {
 
 	videoBucket := GetEnv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
 
-	adsStreamId := "ads-v3"
+	adsStreamId := "ads-v4"
 	return &Settings{
 		DBHost:      dbHost,
 		DBName:      dbName,
