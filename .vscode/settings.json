@@ -7,5 +7,6 @@
       "unusedvars": true,
       "unusedparams": true
     }
-  }
+  },
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true
 }
