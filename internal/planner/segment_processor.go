@@ -363,6 +363,9 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context) {
 			Member: string(member),
 		})
 	}
+	sizeItems := len(sp.planner.processingSegments)
+
+	sp.logger.VInfo(`synched data from %s to %s with total=%d`, sp.planner.processingSegments[0].TimeText, sp.planner.processingSegments[sizeItems-1].TimeText, sizeItems)
 	if _, err := sp.pipe.Exec(ctx); err != nil {
 		log.Printf("[Planner] synchSegmentIntoRedis Exec error: %v", err)
 	}

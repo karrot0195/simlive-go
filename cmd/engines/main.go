@@ -43,7 +43,9 @@ func main() {
 	}
 
 	settings := utils.GetSettings()
-	maxWorkers, _ := strconv.Atoi(utils.GetEnv("MAX_WORKERS", "10"))
+	maxWorkers, _ := strconv.Atoi(utils.GetEnv("MAX_WORKERS", "4"))
+
+	log.Printf("[Engine] NewEngine maxWorkers=%d", maxWorkers)
 
 	// 1. Connect Postgres
 	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",

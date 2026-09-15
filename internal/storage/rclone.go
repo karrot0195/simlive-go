@@ -23,10 +23,10 @@ func NewRcloneService() *RcloneService {
 // catTimeout bounds `rclone cat` (manifest reads: per-stream m3u8 + the ads
 // pool m3u8). 30s is generous for a small text file; an unreachable remote
 // fails fast instead of hanging the worker.
-const catTimeout = 30 * time.Second
+const catTimeout = 10 * time.Second
 
 // copyTimeout bounds `rclone copyto` (segment downloads for probing).
-const copyTimeout = 60 * time.Second
+const copyTimeout = 10 * time.Second
 
 // Cat reads an M3U8 manifest from S3/MinIO via `rclone cat`
 func (r *RcloneService) Cat(remotePath string) (string, error) {
@@ -46,8 +46,8 @@ func (r *RcloneService) Cat(remotePath string) (string, error) {
 }
 
 // CopyTo downloads a `.ts` file to the local buffer directory
-func (r *RcloneService) CopyTo(srcRemotePath, localDestPath string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), copyTimeout)
+func (r *RcloneService) CopyTo(parentCtx context.Context, srcRemotePath, localDestPath string) error {
+	ctx, cancel := context.WithTimeout(parentCtx, copyTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "rclone", "copyto", srcRemotePath, localDestPath)
 	var stderr bytes.Buffer

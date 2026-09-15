@@ -254,7 +254,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	if err != nil {
 		logger.Error(fmt.Sprintf("[Planner] HasDateInTimeline(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), err))
 	} else if has {
-		logger.Info("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+		logger.VInfo("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
 		p.ResetFailureCounterForChannel(ctx, ch.ID)
 		p.MarkChannelLiveForChannel(ctx, ch.ID)
 		return

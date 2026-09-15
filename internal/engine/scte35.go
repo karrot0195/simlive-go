@@ -55,25 +55,6 @@ func buildSpliceInsert(eventID uint32, durSec float64, out bool) (string, error)
 	return b64, nil
 }
 
-// decodeSpliceInsert parses a base64 splice_info_section back into
-// the library's struct. Used by tests and the future verifier hook.
-// Returns the same non-nil *SpliceInfoSection the library returns on
-// error (so callers can still inspect partial state) along with any
-// decode error.
-func decodeSpliceInsert(b64 string) (*scte35.SpliceInfoSection, error) {
-	return scte35.DecodeBase64(b64)
-}
-
-// adBreakEventID derives a stable, positive 31-bit event id from
-// the break's start second. Using the break start (not a random or
-// monotonic counter) means replans and engine restarts produce the
-// same id, so player-side analytics dedup correctly. The mask
-// avoids the 0xFFFFFFFF edge case (which the spec reserves for
-// "SpliceInsertType = 0x05 with cancellation semantics").
-func adBreakEventID(breakStart float64) uint32 {
-	return uint32(int64(breakStart) & 0x7FFFFFFF)
-}
-
 // --- Media playlist body + SCTE-35 DATERANGE emission ---------------------
 
 // formatBreakStartDate renders the break's start second as an
@@ -160,15 +141,10 @@ func buildCueInLine(seg models.SegmentItem) string {
 		id, start, b64, dur)
 }
 
-func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int, behind ...*models.SegmentItem) (string, error) {
+func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (string, error) {
 	if len(segments) == 0 {
 		return "", fmt.Errorf("buildMediaPlaylistBody: empty segments")
 	}
-
-	// var lookBehind *models.SegmentItem
-	// if len(behind) > 0 {
-	// 	lookBehind = behind[0]
-	// }
 
 	header := "#EXTM3U\n"
 	header += "#EXT-X-VERSION:3\n"

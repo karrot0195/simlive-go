@@ -99,11 +99,3 @@ func masterRedisKey(channelID string) string {
 func renditionMetadataRedisKey(channelID string) string {
 	return fmt.Sprintf(renditionMetadataKey, channelID)
 }
-
-func isValidRenditionLabel(label string) bool {
-	switch label {
-	case "360p", "720p", "1080p":
-		return true
-	}
-	return false
-}

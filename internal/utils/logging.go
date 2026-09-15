@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -62,6 +63,12 @@ func (logger *Logger) VWarning(msg string, args ...interface{}) {
 
 func (logger *Logger) VError(msg string, args ...interface{}) {
 	logger.Error(logger.format(msg, args...))
+}
+
+func (logger *Logger) VErrorWithError(msg string, args ...interface{}) error {
+	textError := logger.format(msg, args...)
+	logger.Error(textError)
+	return errors.New(textError)
 }
 
 func (logger *Logger) VFatalf(msg string, args ...interface{}) {

@@ -65,6 +65,9 @@ type Engine struct {
 }
 
 func NewEngine(rdb *redis.Client, rclone *storage.RcloneService, maxWorkers int) *Engine {
+	if maxWorkers <= 0 {
+		maxWorkers = 4
+	}
 	return &Engine{
 		rdb:                 rdb,
 		rclone:              rclone,
@@ -156,7 +159,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 						delete(e.downloadingChannels, channelID)
 						e.downloadingChannelsMu.Unlock()
 					}()
-					e.syncAndPreparePerRendition(ctx, channelID, segs)
+					e.syncAndPreparePerRendition(ctx, logger, channelID, segs)
 				}(downloadSegs)
 			} else {
 				e.downloadingChannelsMu.Unlock()
@@ -164,10 +167,10 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 
 			// Generate playlists immediately on every tick using available .pts segments
 			rendBuckets := candidateSegs[0].Renditions
-			behind := lookBehindSegment(allSegs, candidateSegs[0])
+			// behind := lookBehindSegment(allSegs, candidateSegs[0])
 			for i, rend := range rendBuckets {
 				if rend != "" {
-					e.generateRenditionPlaylist(ctx, channelID, RENDITIONMAP[i], candidateSegs, behind)
+					e.generateRenditionPlaylist(ctx, channelID, RENDITIONMAP[i], candidateSegs)
 				}
 			}
 
@@ -285,20 +288,20 @@ func (e *Engine) computeDownloadWindow(allSegs, candidate []models.SegmentItem) 
 	return allSegs
 }
 
-func lookBehindSegment(allSegs []models.SegmentItem, anchor models.SegmentItem) *models.SegmentItem {
-	for i, seg := range allSegs {
-		if seg.Sequence == anchor.Sequence {
-			if i-1 >= 0 {
-				prev := allSegs[i-1]
-				return &prev
-			}
-			break
-		}
-	}
-	return nil
-}
+// func lookBehindSegment(allSegs []models.SegmentItem, anchor models.SegmentItem) *models.SegmentItem {
+// 	for i, seg := range allSegs {
+// 		if seg.Sequence == anchor.Sequence {
+// 			if i-1 >= 0 {
+// 				prev := allSegs[i-1]
+// 				return &prev
+// 			}
+// 			break
+// 		}
+// 	}
+// 	return nil
+// }
 
-func (e *Engine) syncAndPreparePerRendition(ctx context.Context, channelID string, downloadSegs []models.SegmentItem) {
+func (e *Engine) syncAndPreparePerRendition(ctx context.Context, logger *utils.Logger, channelID string, downloadSegs []models.SegmentItem) {
 	channelDir := filepath.Join(e.tmpDir, channelID)
 
 	activePerRendition := make(map[string]map[string]bool)
@@ -350,7 +353,7 @@ func (e *Engine) syncAndPreparePerRendition(ctx context.Context, channelID strin
 	syncWg.Wait()
 
 	if len(jobs) > 0 {
-		e.downloadAndPrepareJobs(ctx, channelDir, channelID, jobs)
+		e.downloadAndPrepareJobs(ctx, logger, channelDir, channelID, jobs)
 	}
 }
 
@@ -390,7 +393,7 @@ func (e *Engine) activeRungMeta(ctx context.Context, channelID string) []Renditi
 	return ActiveLadder
 }
 
-func (e *Engine) downloadAndPrepareJobs(ctx context.Context, dir, channelID string, jobs []downloadJob) {
+func (e *Engine) downloadAndPrepareJobs(parentCtx context.Context, logger *utils.Logger, dir, channelID string, jobs []downloadJob) {
 	var wg sync.WaitGroup
 	for _, j := range jobs {
 		dest := j.dest
@@ -413,17 +416,24 @@ func (e *Engine) downloadAndPrepareJobs(ctx context.Context, dir, channelID stri
 				delete(e.inFlight, d)
 				e.inFlightMu.Unlock()
 			}()
+
 			e.workerPool <- struct{}{}
 			defer func() { <-e.workerPool }()
-			if err := e.prepareSegmentFromSource(channelID, dir, s, d, sr); err != nil {
-				log.Printf("[%s] prepare segment %d (rend=%s) failed: %v", channelID, s.Sequence, j.rend, err)
+
+			logger.VInfo("downloading %s", dest)
+			if err := e.prepareSegmentFromSource(parentCtx, logger, channelID, dir, s, d, sr); err != nil {
+				logger.VError("download error %s - %v", dest, err)
+			} else {
+				logger.VInfo("downloaded %s", dest)
 			}
+
 		}(seg, dest, src)
 	}
 	wg.Wait()
 }
 
-func (e *Engine) prepareSegmentFromSource(channelID string, dir string, seg models.SegmentItem, dest, src string) error {
+func (e *Engine) prepareSegmentFromSource(parentCtx context.Context, logger *utils.Logger, channelID string, dir string, seg models.SegmentItem, dest, src string) error {
+
 	marker := dest + ".pts"
 
 	if _, err := os.Stat(marker); err == nil {
@@ -433,78 +443,76 @@ func (e *Engine) prepareSegmentFromSource(channelID string, dir string, seg mode
 	needDownload := false
 	if _, err := os.Stat(dest); err != nil {
 		if !os.IsNotExist(err) {
-			log.Printf("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
+			logger.VError("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
 		}
 		needDownload = true
 	}
 	if needDownload {
-		if err := e.rclone.CopyTo(src, dest); err != nil {
-			return fmt.Errorf("download %s: %w", src, err)
+		if err := e.rclone.CopyTo(parentCtx, src, dest); err != nil {
+			return utils.Error("download %s: %v", src, err)
 		}
 	}
 
 	if _, err := os.Stat(dest); err != nil {
-		return fmt.Errorf("verify dest after download: %w", err)
+		return utils.Error("verify dest after download: %v", err)
 	}
 
-	if err := e.rewritePtsOffset(dest, marker, seg); err != nil {
-		log.Printf("[%s] PTS rewrite failed for %s: %v", filepath.Base(dir), filepath.Base(dest), err)
+	if err := e.rewritePtsOffset(parentCtx, dest, marker, seg); err != nil {
 		return e.markPrepared(marker)
 	}
 
 	if seg.IsAd || len(seg.SliceInserts) > 0 {
-		e.applySliceEvents(seg, dest, channelID)
+		err := e.applySliceEvents(parentCtx, seg, dest, channelID)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (e *Engine) applySliceEvents(seg models.SegmentItem, dest, channelID string) {
+func (e *Engine) applySliceEvents(parentCtx context.Context, seg models.SegmentItem, dest, channelID string) error {
 	events := seg.SliceInserts
 	currentFile := dest
 
 	if len(events) == 0 {
 		if seg.IsAd {
 			tempFile := fmt.Sprintf("%s.splice.tmp", currentFile)
-			success := utils.ConfigurePmtForScte35(seg, currentFile, tempFile)
-			if !success {
-				log.Printf("Splice injection failed for %s", dest)
+			err := utils.ConfigurePmtForAdsTs(parentCtx, seg, currentFile, tempFile)
+			if err != nil {
 				if _, err := os.Stat(tempFile); err == nil {
 					_ = os.Remove(tempFile)
 				}
-				return
+				return utils.Error("Splice injection failed for %s - %v", dest, err)
 			}
 
-			err := os.Rename(tempFile, currentFile)
+			err = os.Rename(tempFile, currentFile)
 			if err != nil {
-				log.Printf("[SCTE35] event=rename_failed channel=%s temp=%s dest=%s error=%v", channelID, tempFile, currentFile, err)
-				return
+				return utils.Error("[SCTE35] event=rename_failed channel=%s temp=%s dest=%s error=%v", channelID, tempFile, currentFile, err)
 			}
-			log.Printf("[SCTE35] event=pmt_injected channel=%s segment=%d file=%s", channelID, seg.Sequence, currentFile)
 		}
 
-		return
+		return nil
 	}
 
 	for i := range events {
 		se := events[i]
 		tempFile := fmt.Sprintf("%s.splice%d.tmp", currentFile, i)
 
-		success := utils.InjectSpliceEvent(currentFile, tempFile, se)
-		if !success {
-			log.Printf("[SCTE35] event=splice_injection_failed channel=%s file=%s", channelID, dest)
+		errr := utils.InjectSpliceEvent(parentCtx, currentFile, tempFile, se)
+		if errr != nil {
 			if _, err := os.Stat(tempFile); err == nil {
 				_ = os.Remove(tempFile)
 			}
-			return
+			return utils.Error("[SCTE35] event=splice_injection_failed file=%s - %s", dest, errr)
 		}
 
 		err := os.Rename(tempFile, currentFile)
 		if err != nil {
-			log.Printf("Failed to move %s to %s: %v", tempFile, currentFile, err)
-			return
+			return utils.Error("Failed to move %s to %s: %v", tempFile, currentFile, err)
 		}
-		log.Printf("[SCTE35] event=splice_injected channel=%s file=%s event_type=%s", channelID, currentFile, se.Type)
 	}
+
+	return nil
 }
 
 func (e *Engine) markPrepared(marker string) error {
@@ -515,11 +523,11 @@ func (e *Engine) markPrepared(marker string) error {
 	return f.Close()
 }
 
-func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) error {
+func (e *Engine) rewritePtsOffset(parentCtx context.Context, dest, marker string, seg models.SegmentItem) error {
 	offset := seg.PtsOffset
 	tmp := dest + ".rew.tmp"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
 	defer cancel()
 
 	tsOffset := strconv.FormatFloat(offset, 'f', 6, 64)
@@ -533,10 +541,6 @@ func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) e
 		"-f", "mpegts",
 		tmp)
 
-	if utils.IsDev() {
-		fullCommand := cmd.String()
-		fmt.Println(fullCommand)
-	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("ffmpeg: %v: %s", err, strings.TrimSpace(string(out)))
@@ -549,7 +553,7 @@ func (e *Engine) rewritePtsOffset(dest, marker string, seg models.SegmentItem) e
 	return e.markPrepared(marker)
 }
 
-func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendition string, segments []models.SegmentItem, behind *models.SegmentItem) {
+func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendition string, segments []models.SegmentItem) {
 	if len(segments) == 0 {
 		return
 	}
@@ -582,7 +586,7 @@ func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendi
 	}
 	targetDuration := int(math.Ceil(maxDuration))
 
-	playlist, err := buildMediaPlaylistBody(segments, targetDuration, behind)
+	playlist, err := buildMediaPlaylistBody(segments, targetDuration)
 	if err != nil {
 		log.Printf("[Engine] channel=%s rung=%s buildMediaPlaylistBody: %v", channelID, rendition, err)
 		return

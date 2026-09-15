@@ -2,26 +2,24 @@ package utils
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"simlive/internal/configs"
 	"simlive/internal/models"
 	"strings"
+	"time"
 )
 
 const TSP_BINARY = "tsp"  // Ensure tsp is in PATH
 const SCTE35_PID = "0x30" // Typical PID for SCTE-35
 
-// PTS_MASK is the 33-bit MPEG-TS PTS range (2^33 - 1). SCTE-35 pts_time is a
-// 33-bit field, so epoch-based PTS values (which exceed 2^33/90000 ≈ 95443.7s)
-// must be masked down to fit. TSDuck rejects pts_time outside [0, 8589934591].
 const PTS_MASK int64 = 0x1FFFFFFFF
 
-// GenerateSpliceInsertXml generates TSDuck XML for a splice_insert command.
+// generateSpliceInsertXml generates TSDuck XML for a splice_insert command.
 // Conforms to TSDuck's spliceinject plugin expected XML format.
-func GenerateSpliceInsertXml(event models.SpliceInsert) string {
+func generateSpliceInsertXml(event models.SpliceInsert) string {
 	// Normalize cuein/cueout to in/out
 	normalizedType := normalizeType(event.Type)
 	// Determine out_of_network
@@ -101,21 +99,24 @@ func generateSegmentationDescriptor(event models.SpliceInsert, includeDuration b
 // @param outputFile Path to output TS file
 // @param xmlContent XML string to inject
 // @returns true on success
-func InjectSpliceEvent(inputFile string, outputFile string, se models.SpliceInsert) bool {
-	xmlContent := GenerateSpliceInsertXml(se)
+func InjectSpliceEvent(parentCtx context.Context, inputFile string, outputFile string, se models.SpliceInsert) error {
+	ctx, cancel := context.WithTimeout(parentCtx, 10*time.Second)
+	defer cancel()
+
+	xmlContent := generateSpliceInsertXml(se)
 
 	xmlFile, err := os.CreateTemp("", "scte35_*.xml")
+	defer func() {
+		xmlFile.Close()
+		os.Remove(xmlFile.Name())
+	}()
 	if err != nil {
-		log.Printf("[SCTE35] event=tsduck_xml_create_failed error=%v", err)
-		return false
+		return Error("[SCTE35] event=tsduck_xml_create_failed error=%v", err)
 	}
-	defer os.Remove(xmlFile.Name())
 
 	if _, err := xmlFile.WriteString(xmlContent); err != nil {
-		log.Printf("[SCTE35] event=tsduck_xml_write_failed error=%v", err)
-		return false
+		return Error("[SCTE35] event=tsduck_xml_write_failed error=%v", err)
 	}
-	xmlFile.Close()
 
 	// Cleaned up pipeline:
 	// 1. PMT plugin adds stream type 0x86 (SCTE-35) and registration descriptor "CUEI" (0x43554549).
@@ -128,56 +129,63 @@ func InjectSpliceEvent(inputFile string, outputFile string, se models.SpliceInse
 
 	var out bytes.Buffer
 
-	cmd := exec.Command("sh", "-c", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Stdout = &out
 	cmd.Stderr = os.Stderr
 	err = cmd.Run()
 	if err != nil {
-		log.Printf("[SCTE35] event=tsduck_injection_failed file=%s error=%v", inputFile, err)
-		return false
+		return Error("[SCTE35] event=tsduck_injection_failed file=%s error=%v", inputFile, err)
 	}
 
 	if strings.Contains(out.String(), "Error") {
-		log.Printf("[SCTE35] event=tsduck_injection_failed file=%s error=%v", inputFile, out)
-		return false
+		return Error("[SCTE35] event=tsduck_injection_failed file=%s error=%v", inputFile, out)
 
 	}
 
-	if IsDev() {
-		verifyCmd := fmt.Sprintf(
-			`%s -I file "%s" -P splicemonitor --all-commands -O drop`,
-			TSP_BINARY, outputFile,
-		)
-		cmd := exec.Command("sh", "-c", verifyCmd)
-		cmd.Stderr = os.Stderr
-		err := cmd.Run()
-		if err != nil {
-			log.Printf("[SCTE35] event=splice_verification_failed file=%s error=%v", outputFile, err)
-		}
-	}
-
-	log.Printf("[SCTE35] event=tsduck_injection file=%s status=success", inputFile)
-	return true
+	return nil
 }
 
-// ConfigurePmtForScte35 runs TSDuck tsp to register the SCTE-35 PID in the PMT of a TS file,
+func generateXmlForAds(seg models.SegmentItem) *string {
+	adsPtsOffset := int32((seg.PtsOffset)*configs.TICKS) + 1*configs.TICKS
+	adsDuration := int32(seg.AdBreakDuration * configs.TICKS)
+	xmlContent := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<tsduck>
+  <splice_information_table>
+    <splice_insert splice_event_id="%d" unique_program_id="%d"
+                   out_of_network="true" pts_time="%d"
+                   splice_immediate="false">
+      <break_duration auto_return="true" duration="%d"/>
+    </splice_insert>
+  </splice_information_table>
+</tsduck>`, seg.AdBreakID, seg.AdBreakID, adsPtsOffset, adsDuration)
+
+	xmlPath := fmt.Sprintf("%s/ads-%f.xml", os.TempDir(), seg.RunningTime)
+	if err := os.WriteFile(xmlPath, []byte(xmlContent), 0644); err != nil {
+		return nil
+	}
+	return &xmlPath
+}
+
+// ConfigurePmtForAdsTs runs TSDuck tsp to register the SCTE-35 PID in the PMT of a TS file,
 // without injecting any splice command. Used for ad segments that carry no
 // splice event but must still declare the SCTE-35 PID in their PMT.
-func ConfigurePmtForScte35(seg models.SegmentItem, inputFile string, outputFile string) bool {
+func ConfigurePmtForAdsTs(parentCtx context.Context, seg models.SegmentItem, inputFile string, outputFile string) error {
+
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
 	command := fmt.Sprintf(
 		"%s -a 1/10 -I file \"%s\" -P pmt --add-pid 0x1F00/0x86 --add-registration 0x43554549 -O file \"%s\"",
 		TSP_BINARY, inputFile, outputFile,
 	)
-	cmd := exec.Command("sh", "-c", command)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if err != nil {
-		log.Printf("[SCTE35] event=pmt_config_failed file=%s error=%v", inputFile, err)
-		return false
+		return Error("[SCTE35] event=pmt_config_failed file=%s error=%v", inputFile, err)
 	}
-	log.Printf("[SCTE35] event=pmt_config_success file=%s", inputFile)
-	return true
+	return nil
 }
 
 func IsDev() bool {
