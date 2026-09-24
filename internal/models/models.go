@@ -167,7 +167,11 @@ type ESPXScheduleResp struct {
 }
 
 type ESPXProgrammeStream struct {
-	StreamID string `json:"stream_id"`
+	StreamID      string `json:"stream_id"`
+	StreamPath    string `json:"stream_path"`
+	SchemaVersion int    `json:"schema_ver"`
+	IsVod         bool   `json:"is_vod"`
+	IsTrailer     bool   `json:"is_trailer"`
 }
 
 type ESPXScheduleItem struct {

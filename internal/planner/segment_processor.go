@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path"
 	"simlive/internal/configs"
 	"simlive/internal/models"
 	"simlive/internal/utils"
@@ -47,8 +48,17 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 	if len(item.Programme.ProgrammeStreams) == 0 {
 		return nil
 	}
-	streamID := item.Programme.ProgrammeStreams[0].StreamID
-	if streamID == "" {
+	// get main stream with IsVod=true and IsTrailer=false
+	var stream *models.ESPXProgrammeStream // replace ProgrammeStream with your actual type
+
+	for i := range item.Programme.ProgrammeStreams {
+		s := &item.Programme.ProgrammeStreams[i]
+		if s.IsVod && !s.IsTrailer {
+			stream = s
+			break
+		}
+	}
+	if stream.StreamID == "" {
 		return nil
 	}
 
@@ -69,11 +79,15 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		sp.lastAdTime = sp.runningTime
 	}
 
-	return sp.processStreamSegments(streamID)
+	return sp.processStreamSegments(*stream)
 }
 
-func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
-	masterPath := fmt.Sprintf("%s/%s/vod.m3u8", sp.planner.bucketName, streamID)
+func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream) error {
+
+	streamRelativePath := stream.StreamPath
+	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)
+	masterPath := path.Join(streamAbsolutePath, "vod.m3u8")
+
 	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 
 	primaryRung := "L_0"
@@ -81,7 +95,12 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 		primaryRung = upstreamRends[0]
 	}
 
-	m3u8Path := fmt.Sprintf("%s/%s/%s/vod.m3u8", sp.planner.bucketName, streamID, primaryRung)
+	m3u8Path := fmt.Sprintf("%s/%s.m3u8", streamAbsolutePath, primaryRung)
+
+	if stream.SchemaVersion == 3 {
+		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamAbsolutePath)
+	}
+
 	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
 	if err != nil {
 		return fmt.Errorf("failed to fetch m3u8: %w", err)
@@ -97,12 +116,6 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 
 		line = strings.TrimSpace(line)
 		switch {
-		// case strings.HasPrefix(line, "#EXTINF:"):
-		// 	durStr := strings.TrimPrefix(line, "#EXTINF:")
-		// 	durStr = strings.Split(durStr, ",")[0]
-		// 	if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
-		// 		currentDuration = dur
-		// 	}
 		case strings.HasPrefix(line, "#EXT-X-PTS-RANGE:"):
 			ptsRange := strings.TrimPrefix(line, "#EXT-X-PTS-RANGE:")
 			parts := strings.Split(ptsRange, "-")
@@ -130,7 +143,7 @@ func (sp *SegmentProcessor) processStreamSegments(streamID string) error {
 			mediaStart := sp.runningTime
 			mediaEnd := sp.runningTime + calculatedDuration
 
-			if err := sp.processSegment(streamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
+			if err := sp.processSegment(stream.StreamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
 				return err
 			}
 

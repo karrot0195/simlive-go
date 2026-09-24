@@ -88,7 +88,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		return err
 	}
 
-	p.logger.Info(fmt.Sprintf("pulled schedule data %s (%s)", processDate, time.Since(callStartedAt).String()))
+	p.logger.Info("pulled schedule data", "processDate", processDate, "time", time.Since(callStartedAt), "total items", schedules.TotalItems)
 
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
