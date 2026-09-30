@@ -121,6 +121,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		if isEndOfTimeline(processor.horizon, processor.runningTime) {
 			break
 		}
+
 		if err := processor.ProcessScheduleItem(item, channel, callStartedAt); err != nil {
 			if errors.Is(err, ErrEndOfTimeline) {
 				break

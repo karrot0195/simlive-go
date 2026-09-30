@@ -19,6 +19,8 @@ import (
 var PreRollDelaysSec = []float64{8, 4}
 var PreRollCUEINDelaysSec = []float64{4}
 
+const DefaulStreamName = "Default Stream"
+
 type SegmentProcessor struct {
 	planner         *Planner
 	pipe            redis.Pipeliner
@@ -53,12 +55,12 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 
 	for i := range item.Programme.ProgrammeStreams {
 		s := &item.Programme.ProgrammeStreams[i]
-		if s.IsVod && !s.IsTrailer {
+		if s.IsVod && !s.IsTrailer || s.Name == DefaulStreamName {
 			stream = s
 			break
 		}
 	}
-	if stream.StreamID == "" {
+	if stream == nil || stream.StreamID == "" {
 		return nil
 	}
 
@@ -87,6 +89,11 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 	streamRelativePath := stream.StreamPath
 	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)
 	masterPath := path.Join(streamAbsolutePath, "vod.m3u8")
+	StreamID := stream.StreamID
+
+	if streamRelativePath != "" {
+		StreamID = path.Join(streamRelativePath, StreamID)
+	}
 
 	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 
@@ -143,7 +150,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 			mediaStart := sp.runningTime
 			mediaEnd := sp.runningTime + calculatedDuration
 
-			if err := sp.processSegment(stream.StreamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
+			if err := sp.processSegment(StreamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
 				return err
 			}
 

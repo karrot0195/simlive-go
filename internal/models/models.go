@@ -172,6 +172,7 @@ type ESPXProgrammeStream struct {
 	SchemaVersion int    `json:"schema_ver"`
 	IsVod         bool   `json:"is_vod"`
 	IsTrailer     bool   `json:"is_trailer"`
+	Name          string `json:"name"`
 }
 
 type ESPXScheduleItem struct {

@@ -18,7 +18,7 @@ type ESPXClient struct {
 func NewESPXClient(baseURL string) *ESPXClient {
 	return &ESPXClient{
 		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
