@@ -68,7 +68,7 @@ func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 }
 
 // API 3: Get Schedules
-func (c *ESPXClient) GetSchedules(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
+func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
 	// 1. Parse base URL path
 	endpoint := fmt.Sprintf("%s/api/v2/common/channel-epg/%s/schedules", c.baseURL, epgID)
 	u, err := url.Parse(endpoint)

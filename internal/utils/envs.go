@@ -45,7 +45,6 @@ type PlannerSettings struct {
 	// Default 7200 (2h) — matches the historical LOOKAHEAD_SECONDS const.
 	LookaheadSeconds int64
 	// FailureInactivateThreshold is the consecutive-failure count at which the
-	// breaker flips the channel's is_active=false. Default 5.
 	FailureInactivateThreshold int64
 	// FailureCounterKey is the Redis key template for the per-channel
 	// failure counter (use with fmt.Sprintf + channelID). Default

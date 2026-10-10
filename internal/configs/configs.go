@@ -14,3 +14,5 @@ const SEG_TYPE_PLACE_OPPORTUNITY_END = 0x36   // Post-roll (8s/4s warning)
 
 const PTS_DURATION = (1001.0 / 24000.0) * TICKS
 const TICKS = 90000.0
+
+const STREAM_SCHEMA_VERSION = 3

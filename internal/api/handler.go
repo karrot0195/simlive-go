@@ -45,9 +45,9 @@ func plannerTickHint() string {
 
 // allowedStatuses is the closed set of Status values the API will accept on PUT/PATCH.
 var allowedStatuses = map[string]bool{
-	"PREPARE":  true,
-	"LIVE":     true,
-	"INACTIVE": true,
+	string(models.PlayoutPrepareStatus):  true,
+	string(models.PlayoutLIVEStatus):     true,
+	string(models.PlayoutInactiveStatus): true,
 }
 
 // ChannelHandler is the REST surface for /api/channels/* . It owns CRUD over the playout_channels table plus the manual start/stop operations.
@@ -101,8 +101,7 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		BaseName:        detail.BaseName,
 		ContentTimezone: detail.ContentTimezone,
 		ChannelEpgID:    detail.ChannelEpg.ID,
-		Status:          "PREPARE",
-		IsActive:        true,
+		Status:          models.PlayoutPrepareStatus,
 		UpdatedAt:       time.Now(),
 	}
 
@@ -139,18 +138,10 @@ func (h *ChannelHandler) ListChannels(c *gin.Context) {
 	page, pageSize := parsePagination(c)
 	status := c.Query("status")
 	q := strings.TrimSpace(c.Query("q"))
-	isActiveStr := c.Query("is_active")
 
 	tx := h.db.Model(&models.PlayoutChannel{})
 	if status != "" {
 		tx = tx.Where("status = ?", status)
-	}
-	if isActiveStr != "" {
-		if b, err := strconv.ParseBool(isActiveStr); err == nil {
-			tx = tx.Where("is_active = ?", b)
-		}
-		// Silently ignore unparseable ?is_active= — the operator probably
-		// typo'd it; clamping to "no filter" is friendlier than 400.
 	}
 	if q != "" {
 		tx = tx.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(q)+"%")
@@ -264,12 +255,6 @@ func (h *ChannelHandler) applyChannelUpdate(c *gin.Context, id string, req *mode
 		return
 	}
 
-	// Setting status=INACTIVE is a stop: force is_active=false so the planner and engine drop the channel on their next poll.
-	if req.Status != nil && *req.Status == "INACTIVE" {
-		cols = append(cols, "is_active")
-		vals = append(vals, false)
-	}
-
 	// updated_at always bumps.
 	cols = append(cols, "updated_at")
 	vals = append(vals, time.Now())
@@ -357,10 +342,6 @@ func updateColumnsAndValues(req *models.UpdateChannelReq) (cols []string, vals [
 		cols = append(cols, "channel_epg_id")
 		vals = append(vals, *req.ChannelEpgID)
 	}
-	if req.IsActive != nil {
-		cols = append(cols, "is_active")
-		vals = append(vals, *req.IsActive)
-	}
 	if req.Status != nil {
 		cols = append(cols, "status")
 		vals = append(vals, *req.Status)
@@ -413,7 +394,6 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 // not propagated — the DB flip is the durable part of the operation.
 //
 // The engine's reconciler starts the playout loop IMMEDIATELY on PREPARE
-// (is_active=true AND status != 'INACTIVE'). The loop will idle until
 // the planner writes timeline data to Redis. The planner is the SINGLE
 // writer of status='LIVE': it flips the channel on its next tick once
 // timeline data is in Redis (a successful prepare or a "date already
@@ -437,7 +417,7 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
 			"is_active":  true,
-			"status":     "PREPARE",
+			"status":     models.PlayoutPrepareStatus,
 			"updated_at": time.Now(),
 		})
 	if res.Error != nil {
@@ -463,7 +443,7 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[api] channel=%s start: is_active=true, status=PREPARE, breaker cleared (planner will flip to LIVE once timeline data is in Redis, within PLANNER_INTERVAL=%s)",
+	log.Printf("[api] channel=%s start: status=PREPARE, breaker cleared (planner will flip to LIVE once timeline data is in Redis, within PLANNER_INTERVAL=%s)",
 		id, plannerTickHint())
 
 	// Best-effort: clear the breaker counter. Use a fresh context so a
@@ -485,15 +465,6 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, row)
 }
 
-// ----- POST /api/channels/:id/stop --------------------------------------
-
-// StopChannel flips is_active=false and status='INACTIVE', then best-
-// effort DELs the channel's HLS playlist keys in Redis (master + each
-// rung's media playlist) so the /live/* routes stop serving stale
-// playlists immediately rather than waiting for the planner to tick
-// and the engine to overwrite. The breaker counter is INTENTIONALLY
-// preserved — a future start clears it (see StartChannel), so the
-// counter is a no-op while stopped.
 func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !channelIDGuard(c, id) {
@@ -502,7 +473,6 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	res := h.db.Model(&models.PlayoutChannel{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"is_active":  false,
 			"status":     "INACTIVE",
 			"updated_at": time.Now(),
 		})
@@ -532,7 +502,7 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 		c.JSON(http.StatusOK, row)
 		return
 	}
-	log.Printf("[api] channel=%s stop: is_active=false, status=INACTIVE, Redis data purged (HLS + timeline + renditions + cursor), breaker preserved (engine will stop within 5s, planner within PLANNER_INTERVAL=%s)",
+	log.Printf("[api] channel=%s stop: status=INACTIVE, Redis data purged (HLS + timeline + renditions + cursor), breaker preserved (engine will stop within 5s, planner within PLANNER_INTERVAL=%s)",
 		id, plannerTickHint())
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {

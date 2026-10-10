@@ -15,6 +15,7 @@ import (
 
 	"simlive/internal/api"
 	"simlive/internal/configs"
+	customerrors "simlive/internal/custom-errors"
 	"simlive/internal/models"
 	"simlive/internal/storage"
 	"simlive/internal/utils"
@@ -83,7 +84,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	}
 	horizon := utils.EndOfDay(processDate)
 
-	schedules, err := p.espx.GetSchedules(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
+	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
 	if err != nil || len(schedules.Data) == 0 {
 		return err
 	}
@@ -92,10 +93,10 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
-	adSegments, _ := p.loadAdSegments()
+	var adSegments []models.SegmentItem
 
-	if utils.IsDev() {
-		adSegments = adSegments[0:5]
+	if !channel.UseAdEpgAds {
+		adSegments, _ = p.loadAdSegments()
 	}
 
 	// Fetch last sequence and running time from Redis to guarantee sequence & time continuity across days
@@ -112,6 +113,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		channelID:       channel.ID,
 		horizon:         horizon,
 		logger:          logger,
+		useEpgAds:       channel.UseAdEpgAds,
 	}
 
 	for _, item := range schedules.Data {
@@ -126,9 +128,13 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 			if errors.Is(err, ErrEndOfTimeline) {
 				break
 			}
+
 			return err
 		}
 	}
+
+	// Sync the last segment into Redis.
+	processor.synchSegmentIntoRedis(ctx, true)
 
 	p.logger.Info(fmt.Sprintf("finished plan for %s", processDate))
 	return processor.flush()
@@ -331,6 +337,15 @@ func (p *Planner) markChannelLive(channelID string) error {
 	return nil
 }
 
+func (p *Planner) MarkChannelFailed(channelID string, errorLabel string) {
+	if p.db == nil {
+		return
+	}
+	p.db.Model(&models.PlayoutChannel{}).
+		Where("id = ?", channelID).
+		Update("status", models.PlayoutFailureStatus).Update("label", errorLabel)
+}
+
 func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID string, err error) {
 	if err == nil {
 		p.resetFailureCounter(ctx, channelID)
@@ -389,7 +404,12 @@ func (p *Planner) ProcessEPGToTimelineWithRetry(ctx context.Context, ch models.P
 		if lastErr = p.ProcessEPGToTimeline(ctx, ch, dateStr); lastErr == nil {
 			return nil
 		}
-		if i == attempts {
+
+		if errors.Is(lastErr, customerrors.UnspportStreamSchema) {
+			break
+		}
+
+		if i > attempts {
 			break
 		}
 		delay := base * (1 << (i - 1))

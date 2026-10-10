@@ -7,6 +7,7 @@ import (
 	"log"
 	"path"
 	"simlive/internal/configs"
+	customerrors "simlive/internal/custom-errors"
 	"simlive/internal/models"
 	"simlive/internal/utils"
 	"strconv"
@@ -40,6 +41,8 @@ type SegmentProcessor struct {
 	// timelineBase     float64
 
 	logger *utils.Logger
+
+	useEpgAds bool
 }
 
 func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
@@ -64,6 +67,11 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		return nil
 	}
 
+	if stream.SchemaVersion < configs.STREAM_SCHEMA_VERSION {
+		sp.logger.Warn("unsport schema ", "StreamID", stream.StreamID)
+		return customerrors.UnspportStreamSchema
+	}
+
 	startTime, err := utils.ParseESPXTime(item.LocalDateStart, channel.ContentTimezone)
 	if err != nil {
 		return err
@@ -81,10 +89,10 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		sp.lastAdTime = sp.runningTime
 	}
 
-	return sp.processStreamSegments(*stream)
+	return sp.processStreamSegments(*stream, item.Programme.IsAds)
 }
 
-func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream) error {
+func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream, isAds bool) error {
 
 	streamRelativePath := stream.StreamPath
 	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)
@@ -135,10 +143,14 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 				return ErrEndOfTimeline
 			}
 
-			sp.processingVerifyNearingAds(sp.runningTime)
-			spliceEvent, err := sp.insertAdsIfNeeded(sp.runningTime)
-			if err != nil {
-				return err
+			var spliceEvent *models.SpliceInsert
+
+			if !sp.useEpgAds {
+				sp.processingVerifyNearingAds(sp.runningTime)
+				spliceEvent, err = sp.insertAdsIfNeeded(sp.runningTime)
+				if err != nil {
+					return err
+				}
 			}
 
 			segmentPtsOffset := sp.currentPtsOffset
@@ -355,16 +367,28 @@ func (sp *SegmentProcessor) addSegment(ctx context.Context, runningTime float64,
 	}
 
 	if runningTime <= (float64(time.Now().Unix())+float64(utils.GetPlannerSettings().WindowBufferSeconds)) || (sp.totalSegmentsAdded > 0 && sp.totalSegmentsAdded%int64(utils.GetPlannerSettings().WindowItemSize) == 0) {
-		sp.synchSegmentIntoRedis(ctx)
+		sp.synchSegmentIntoRedis(ctx, false)
 	}
 	return nil
 }
 
-func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context) {
+func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllItem bool) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
-	for _, segment := range sp.planner.processingSegments {
+
+	sizeItems := len(sp.planner.processingSegments)
+	if sizeItems == 0 {
+		return // Guard against empty slice panics
+	}
+
+	// Determine items to process based on synchAllItem flag
+	itemsToProcess := sp.planner.processingSegments
+	if !synchAllItem && sizeItems > 5 {
+		itemsToProcess = sp.planner.processingSegments[sizeItems-5:]
+	}
+
+	for _, segment := range itemsToProcess {
 		member, err := json.Marshal(segment)
 		if err != nil {
 			log.Printf("[Planner] json.Marshal(SegmentItem) failed: %v", err)
@@ -383,13 +407,24 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context) {
 			Member: string(member),
 		})
 	}
-	sizeItems := len(sp.planner.processingSegments)
 
-	sp.logger.VInfo(`synched data from %s to %s with total=%d`, sp.planner.processingSegments[0].TimeText, sp.planner.processingSegments[sizeItems-1].TimeText, sizeItems)
+	processCount := len(itemsToProcess)
+	sp.logger.VInfo(`synched data from %s to %s with total=%d`,
+		itemsToProcess[0].TimeText,
+		itemsToProcess[processCount-1].TimeText,
+		processCount,
+	)
+
 	if _, err := sp.pipe.Exec(ctx); err != nil {
 		log.Printf("[Planner] synchSegmentIntoRedis Exec error: %v", err)
 	}
-	sp.planner.processingSegments = nil
+
+	// Retain last 5 items in memory if synchAllItem is false, otherwise clear all
+	if !synchAllItem && sizeItems > 5 {
+		sp.planner.processingSegments = sp.planner.processingSegments[sizeItems-5:]
+	} else if synchAllItem {
+		sp.planner.processingSegments = nil
+	}
 }
 
 func totalBreakDuration(ads []models.SegmentItem) float64 {

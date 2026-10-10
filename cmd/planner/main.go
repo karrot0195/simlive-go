@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"simlive/internal/api"
 	"simlive/internal/configs"
+	customerrors "simlive/internal/custom-errors"
 	"simlive/internal/models"
 	"simlive/internal/planner"
 	"simlive/internal/storage"
@@ -161,7 +163,9 @@ func main() {
 		nextInterval := time.Now().Add(interval)
 		for {
 			var activeChannels []models.PlayoutChannel
-			db.Where("is_active = ? AND status != ?", true, "INACTIVE").Find(&activeChannels)
+			statuses := []models.PlayoutStatus{models.PlayoutInactiveStatus, models.PlayoutFailureStatus}
+
+			db.Where("status NOT IN ?", statuses).Find(&activeChannels)
 
 			activeSet := make(map[string]struct{}, len(activeChannels))
 			for _, ch := range activeChannels {
@@ -262,6 +266,11 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 
 	prepErr := p.ProcessEPGToTimelineWithRetry(ctx, ch, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
 	if prepErr != nil && ctx.Err() == nil {
+		if errors.Is(prepErr, customerrors.UnspportStreamSchema) {
+			p.MarkChannelFailed(ch.ID, "Unsupported stream schema")
+			return
+		}
+
 		logger.Info(fmt.Sprintf("[Planner] ProcessEPGToTimeline(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), prepErr))
 	}
 

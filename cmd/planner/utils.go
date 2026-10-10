@@ -23,8 +23,8 @@ func prepareEnv(logger *utils.Logger, ctx context.Context, db *gorm.DB, rdb *red
 		os.RemoveAll(tmpDir)
 		if db != nil {
 			db.Model(&models.PlayoutChannel{}).
-				Where("is_active = ?", true).
-				Update("status", "PREPARE")
+				Where("status = ?", models.PlayoutLIVEStatus).
+				Update("status", models.PlayoutPrepareStatus)
 		}
 		return
 	}

@@ -21,41 +21,17 @@ const (
 	SegTypeAdvertisementEnd          = 0x35 // cue-in
 )
 
-// PlayoutChannel - PostgreSQL Single Table.
-//
-// Status lifecycle (PREPARE → LIVE → INACTIVE):
-//   - PREPARE  — written by the REST API on register (POST /api/channels)
-//     and start (POST /api/channels/:id/start). The channel is active
-//     (is_active=true) but has no timeline data yet; the engine does NOT
-//     stream it.
-//   - LIVE     — written ONLY by the planner (markChannelLive /
-//     MarkChannelLiveForChannel in internal/planner/planner.go) once it
-//     has written timeline data to Redis for the channel (or found a date
-//     already prepared). The engine's reconciler gates on `is_active` AND
-//     `status='LIVE'` and starts a playout loop only for these channels.
-//   - INACTIVE — written by the REST API on stop (POST
-//     /api/channels/:id/stop) and soft delete (DELETE /api/channels/:id).
-//
-// 'ACTIVE' was removed from the enum; legacy rows self-heal on the next
-// planner tick (a successful prepare or a "date already prepared"
-// short-circuit flips them to 'LIVE'). 'ERROR' is planner-only and is
-// rejected by the API surface.
-//
-// IsActive is read by both the planner's and the engine's cron loops and
-// is written by the REST API (manual start/stop) plus the planner's
-// breaker (markChannelInactive), which flips is_active=false after
-// `PlannerSettings.FailureInactivateThreshold` consecutive (channel, date)
-// failures.
 type PlayoutChannel struct {
-	ID              string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
-	Name            string    `gorm:"type:varchar(255);not null" json:"name"`
-	BaseName        string    `gorm:"type:varchar(255)" json:"base_name"`
-	ContentTimezone string    `gorm:"type:varchar(50)" json:"content_timezone"`
-	ChannelEpgID    string    `gorm:"type:varchar(36)" json:"channel_epg_id"`
-	Status          string    `gorm:"type:varchar(20);default:'PREPARE'" json:"status"`
-	IsActive        bool      `gorm:"column:is_active;default:true" json:"is_active"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string        `gorm:"primaryKey;type:varchar(36)" json:"id"`
+	Name            string        `gorm:"type:varchar(255);not null" json:"name"`
+	BaseName        string        `gorm:"type:varchar(255)" json:"base_name"`
+	ContentTimezone string        `gorm:"type:varchar(50)" json:"content_timezone"`
+	ChannelEpgID    string        `gorm:"type:varchar(36)" json:"channel_epg_id"`
+	Status          PlayoutStatus `gorm:"type:varchar(20);default:'PREPARE'" json:"status"`
+	Label           string        `gorm:"type:varchar(255)" json:"label"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+	UseAdEpgAds     bool          `json:"use_ad_epg_ads"`
 }
 
 // ESPXChannelListItem is a single entry in the ESPX API 1 response
@@ -154,18 +130,6 @@ type ESPXChannelDetailResp struct {
 	} `json:"channelEpg"`
 }
 
-type ESPXScheduleResp struct {
-	Data []struct {
-		ID             string `json:"id"`
-		LocalDateStart string `json:"local_date_start"`
-		LocalDateEnd   string `json:"local_date_end"`
-		Programme      struct {
-			ID       string `json:"id"`
-			ShortURL string `json:"short_url"` // Stream ID
-		} `json:"programme"`
-	} `json:"data"`
-}
-
 type ESPXProgrammeStream struct {
 	StreamID      string `json:"stream_id"`
 	StreamPath    string `json:"stream_path"`
@@ -186,6 +150,7 @@ type ESPXScheduleItem struct {
 		Name             string `json:"name"`
 		ShortURL         string `json:"short_url"` // PROGRAMME ID, DO NOT USE THIS AS THE PATH
 		ProgrammeStreams []ESPXProgrammeStream
+		IsAds            bool `json:"is_ads"`
 	} `json:"programme"`
 }
 
@@ -208,7 +173,6 @@ type UpdateChannelReq struct {
 	BaseName        *string `json:"base_name,omitempty"`
 	ContentTimezone *string `json:"content_timezone,omitempty"`
 	ChannelEpgID    *string `json:"channel_epg_id,omitempty"`
-	IsActive        *bool   `json:"is_active,omitempty"`
 	Status          *string `json:"status,omitempty"`
 }
 
@@ -230,4 +194,10 @@ type ListChannelsResp struct {
 type ESpxChannelsListResp struct {
 	Data       []ESPXChannelListItem `json:"data"`
 	Registered map[string]bool       `json:"registered"`
+}
+
+const ScheduleItemTypeAds = "ads"
+
+func (m *ESPXScheduleItem) IsAdsScheduleItem() bool {
+	return m.Type == ScheduleItemTypeAds
 }

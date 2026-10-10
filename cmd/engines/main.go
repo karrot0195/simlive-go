@@ -39,7 +39,7 @@ func PrepareEnv(ctx context.Context, rdb *redis.Client) {
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		// log.Fatalf("Failed to load .env file: %v", err)
+		fmt.Printf("Failed to load .env file: %v", err)
 	}
 
 	settings := utils.GetSettings()
@@ -85,7 +85,9 @@ func main() {
 
 		for {
 			var activeChannels []models.PlayoutChannel
-			db.Where("is_active = ? AND status != ?", true, "INACTIVE").Find(&activeChannels)
+			statuses := []models.PlayoutStatus{models.PlayoutInactiveStatus, models.PlayoutFailureStatus}
+
+			db.Where("status NOT IN ?", statuses).Find(&activeChannels)
 
 			reconcileEngines(ctx, activeChannels, &activeEngineTasks, &tasksMu, spawn, settings.TMPDir, engineSvc)
 			time.Sleep(5 * time.Second)
@@ -156,7 +158,7 @@ func isChannelChanged(oldCh, newCh models.PlayoutChannel) bool {
 	if oldCh.UpdatedAt != newCh.UpdatedAt {
 		return true
 	}
-	if oldCh.Status != newCh.Status || oldCh.IsActive != newCh.IsActive {
+	if oldCh.Status != newCh.Status {
 		return true
 	}
 	return false
