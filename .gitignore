@@ -3,3 +3,4 @@ outputs/*
 tmp/
 .env
 *.conf
+logs/
