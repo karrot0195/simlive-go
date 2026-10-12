@@ -112,7 +112,7 @@ func GetSettings() *Settings {
 	dbName := GetEnv("DB_NAME", "simlive")
 
 	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
-	espxURL := GetEnv("ESPX_API_URL", "https://sample.espx.cloud")
+	espxURL := GetEnv("ESPX_API_URL", "https://sample.sample.cloud")
 
 	videoBucket := GetEnv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
 

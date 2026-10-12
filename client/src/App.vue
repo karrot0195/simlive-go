@@ -27,7 +27,7 @@ const menuItems = computed(() => {
       <v-app>
         <v-app-bar title="Simulated Live">
           <template #prepend>
-            <img width="200px" src="https://static-cdn.espx.cloud/img/logo.png" alt="" />
+            <img width="200px" src="https://static-cdn.sample.cloud/img/logo.png" alt="" />
           </template>
           <template #append>
             <v-btn

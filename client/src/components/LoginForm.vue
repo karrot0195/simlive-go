@@ -4,7 +4,7 @@ import { client } from '@/libs/client'
 import { useAuthStore } from '@/stores/auth'
 
 // API constants
-const API_BASE_URL = 'https://msvc.espx.cloud'
+const API_BASE_URL = 'https://msvc.sample.cloud'
 const API_PATHS = {
   LOGIN: '/sso/auth/login',
   ACCOUNTS: '/sso/auth/accounts',
