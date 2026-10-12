@@ -45,7 +45,7 @@ type SegmentProcessor struct {
 	useEpgAds bool
 }
 
-func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
+func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time, needLoadAds bool) error {
 	if err := sp.ctx.Err(); err != nil {
 		return err
 	}
@@ -89,10 +89,10 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		sp.lastAdTime = sp.runningTime
 	}
 
-	return sp.processStreamSegments(*stream, item.Programme.IsAds)
+	return sp.processStreamSegments(*stream, needLoadAds)
 }
 
-func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream, isAds bool) error {
+func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream, needLoadAds bool) error {
 
 	streamRelativePath := stream.StreamPath
 	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)
@@ -147,6 +147,11 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 
 			if !sp.useEpgAds {
 				sp.processingVerifyNearingAds(sp.runningTime)
+				spliceEvent, err = sp.insertAdsIfNeeded(sp.runningTime)
+				if err != nil {
+					return err
+				}
+			} else if needLoadAds {
 				spliceEvent, err = sp.insertAdsIfNeeded(sp.runningTime)
 				if err != nil {
 					return err
@@ -216,7 +221,8 @@ func (sp *SegmentProcessor) processingVerifyNearingAds(actualStartTime float64) 
 
 func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.SpliceInsert, error) {
 	interval := utils.GetPlannerSettings().AdInsertionInterval
-	if len(sp.adSegments) == 0 || actualStartTime < sp.nowUnix || (actualStartTime-sp.lastAdTime) < float64(interval) {
+
+	if !sp.useEpgAds && len(sp.adSegments) == 0 || actualStartTime < sp.nowUnix || (actualStartTime-sp.lastAdTime) < float64(interval) {
 		return nil, nil
 	}
 
@@ -389,7 +395,7 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 	}
 
 	for _, segment := range itemsToProcess {
-		member, err := json.Marshal(segment)
+		_, err := json.Marshal(segment)
 		if err != nil {
 			log.Printf("[Planner] json.Marshal(SegmentItem) failed: %v", err)
 			continue
@@ -403,8 +409,7 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 		}
 
 		sp.pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
-			Score:  float64(segment.RunningTime),
-			Member: string(member),
+			Score: float64(segment.RunningTime),
 		})
 	}
 

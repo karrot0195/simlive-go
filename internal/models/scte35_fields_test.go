@@ -60,7 +60,7 @@ func TestSegmentItem_AdFields_RoundTrip(t *testing.T) {
 		t.Fatalf("IsAd = false, want true")
 	}
 	if out.AdBreakID != src.AdBreakID {
-		t.Fatalf("AdBreakID = %q, want %q", out.AdBreakID, src.AdBreakID)
+		t.Fatalf("AdBreakID = %d, want %q", out.AdBreakID, src.AdBreakID)
 	}
 	if out.AdBreakStart != src.AdBreakStart {
 		t.Fatalf("AdBreakStart = %v, want %v", out.AdBreakStart, src.AdBreakStart)

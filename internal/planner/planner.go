@@ -34,7 +34,6 @@ type Planner struct {
 	espx       *api.ESPXClient
 	rclone     *storage.RcloneService
 	bucketName string
-	adsBucket  string
 
 	isBlockingProcessing bool
 	processingSegments   []models.SegmentItem
@@ -49,7 +48,6 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 		espx:       espx,
 		rclone:     rclone,
 		bucketName: utils.GetSettings().VideoBucket,
-		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),
 		logger:     utils.GetLogger("PLANNER"),
 	}
 }
@@ -96,7 +94,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	var adSegments []models.SegmentItem
 
 	if !channel.UseAdEpgAds {
-		adSegments, _ = p.loadAdSegments()
+		adSegments, _ = p.loadAdSegments([]string{utils.GetSettings().AdsStreamId})
 	}
 
 	// Fetch last sequence and running time from Redis to guarantee sequence & time continuity across days
@@ -116,6 +114,8 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		useEpgAds:       channel.UseAdEpgAds,
 	}
 
+	var adsStreamIds []string
+	var needLoadAds bool
 	for _, item := range schedules.Data {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -124,12 +124,36 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 			break
 		}
 
-		if err := processor.ProcessScheduleItem(item, channel, callStartedAt); err != nil {
+		if endTime, err := utils.ParseESPXTime(item.LocalDateEnd, channel.ContentTimezone); err == nil && endTime.Before(callStartedAt) {
+			continue
+		}
+
+		if item.IsAdsScheduleItem() {
+			s := item.GetStream()
+
+			if s != nil {
+				adsStreamIds = append(adsStreamIds, s.StreamID)
+			}
+			needLoadAds = true
+			continue
+		}
+
+		if needLoadAds {
+			adSegments, _ = p.loadAdSegments(adsStreamIds)
+			processor.adSegments = adSegments
+		}
+
+		if err := processor.ProcessScheduleItem(item, channel, callStartedAt, needLoadAds); err != nil {
 			if errors.Is(err, ErrEndOfTimeline) {
 				break
 			}
 
 			return err
+		}
+
+		if needLoadAds {
+			processor.adSegments = nil
+			needLoadAds = false
 		}
 	}
 
@@ -140,59 +164,62 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	return processor.flush()
 }
 
-func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
-	adsMasterM3u8Path := fmt.Sprintf("%s/vod.m3u8", p.adsBucket)
-
-	renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
-	if len(renditions) == 0 {
-		return nil, fmt.Errorf("no renditions found for ads master: %s", adsMasterM3u8Path)
-	}
-
-	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, renditions[0])
-	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ads m3u8: %w", err)
-	}
-
-	lines := strings.Split(m3u8Content, "\n")
+func (p *Planner) loadAdSegments(streamIds []string) ([]models.SegmentItem, error) {
 	adSegments := make([]models.SegmentItem, 0)
-	var currentDuration float64
-	var ptsStart, ptsEnd int64
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "#EXTINF:"):
-			durStr := strings.TrimPrefix(line, "#EXTINF:")
-			durStr = strings.Split(durStr, ",")[0]
-			if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
-				currentDuration = dur
+	for _, adsStreamId := range streamIds {
+		adsMasterM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.bucketName, adsStreamId)
+
+		renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
+		if len(renditions) == 0 {
+			return nil, fmt.Errorf("no renditions found for ads master: %s", adsMasterM3u8Path)
+		}
+
+		adsM3u8Path := fmt.Sprintf("%s/%s/%s/vod.m3u8", p.bucketName, adsStreamId, renditions[0])
+		m3u8Content, err := p.rclone.Cat(adsM3u8Path)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch ads m3u8: %w", err)
+		}
+
+		lines := strings.Split(m3u8Content, "\n")
+		var currentDuration float64
+		var ptsStart, ptsEnd int64
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			switch {
+			case strings.HasPrefix(line, "#EXTINF:"):
+				durStr := strings.TrimPrefix(line, "#EXTINF:")
+				durStr = strings.Split(durStr, ",")[0]
+				if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
+					currentDuration = dur
+				}
+			case strings.HasPrefix(line, "#EXT-X-PTS-RANGE:"):
+				ptsRange := strings.TrimPrefix(line, "#EXT-X-PTS-RANGE:")
+				parts := strings.Split(ptsRange, "-")
+				if len(parts) == 2 {
+					ptsStart, _ = strconv.ParseInt(parts[0], 10, 64)
+					ptsEnd, _ = strconv.ParseInt(parts[1], 10, 64)
+				}
+			case strings.HasSuffix(line, ".ts"):
+				mStart := float64(ptsStart) / 90000.0
+				mEnd := float64(ptsEnd) / 90000.0
+				if currentDuration == 0 {
+					currentDuration = mEnd - mStart
+				}
+				adSegments = append(adSegments, models.SegmentItem{
+					Duration:    currentDuration,
+					StoragePath: fmt.Sprintf("%s/%s/%s/%s", p.bucketName, adsStreamId, "{rendition}", line),
+					PtsStart:    ptsStart,
+					PtsEnd:      ptsEnd,
+					MediaStart:  mStart,
+					MediaEnd:    mEnd,
+					Renditions:  renditions,
+				})
+				currentDuration = 0
 			}
-		case strings.HasPrefix(line, "#EXT-X-PTS-RANGE:"):
-			ptsRange := strings.TrimPrefix(line, "#EXT-X-PTS-RANGE:")
-			parts := strings.Split(ptsRange, "-")
-			if len(parts) == 2 {
-				ptsStart, _ = strconv.ParseInt(parts[0], 10, 64)
-				ptsEnd, _ = strconv.ParseInt(parts[1], 10, 64)
-			}
-		case strings.HasSuffix(line, ".ts"):
-			mStart := float64(ptsStart) / 90000.0
-			mEnd := float64(ptsEnd) / 90000.0
-			if currentDuration == 0 {
-				currentDuration = mEnd - mStart
-			}
-			adSegments = append(adSegments, models.SegmentItem{
-				Duration:    currentDuration,
-				StoragePath: fmt.Sprintf("%s/%s/%s", p.adsBucket, "{rendition}", line),
-				PtsStart:    ptsStart,
-				PtsEnd:      ptsEnd,
-				MediaStart:  mStart,
-				MediaEnd:    mEnd,
-				Renditions:  renditions,
-			})
-			currentDuration = 0
 		}
 	}
+
 	return adSegments, nil
 }
 
@@ -217,10 +244,6 @@ func (p *Planner) getLastSegmentState(ctx context.Context, channelID string) Las
 		}
 	}
 	return LastSegmentState{Sequence: 0, RunningTime: 0}
-}
-
-func (p *Planner) getLastSequenceNumber(ctx context.Context, channelID string) int64 {
-	return p.getLastSegmentState(ctx, channelID).Sequence
 }
 
 func isEndOfTimeline(horizon time.Time, runningTime float64) bool {

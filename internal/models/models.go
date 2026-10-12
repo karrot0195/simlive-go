@@ -197,7 +197,23 @@ type ESpxChannelsListResp struct {
 }
 
 const ScheduleItemTypeAds = "ads"
+const DefaulStreamName = "Default Stream"
 
 func (m *ESPXScheduleItem) IsAdsScheduleItem() bool {
 	return m.Type == ScheduleItemTypeAds
+}
+
+func (item *ESPXScheduleItem) GetStream() *ESPXProgrammeStream {
+	// get main stream with IsVod=true and IsTrailer=false
+	var stream *ESPXProgrammeStream // replace ProgrammeStream with your actual type
+
+	for i := range item.Programme.ProgrammeStreams {
+		s := &item.Programme.ProgrammeStreams[i]
+		if s.IsVod && !s.IsTrailer || s.Name == DefaulStreamName {
+			stream = s
+			break
+		}
+	}
+
+	return stream
 }
