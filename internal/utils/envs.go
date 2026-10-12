@@ -114,7 +114,7 @@ func GetSettings() *Settings {
 	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
 	espxURL := GetEnv("ESPX_API_URL", "https://sample.sample.cloud")
 
-	videoBucket := GetEnv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
+	videoBucket := GetEnv("STORAGE_BUCKET", "sample-video-lib:sample-video-lib")
 
 	adsStreamId := "ads-v4"
 	return &Settings{

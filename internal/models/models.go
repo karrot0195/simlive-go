@@ -119,7 +119,7 @@ type SegmentItem struct {
 }
 
 // Response structs for ESPX APIs
-type ESPXChannelListResp struct {
+type ESXChannelListResp struct {
 	Data []ESPXChannelListItem `json:"data"`
 }
 

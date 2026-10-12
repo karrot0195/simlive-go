@@ -31,7 +31,7 @@ type LastSegmentState struct {
 type Planner struct {
 	db         *gorm.DB
 	rdb        *redis.Client
-	espx       *api.ESPXClient
+	espx       *api.ESClient
 	rclone     *storage.RcloneService
 	bucketName string
 
@@ -41,7 +41,7 @@ type Planner struct {
 	logger               *utils.Logger
 }
 
-func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
+func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
 		db:         db,
 		rdb:        rdb,

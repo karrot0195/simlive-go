@@ -16,7 +16,7 @@ info:
 
     Implementation lives in:
     - `internal/api/handler.go` (channel CRUD)
-    - `internal/api/espx_client.go` (ESPX upstream client)
+    - `internal/api/es_client.go` (ESPX upstream client)
     - `cmd/api/main.go` (router + HLS routes + CORS)
 
     See `docs/300826-create-rest-api-for-playout-channels-management.md`

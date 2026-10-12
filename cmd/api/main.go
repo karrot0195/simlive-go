@@ -42,7 +42,7 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
 	// 3. Init Services
-	espxClient := api.NewESPXClient(settings.EspxURL)
+	espxClient := api.NewESXClient(settings.EspxURL)
 	channelHandler := api.NewChannelHandler(db, espxClient, rdb)
 
 	// 4. HTTP REST API

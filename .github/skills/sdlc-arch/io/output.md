@@ -20,7 +20,7 @@ rule:
   applies_to:
     - planner (`internal/planner/planner.go`, `segment_processor.go`)
     - engine (`internal/engine/engine.go`, `rendition.go`, `scte35.go`)
-    - api (`internal/api/handler.go`, `espx_client.go`)
+    - api (`internal/api/handler.go`, `es_client.go`)
     - storage (`internal/storage/rclone.go`)
     - config (`internal/configs/configs.go`, `.env`)
     - client (`client/src/` — Vue 3 + Vite + Vuetify)

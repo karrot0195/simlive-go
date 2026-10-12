@@ -27,7 +27,7 @@ Every module (`planner`, `engine`, `api`, `storage`, `config`, `client`) must tr
 ### Applies to
 - `internal/planner/planner.go`, `segment_processor.go`
 - `internal/engine/engine.go`, `rendition.go`, `scte35.go`
-- `internal/api/handler.go`, `espx_client.go`
+- `internal/api/handler.go`, `es_client.go`
 - `internal/storage/rclone.go`
 - `internal/configs/configs.go`, `.env`
 - `client/src/` (Vue 3 + Vite + Vuetify)
@@ -47,7 +47,7 @@ simlive/
 │   ├── planner/main.go     # 24/7 cron (default 5m, PLANNER_INTERVAL) — EPG → Redis timeline
 │   └── engines/main.go     # 1-second tick loop — sliding HLS playlist + PTS rewrite
 ├── internal/
-│   ├── api/                # handler.go (routes), espx_client.go (ESPX APIs 1/2/3)
+│   ├── api/                # handler.go (routes), es_client.go (ESPX APIs 1/2/3)
 │   ├── planner/            # planner.go (prepareDate, ProcessEPGToTimeline, SegmentProcessor)
 │   ├── engine/             # engine.go (tick loop, bounded window, master + per-rung playlists)
 │   ├── storage/            # rclone.go (cat / copyto / ls)

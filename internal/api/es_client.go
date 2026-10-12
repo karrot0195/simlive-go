@@ -10,20 +10,20 @@ import (
 	"time"
 )
 
-type ESPXClient struct {
+type ESClient struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-func NewESPXClient(baseURL string) *ESPXClient {
-	return &ESPXClient{
+func NewESXClient(baseURL string) *ESClient {
+	return &ESClient{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // API 1: Fetch Channel List
-func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
+func (c *ESClient) GetChannels() (*models.ESXChannelListResp, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts?$limit=50&is_playout_assigned=true", c.baseURL)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -31,16 +31,16 @@ func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
 	}
 	defer resp.Body.Close()
 
-	var result models.ESPXChannelListResp
+	var result models.ESXChannelListResp
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return &result, err
 }
 
-// ListESpxChannels is a thin wrapper over GetChannels that returns the
+// ListESxChannels is a thin wrapper over GetChannels that returns the
 // items directly (rather than the wrapped response). Used by the new
 // GET /api/channels/esp REST route — keeps the upstream URL constant
 // in one place so a future endpoint rename is a one-line change.
-func (c *ESPXClient) ListESpxChannels() ([]models.ESPXChannelListItem, error) {
+func (c *ESClient) ListESxChannels() ([]models.ESPXChannelListItem, error) {
 	resp, err := c.GetChannels()
 	if err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func (c *ESPXClient) ListESpxChannels() ([]models.ESPXChannelListItem, error) {
 }
 
 // API 2: Get Playout Detail to extract channelEpg.id
-func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
+func (c *ESClient) GetChannelEPGID(playoutID string) (string, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]&$limit=50&is_playout_assigned=true", c.baseURL, playoutID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -68,7 +68,7 @@ func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 }
 
 // API 3: Get Schedules
-func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
+func (c *ESClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
 	// 1. Parse base URL path
 	endpoint := fmt.Sprintf("%s/api/v2/common/channel-epg/%s/schedules", c.baseURL, epgID)
 	u, err := url.Parse(endpoint)
@@ -99,7 +99,7 @@ func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSc
 	return &result, err
 }
 
-type ESPXChannelDetailFullResp struct {
+type ESChannelDetailFullResp struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	BaseName        string `json:"base_name"`
@@ -109,7 +109,7 @@ type ESPXChannelDetailFullResp struct {
 	} `json:"channelEpg"`
 }
 
-func (c *ESPXClient) GetChannelDetailWithEPG(channelID string) (*ESPXChannelDetailFullResp, error) {
+func (c *ESClient) GetChannelDetailWithEPG(channelID string) (*ESChannelDetailFullResp, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]", c.baseURL, channelID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *ESPXClient) GetChannelDetailWithEPG(channelID string) (*ESPXChannelDeta
 		return nil, fmt.Errorf("channel not found, status: %d", resp.StatusCode)
 	}
 
-	var result ESPXChannelDetailFullResp
+	var result ESChannelDetailFullResp
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return &result, err
 }

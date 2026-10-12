@@ -7,9 +7,9 @@
 Storage access is mediated by `rclone` (not direct S3/HTTP). The planner uses `rclone cat` to parse HLS manifests; the engine uses `rclone copyto` to download `.ts` segments. The `rclone` binary and config (`rclone.conf`) are bundled in the repo.
 
 ## Operations
-- `rclone cat espx-video-lib:espx-video-lib/{streamID}/L_0/vod.m3u8` — read master/variant manifest (planner).
+- `rclone cat sample-video-lib:sample-video-lib/{streamID}/L_0/vod.m3u8` — read master/variant manifest (planner).
 - `rclone cat .../ads-v3/{adsRend}/vod.m3u8` — read ads manifest (planner).
-- `rclone copyto espx-video-lib:.../segment_000.ts {TMP_DIR}/{ch}/seg_N.ts` — download segment (engine).
+- `rclone copyto sample-video-lib:.../segment_000.ts {TMP_DIR}/{ch}/seg_N.ts` — download segment (engine).
 - `rclone ls` — directory listing (defensive checks).
 
 ## Key points

@@ -54,12 +54,12 @@ var allowedStatuses = map[string]bool{
 // The planner reads the same columns (is_active, status) so a manual flip takes effect on the next planner tick.
 type ChannelHandler struct {
 	db   *gorm.DB
-	espx *ESPXClient
+	espx *ESClient
 	rdb  *redis.Client
 }
 
 // NewChannelHandler wires the dependencies. `rdb` may be nil — start/stop then log a warning and continue (a Redis blip should never 5xx the operator; the DB flip is the durable part of the operation).
-func NewChannelHandler(db *gorm.DB, espx *ESPXClient, rdb *redis.Client) *ChannelHandler {
+func NewChannelHandler(db *gorm.DB, espx *ESClient, rdb *redis.Client) *ChannelHandler {
 	return &ChannelHandler{db: db, espx: espx, rdb: rdb}
 }
 
@@ -191,7 +191,7 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 
 // ListESpxChannels proxies ESPX API 1 and annotates each item with a `registered` boolean (true if the channel is already in our local playout_channels table). Single SELECT id ... IN (...) keeps the round-trip count constant in the fleet size.
 func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
-	items, err := h.espx.ListESpxChannels()
+	items, err := h.espx.ListESxChannels()
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch channels from ESPX: " + err.Error()})
 		return
