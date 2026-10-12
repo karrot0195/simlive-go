@@ -2,3 +2,4 @@ outputs/*
 .gocache/*
 tmp/
 .env
+*.conf
