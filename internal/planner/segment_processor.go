@@ -12,6 +12,7 @@ import (
 	"simlive/internal/utils"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -38,11 +39,10 @@ type SegmentProcessor struct {
 	horizon            time.Time
 
 	currentPtsOffset float64
-	// timelineBase     float64
-
-	logger *utils.Logger
+	logger           *utils.Logger
 
 	useEpgAds bool
+	mux       sync.Mutex
 }
 
 func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time, needLoadAds bool) error {
@@ -123,6 +123,11 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 
 	lines := strings.Split(m3u8Content, "\n")
 	var ptsStart, ptsEnd int64
+	var spliceEvent *models.SpliceInsert
+
+	if needLoadAds {
+		spliceEvent, _ = sp.insertAdsIfNeeded(sp.runningTime)
+	}
 
 	for _, line := range lines {
 		if err := sp.ctx.Err(); err != nil {
@@ -143,15 +148,9 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 				return ErrEndOfTimeline
 			}
 
-			var spliceEvent *models.SpliceInsert
-
+			// TODO: extend for injest ads case
 			if !sp.useEpgAds {
 				sp.processingVerifyNearingAds(sp.runningTime)
-				spliceEvent, err = sp.insertAdsIfNeeded(sp.runningTime)
-				if err != nil {
-					return err
-				}
-			} else if needLoadAds {
 				spliceEvent, err = sp.insertAdsIfNeeded(sp.runningTime)
 				if err != nil {
 					return err
@@ -170,6 +169,8 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 			if err := sp.processSegment(StreamID, upstreamRends, line, segmentPtsOffset, calculatedDuration, ptsStart, ptsEnd, mediaStart, mediaEnd, spliceEvent); err != nil {
 				return err
 			}
+
+			spliceEvent = nil
 
 			sp.runningTime = mediaEnd
 			sp.currentPtsOffset = sp.currentPtsOffset + calculatedDuration
@@ -200,13 +201,10 @@ func (sp *SegmentProcessor) processSegment(streamID string, renditions []string,
 		appendSpliceInsertUnique(&segment, *spliceEvent)
 	}
 
-	if mediaStart >= (sp.nowUnix - float64(utils.GetPlannerSettings().WindowBufferSeconds)) {
-		if err := sp.addSegment(sp.ctx, mediaStart, segment); err != nil {
-			return err
-		}
-		sp.totalSegmentsAdded++
+	if err := sp.addSegment(sp.ctx, mediaStart, segment); err != nil {
+		return err
 	}
-
+	sp.totalSegmentsAdded++
 	return nil
 }
 
@@ -360,6 +358,9 @@ func (sp *SegmentProcessor) addSegment(ctx context.Context, runningTime float64,
 		return err
 	}
 
+	sp.mux.Lock()
+	defer sp.mux.Unlock()
+
 	if isEndOfTimeline(sp.horizon, runningTime) {
 		return ErrEndOfTimeline
 	}
@@ -372,63 +373,56 @@ func (sp *SegmentProcessor) addSegment(ctx context.Context, runningTime float64,
 		return nil
 	}
 
-	if runningTime <= (float64(time.Now().Unix())+float64(utils.GetPlannerSettings().WindowBufferSeconds)) || (sp.totalSegmentsAdded > 0 && sp.totalSegmentsAdded%int64(utils.GetPlannerSettings().WindowItemSize) == 0) {
-		sp.synchSegmentIntoRedis(ctx, false)
-	}
+	sp.synchSegmentIntoRedis(ctx, false)
+
 	return nil
 }
+
+const KEPT_ITEMS = 5
 
 func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllItem bool) {
 	if err := ctx.Err(); err != nil {
 		return
 	}
-
 	sizeItems := len(sp.planner.processingSegments)
-	if sizeItems == 0 {
-		return // Guard against empty slice panics
+	if !synchAllItem && sizeItems <= KEPT_ITEMS*2 {
+		return
 	}
 
-	// Determine items to process based on synchAllItem flag
+	// Process ALL items currently in the buffer
 	itemsToProcess := sp.planner.processingSegments
-	if !synchAllItem && sizeItems > 5 {
-		itemsToProcess = sp.planner.processingSegments[sizeItems-5:]
+
+	if !synchAllItem {
+		itemsToProcess = sp.planner.processingSegments[:sizeItems-KEPT_ITEMS]
 	}
+
+	pipe := sp.pipe.Pipeline()
 
 	for _, segment := range itemsToProcess {
-		_, err := json.Marshal(segment)
+		member, err := json.Marshal(segment)
 		if err != nil {
 			log.Printf("[Planner] json.Marshal(SegmentItem) failed: %v", err)
 			continue
 		}
 
-		if utils.IsDev() {
-			t := time.Unix(int64(segment.RunningTime), 0)
-
-			sp.logger.VInfo("[Sequence %d] %s IsAd=%t ptsOffset=%f %s",
-				segment.Sequence, t.Format(time.TimeOnly), segment.IsAd, segment.PtsOffset, segment.TimeText)
-		}
-
-		sp.pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
-			Score: float64(segment.RunningTime),
+		pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
+			Score:  float64(segment.RunningTime),
+			Member: string(member),
 		})
 	}
 
-	processCount := len(itemsToProcess)
-	sp.logger.VInfo(`synched data from %s to %s with total=%d`,
-		itemsToProcess[0].TimeText,
-		itemsToProcess[processCount-1].TimeText,
-		processCount,
-	)
+	fmt.Printf("synched redis %d to %d\n", itemsToProcess[0].Sequence, itemsToProcess[len(itemsToProcess)-1].Sequence)
 
-	if _, err := sp.pipe.Exec(ctx); err != nil {
+	if _, err := pipe.Exec(ctx); err != nil {
 		log.Printf("[Planner] synchSegmentIntoRedis Exec error: %v", err)
+		return
 	}
 
-	// Retain last 5 items in memory if synchAllItem is false, otherwise clear all
-	if !synchAllItem && sizeItems > 5 {
-		sp.planner.processingSegments = sp.planner.processingSegments[sizeItems-5:]
-	} else if synchAllItem {
+	// Retain only the last 5 items in memory for the next run (if not syncing all)
+	if synchAllItem {
 		sp.planner.processingSegments = nil
+	} else {
+		sp.planner.processingSegments = sp.planner.processingSegments[sizeItems-KEPT_ITEMS:]
 	}
 }
 

@@ -47,9 +47,9 @@ func main() {
 
 	espxClient := api.NewESXClient(settings.EspxURL)
 	rcloneSvc := storage.NewRcloneService()
-	plannerSvc := planner.NewPlanner(db, rdb, espxClient, rcloneSvc)
 
 	mainCtx := context.Background()
+	plannerSvc := planner.NewPlanner(mainCtx, db, rdb, espxClient, rcloneSvc)
 
 	prepareEnv(logger, mainCtx, db, rdb)
 

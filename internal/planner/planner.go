@@ -8,6 +8,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -29,6 +30,7 @@ type LastSegmentState struct {
 }
 
 type Planner struct {
+	ctx        context.Context
 	db         *gorm.DB
 	rdb        *redis.Client
 	espx       *api.ESClient
@@ -41,8 +43,9 @@ type Planner struct {
 	logger               *utils.Logger
 }
 
-func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESClient, rclone *storage.RcloneService) *Planner {
+func NewPlanner(ctx context.Context, db *gorm.DB, rdb *redis.Client, espx *api.ESClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
+		ctx:        ctx,
 		db:         db,
 		rdb:        rdb,
 		espx:       espx,
@@ -112,6 +115,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		horizon:         horizon,
 		logger:          logger,
 		useEpgAds:       channel.UseAdEpgAds,
+		mux:             sync.Mutex{},
 	}
 
 	var adsStreamIds []string
@@ -154,6 +158,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		if needLoadAds {
 			processor.adSegments = nil
 			needLoadAds = false
+			adsStreamIds = []string{}
 		}
 	}
 
@@ -168,6 +173,24 @@ func (p *Planner) loadAdSegments(streamIds []string) ([]models.SegmentItem, erro
 	adSegments := make([]models.SegmentItem, 0)
 
 	for _, adsStreamId := range streamIds {
+		// Try to get cached segments from Redis
+		cacheKey := fmt.Sprintf("ad_segments:%s", adsStreamId)
+		cached, err := p.rdb.Get(p.ctx, cacheKey).Result()
+		if err == nil && cached != "" {
+			var cachedSegments []models.SegmentItem
+			if err := json.Unmarshal([]byte(cached), &cachedSegments); err == nil {
+				adSegments = append(adSegments, cachedSegments...)
+				continue
+			}
+			// If unmarshal fails, fall through to recompute
+		} else if err != nil && err != redis.Nil {
+			// Log unexpected Redis errors but continue to compute
+			// log.Printf("redis error for %s: %v", adsStreamId, err)
+		}
+
+		// Cache miss: compute segments
+		var adsStreamTs []models.SegmentItem
+
 		adsMasterM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.bucketName, adsStreamId)
 
 		renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
@@ -206,7 +229,7 @@ func (p *Planner) loadAdSegments(streamIds []string) ([]models.SegmentItem, erro
 				if currentDuration == 0 {
 					currentDuration = mEnd - mStart
 				}
-				adSegments = append(adSegments, models.SegmentItem{
+				adsStreamTs = append(adsStreamTs, models.SegmentItem{
 					Duration:    currentDuration,
 					StoragePath: fmt.Sprintf("%s/%s/%s/%s", p.bucketName, adsStreamId, "{rendition}", line),
 					PtsStart:    ptsStart,
@@ -218,6 +241,14 @@ func (p *Planner) loadAdSegments(streamIds []string) ([]models.SegmentItem, erro
 				currentDuration = 0
 			}
 		}
+
+		// Store computed segments in Redis cache
+		if data, err := json.Marshal(adsStreamTs); err == nil {
+			// Set with expiration (e.g., 1 hour). Adjust TTL as needed.
+			p.rdb.Set(p.ctx, cacheKey, data, time.Hour)
+		}
+
+		adSegments = append(adSegments, adsStreamTs...)
 	}
 
 	return adSegments, nil
