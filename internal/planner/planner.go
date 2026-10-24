@@ -77,7 +77,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	callStartedAt := time.Now()
 
-	loc := utils.GetTimeLocation(channel.ContentTimezone)
+	loc := utils.GetLoc()
 	processDate := utils.StartOfDay(callStartedAt).In(loc)
 	if parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD, dateStr, loc); err == nil {
 		processDate = utils.StartOfDay(parsed)

@@ -70,7 +70,7 @@ func main() {
 		cancelMap := make(map[string]context.CancelFunc)
 
 		processRunner := func(chCtx context.Context, ch models.PlayoutChannel) {
-			location := utils.GetTimeLocation(ch.ContentTimezone)
+			location := utils.GetLoc()
 			nowInCh := time.Now().In(location)
 			today := utils.StartOfDay(nowInCh)
 			endOfDay := utils.EndOfDay(nowInCh)
@@ -249,7 +249,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 		return
 	}
 
-	loc := utils.GetTimeLocation(ch.ContentTimezone)
+	loc := utils.GetLoc()
 	day := date.In(loc)
 	dayStart := utils.StartOfDay(day)
 	dayEnd := utils.EndOfDay(day)

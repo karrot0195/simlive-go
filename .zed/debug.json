@@ -1,0 +1,38 @@
+[
+  {
+    "label": "Start Planner",
+    "adapter": "Delve",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/cmd/planner",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "env": {
+      // Manually fill in the variables from your .env file here, for example:
+      // "DATABASE_URL": "postgres://...",
+      // "PORT": "8080"
+    }
+  },
+  {
+    "label": "Start Engines",
+    "adapter": "Delve",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/cmd/engines",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "env": {}
+  },
+  {
+    "label": "Start API",
+    "adapter": "Delve",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/cmd/api",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "env": {}
+  },
+  {
+    "label": "Start STE35",
+    "adapter": "Delve",
+    "request": "launch",
+    "program": "${ZED_WORKTREE_ROOT}/cmd/scte35-verifier",
+    "cwd": "${ZED_WORKTREE_ROOT}",
+    "env": {}
+  }
+]

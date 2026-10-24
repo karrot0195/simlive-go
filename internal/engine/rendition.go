@@ -60,10 +60,10 @@ func pickRenditionURIs(metas []RenditionMeta) []string {
 }
 
 func sortRungsByLadder(metas []RenditionMeta) []RenditionMeta {
-	order := map[string]int{
-		"360p":  0,
-		"720p":  1,
-		"1080p": 2,
+	metaEnables := "360p,720p"
+	order := map[string]int{}
+	for i, rung := range strings.Split(metaEnables, ",") {
+		order[strings.TrimSpace(rung)] = i
 	}
 	out := make([]RenditionMeta, len(metas))
 	copy(out, metas)

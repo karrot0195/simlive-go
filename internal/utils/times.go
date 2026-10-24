@@ -37,14 +37,3 @@ func StartOfDay(t time.Time) time.Time {
 }
 
 // GetTimeLocation returns the IANA *time.Location for tzStr, or UTC if the IANA name
-// is not recognised. Used so the planner can compute "today"/"tomorrow" in the
-// channel's content timezone (e.g. "Asia/Saigon") rather than the server's zone.
-func GetTimeLocation(tzStr string) *time.Location {
-	if tzStr == "" {
-		return time.UTC
-	}
-	if loc, err := time.LoadLocation(tzStr); err == nil {
-		return loc
-	}
-	return time.UTC
-}
