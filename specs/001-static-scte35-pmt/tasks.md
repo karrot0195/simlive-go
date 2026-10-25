@@ -111,7 +111,7 @@ No foundational tasks required — the change is a small addition to the existin
 
 - [x] T008 Update `internal/utils/tsduck.go` comments to document the PID normalization decision (why `0x1F00` was chosen over `0x30`) and the idempotency guarantee. Reference `specs/001-static-scte35-pmt/research.md` Decision 2 for rationale.
 
-- [ ] T009 (Verification against partner request) Run all scenarios in `.agents/skills/scte35-pmt-verify/SKILL.md` and produce `specs/001-static-scte35-pmt/verification-report.md`. Map each AC (AC-001..AC-007) to evidence. Verdict must be PASS for request to be marked done.
+- [x] T009 (Verification against partner request) Run all scenarios in `.agents/skills/scte35-pmt-verify/SKILL.md` and produce `specs/001-static-scte35-pmt/verification-report.md`. Map each AC (AC-001..AC-007) to evidence. Verdict must be PASS for request to be marked done.
 
 ---
 

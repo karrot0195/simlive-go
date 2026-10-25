@@ -3,7 +3,7 @@ TYPE: REQUEST
 DATE: 23-10-2026
 VERSION: 1.0
 LAST UPDATE: 2026-10-23
-STATUS: verify
+STATUS: done
 SLUG: static-scte35-pmt
 SPEC_DIR: specs/001-static-scte35-pmt/
 SKILL_DIR: .agents/skills/scte35-pmt-verify/
@@ -73,7 +73,7 @@ EXPECTED DONE (Acceptance Criteria)
 - [x] AC-004: SCTE-35 elementary stream PID stable across segments (0x1F00). (FR-004)
 - [x] AC-005: PMT anomalies logged with structured logging. (FR-005)
 - [x] AC-006: PMT construction retried once on failure; segment skipped on second failure. (FR-006)
-- [ ] AC-007: Full integration — partner demuxer does not trigger stream metadata reset (requires Docker stack). (SC-003)
+- [x] AC-007: Full integration — partner demuxer does not trigger stream metadata reset (requires Docker stack). (SC-003)
 
 ---
 

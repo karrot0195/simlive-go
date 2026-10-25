@@ -25,6 +25,7 @@ specs/      Feature specifications
 - `pmt-verify` — watches downloaded segments and verifies PMT/SCTE-35 consistency.
 - `scte35-check` — HTTP-based SCTE-35/PMT verifier for a live playlist.
 - `hls-watch` — monitors an HLS playlist, analyzes segments (PTS, SCTE-35, PMT).
+- `testredis` — Redis test/debug utility.
 
 ## Requirements
 
