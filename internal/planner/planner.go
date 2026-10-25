@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -64,9 +63,9 @@ func (p *Planner) CleanChannelData(ctx context.Context, channelID string) {
 	failKey := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
 
 	if err := p.rdb.Del(ctx, timelineKey, cursorKey, failKey).Err(); err != nil {
-		log.Printf("[Planner] CleanChannelData(%s) error: %v", channelID, err)
+		p.logger.Error("[Planner] CleanChannelData error", "channel", channelID, "error", err)
 	} else {
-		log.Printf("[Planner] Cleaned up all Redis data for channel=%s", channelID)
+		p.logger.Info("[Planner] Cleaned up all Redis data", "channel", channelID)
 	}
 }
 
@@ -290,7 +289,7 @@ func (p *Planner) incrFailureCounter(ctx context.Context, channelID string) int6
 	key := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
 	n, err := p.rdb.Incr(ctx, key).Result()
 	if err != nil {
-		log.Printf("[Planner] INCR(%s) error: %v", key, err)
+		p.logger.Info("[Planner] INCR(%s) error: %v", key, err)
 		return 0
 	}
 	p.rdb.Expire(ctx, key, 24*time.Hour)
@@ -300,7 +299,7 @@ func (p *Planner) incrFailureCounter(ctx context.Context, channelID string) int6
 func (p *Planner) resetFailureCounter(ctx context.Context, channelID string) {
 	key := fmt.Sprintf(utils.GetPlannerSettings().FailureCounterKey, channelID)
 	if err := p.rdb.Del(ctx, key).Err(); err != nil {
-		log.Printf("[Planner] DEL(%s) error: %v", key, err)
+		p.logger.Info("[Planner] DEL(%s) error: %v", key, err)
 	}
 }
 
@@ -315,7 +314,7 @@ func (p *Planner) markChannelInactive(channelID string) error {
 		return res.Error
 	}
 	if res.RowsAffected > 0 {
-		log.Printf("[Planner] channel=%s marked INACTIVE after %d consecutive failures",
+		p.logger.Info("[Planner] channel=%s marked INACTIVE after %d consecutive failures",
 			channelID, utils.GetPlannerSettings().FailureInactivateThreshold)
 	}
 	return nil
@@ -332,7 +331,7 @@ func (p *Planner) markChannelLive(channelID string) error {
 		return res.Error
 	}
 	if res.RowsAffected > 0 {
-		log.Printf("[Planner] channel=%s marked LIVE (timeline data in Redis)", channelID)
+		p.logger.Info("channel marked LIVE", "channel", channelID)
 	}
 	return nil
 }
@@ -350,14 +349,14 @@ func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID s
 	if err == nil {
 		p.resetFailureCounter(ctx, channelID)
 		if dbErr := p.markChannelLive(channelID); dbErr != nil {
-			log.Printf("[Planner] markChannelLive(%s) error: %v", channelID, dbErr)
+			p.logger.Info("[Planner] markChannelLive(%s) error: %v", channelID, dbErr)
 		}
 		return
 	}
 	count := p.incrFailureCounter(ctx, channelID)
 	if count >= utils.GetPlannerSettings().FailureInactivateThreshold {
 		if dbErr := p.markChannelInactive(channelID); dbErr != nil {
-			log.Printf("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)
+			p.logger.Info("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)
 		}
 	}
 }
@@ -368,7 +367,7 @@ func (p *Planner) ResetFailureCounterForChannel(ctx context.Context, channelID s
 
 func (p *Planner) MarkChannelLiveForChannel(ctx context.Context, channelID string) {
 	if err := p.markChannelLive(channelID); err != nil {
-		log.Printf("[Planner] MarkChannelLiveForChannel(%s) error: %v", channelID, err)
+		p.logger.Info("[Planner] MarkChannelLiveForChannel(%s) error: %v", channelID, err)
 	}
 }
 
@@ -383,7 +382,7 @@ func (p *Planner) CleanupOldSegments(ctx context.Context, channelID string) {
 	cutoff := fmt.Sprintf("%d", time.Now().Unix()-utils.GetPlannerSettings().RetentionSeconds)
 	key := timelineKeyFor(channelID)
 	if _, err := p.rdb.ZRemRangeByScore(ctx, key, "-inf", cutoff).Result(); err != nil {
-		log.Printf("[Planner] ZREMRANGEBYSCORE(%s, -inf, %s) error: %v", key, cutoff, err)
+		p.logger.Error("ZREMRANGEBYSCORE failed", "key", key, "cutoff", cutoff, "error", err)
 	}
 }
 
@@ -416,8 +415,7 @@ func (p *Planner) ProcessEPGToTimelineWithRetry(ctx context.Context, ch models.P
 		if delay > maxDelay {
 			delay = maxDelay
 		}
-		log.Printf("[Planner] channel=%s date=%s attempt=%d/%d failed: %v (sleeping %s)",
-			ch.ID, dateStr, i, attempts, lastErr, delay)
+		p.logger.Info("plan attempt failed", "channel", ch.ID, "date", dateStr, "attempt", i, "of", attempts, "error", lastErr, "sleep", delay)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

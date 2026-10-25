@@ -38,11 +38,11 @@ func main() {
 	flag.Parse()
 	key := "simlive:timeline:" + *channelId
 
-	if channelId == nil {
+	if *channelId == "" {
 		log.Fatal("channelId is required")
 	}
 
-	if redisAddr == nil {
+	if *redisAddr == "" {
 		log.Fatal("redisAddr is required")
 	}
 
@@ -73,6 +73,7 @@ func main() {
 	fmt.Printf("Total entries: %d (local timezone: %s)\n\n", len(results), zoneName)
 
 	// Parse each entry and display date + local time based on running_time
+	var prev *TimelineEntry
 	for _, raw := range results {
 		var entry TimelineEntry
 		if err := json.Unmarshal([]byte(raw), &entry); err != nil {
@@ -85,6 +86,15 @@ func main() {
 		nsec := int64((entry.RunningTime - float64(sec)) * 1e9)
 		t := time.Unix(sec, nsec) // no .UTC() → uses local timezone
 
+		// Warn if gap from previous entry is >= 10s (based on running_time)
+		if prev != nil {
+			gap := entry.RunningTime - prev.RunningTime
+			if gap >= 10.0 {
+				fmt.Printf("WARNING: gap of %.3fs between sequence %d and %d\n",
+					gap, prev.Sequence, entry.Sequence)
+			}
+		}
+
 		// Print as YYYY-MM-DD HH:MM:SS <TZ>  sequence=XXXXX
 		fmt.Printf("%s %s  sequence=%d %s\n",
 			t.Format("2006-01-02 15:04:05"),
@@ -92,6 +102,8 @@ func main() {
 			entry.Sequence,
 			entry.IsAd,
 		)
+
+		prev = &entry
 	}
 }
 

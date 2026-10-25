@@ -6,3 +6,4 @@ tmp/
 vendor/
 *.out
 *.log
+bin/

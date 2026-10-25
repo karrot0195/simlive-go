@@ -15,8 +15,8 @@
 
 ### Decision 2: SCTE-35 PID value
 
-- **Decision**: Use `0x1F00` for VOD segments (matching the existing `ConfigurePmtForAdsTs`), and keep `0x30` for segments with splice events (matching existing `InjectSpliceEvent`). The PID must be stable across all segments of a stream per FR-004.
-- **Rationale**: The existing code already uses two different PIDs (`0x1F00` in `ConfigurePmtForAdsTs`, `0x30` in `InjectSpliceEvent`). To keep PMT content identical across all segments (FR-002), we must pick one PID and use it consistently. `0x1F00` is the safer choice since it's already used for ad-only segments without splice events — the exact scenario we're extending to VOD.
+- **Decision**: Use `0x1F00` for ALL segments — VOD, ad, and splice-injected — by normalizing the `SCTE35_PID` constant from `0x30` to `0x1F00` (T002). `InjectSpliceEvent` now passes `SCTE35_PID` instead of a hard-coded PID, so every path declares the same SCTE-35 PID.
+- **Rationale**: The existing code used two different PIDs (`0x1F00` in `ConfigurePmtForAdsTs`, `0x30` in `InjectSpliceEvent`). To keep PMT content identical across all segments (FR-002), one PID must be used consistently. `0x1F00` is the safer choice since it is already used for ad-only segments — the exact scenario extended to VOD — avoiding regression on existing ad segment behavior.
 - **Alternatives considered**:
   1. **Use `0x30` everywhere**: Would require changing `ConfigurePmtForAdsTs` to use `0x30`, risking regression on existing ad segment behavior.
   2. **Make PID configurable**: Over-engineering for now; YAGNI.
@@ -42,4 +42,4 @@
 
 - **Idempotency**: `tsp -P pmt --add-pid` is idempotent — running it on a segment that already has the SCTE-35 stream in its PMT produces identical output. This is critical for correctness.
 - **Temporary file cleanup**: Follow the existing pattern in `applySliceEvents` — use a `.pmt.tmp` suffix, rename on success, clean up on failure.
-- **Logging**: Use `logger.VError` for PMT configuration failures (matching existing patterns in `engine.go`). Include channelID and segment sequence in log messages.
+- **Logging**: Use `utils.GetLogger(...)` with structured key-value fields (`channel`, `seq`, `dest`, `error`) for PMT configuration failures, matching the project's slog conventions. Include channelID, segment sequence, and dest in log messages.

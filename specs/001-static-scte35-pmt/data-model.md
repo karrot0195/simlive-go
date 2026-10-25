@@ -38,17 +38,14 @@ The PMT for each segment transitions through these states during preparation:
 ```
 Source Segment (no SCTE-35 in PMT)
     │
-    ├── Ad segment with splice events
-    │   └── InjectSpliceEvent() → PMT has SCTE-35 (PID 0x30) + splice command
+    ├── Any segment with splice events
+    │   └── InjectSpliceEvent() → PMT has SCTE-35 (PID 0x1F00) + splice command
     │
     ├── Ad segment without splice events
     │   └── ConfigurePmtForAdsTs() → PMT has SCTE-35 (PID 0x1F00), no splice command
     │
-    ├── VOD segment with splice events (pre-roll)
-    │   └── InjectSpliceEvent() → PMT has SCTE-35 (PID 0x30) + splice command
-    │
-    └── VOD segment without splice events ← THE GAP
-        └── (nothing) → PMT has NO SCTE-35 stream ❌
+    └── VOD segment without splice events ← THE GAP (fixed)
+        └── ConfigurePmtForVodTs() → PMT has SCTE-35 (PID 0x1F00), no splice command ✅
 ```
 
 **Target state** (after fix):
@@ -59,7 +56,10 @@ Source Segment (no SCTE-35 in PMT)
     ├── Any segment with splice events
     │   └── InjectSpliceEvent() → PMT has SCTE-35 (PID 0x1F00) + splice command
     │
-    └── Any segment without splice events
+    ├── Ad segment without splice events
+    │   └── ConfigurePmtForAdsTs() → PMT has SCTE-35 (PID 0x1F00), no splice command
+    │
+    └── VOD segment without splice events
         └── ConfigurePmtForVodTs() → PMT has SCTE-35 (PID 0x1F00), no splice command ✅
 ```
 

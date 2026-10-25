@@ -1,0 +1,93 @@
+schema_version: "1.0"
+workflow:
+  id: "feature-delivery"
+  name: "Feature Delivery Flow"
+  version: "1.0.0"
+  author: "simlive"
+  description: "Intake → specify → clarify → plan → tasks → implement → analyze → review → verify, with gates, optional clarify, and resume. Wraps the speckit Full SDD Cycle with feature-delivery-specific intake and final compare-all verification."
+
+requires:
+  speckit_version: ">=0.8.5"
+  integrations:
+    any:
+      - "agy"
+      - "claude"
+      - "copilot"
+      - "gemini"
+      - "opencode"
+
+inputs:
+  request_file:
+    type: string
+    required: true
+    prompt: "Path to the request file under requests/"
+  integration:
+    type: string
+    default: "auto"
+    prompt: "Integration to use (e.g. claude, copilot, gemini; 'auto' uses the project's initialized integration)"
+  resume_from:
+    type: string
+    default: "intake"
+    prompt: "Step to resume from (intake | specify | clarify | plan | tasks | implement | analyze | review | verify)"
+
+steps:
+  - id: intake
+    type: manual
+    description: "Ensure request file exists in standard format; scaffold if needed; create verification skill stub; add to index."
+    gate: true
+    message: "Confirm intake summary before specifying."
+
+  - id: specify
+    command: speckit.specify
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+    gate: true
+    message: "Review the generated spec before planning."
+
+  - id: clarify
+    command: speckit.clarify
+    integration: "{{ inputs.integration }}"
+    optional: true
+    condition: "open_questions_pending"
+    message: "Resolve open questions (optional if none pending)."
+
+  - id: plan
+    command: speckit.plan
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+    gate: true
+    message: "Review the plan before generating tasks."
+
+  - id: tasks
+    command: speckit.tasks
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+    gate: true
+    message: "Review the task list before implementation."
+
+  - id: implement
+    command: speckit.implement
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.spec }}"
+
+  - id: analyze
+    command: speckit.analyze
+    integration: "{{ inputs.integration }}"
+    gate: true
+    message: "Review analysis findings before code review."
+
+  - id: review
+    type: manual
+    description: "Code review against constitution + spec acceptance scenarios."
+    gate: true
+    message: "Approve code review before final verification."
+
+  - id: verify
+    type: manual
+    description: "Run per-request verification skill; compare implementation vs partner request (every AC); produce verification-report.md. Must pass."
+    gate: true
+    message: "Verification report verdict must be PASS and all ACs checked before marking done."

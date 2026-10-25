@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"simlive/internal/utils"
 )
 
 const DefaultRendition = "360p"
@@ -59,16 +61,38 @@ func pickRenditionURIs(metas []RenditionMeta) []string {
 	return out
 }
 
-func sortRungsByLadder(metas []RenditionMeta) []RenditionMeta {
-	metaEnables := "360p,720p"
-	order := map[string]int{}
-	for i, rung := range strings.Split(metaEnables, ",") {
-		order[strings.TrimSpace(rung)] = i
+func allowedRenditionLabels() []string {
+	raw := utils.GetEnv("ACTIVE_RENDITIONS", "360,720,1080")
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for i, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p+"p")
+		_ = i
 	}
-	out := make([]RenditionMeta, len(metas))
-	copy(out, metas)
+	if len(out) == 0 {
+		out = []string{"360p", "720p", "1080p"}
+	}
+	return out
+}
+
+func sortRungsByLadder(metas []RenditionMeta) []RenditionMeta {
+	order := map[string]int{}
+	for i, rung := range allowedRenditionLabels() {
+		order[rung] = i
+	}
+
+	out := make([]RenditionMeta, 0, len(metas))
+	for _, m := range metas {
+		if _, ok := order[m.Rendition]; ok {
+			out = append(out, m)
+		}
+	}
 	sort.SliceStable(out, func(i, j int) bool {
-		return ladderRank(out[i].Rendition, order) < ladderRank(out[j].Rendition, order)
+		return order[out[i].Rendition] < order[out[j].Rendition]
 	})
 	return out
 }

@@ -54,7 +54,7 @@ else:
     ConfigurePmtForVodTs()  // NEW — adds SCTE-35 to PMT for plain VOD segments
 ```
 
-**Error handling**: On `ConfigurePmtForVodTs` failure, retry once. If still fails, log the error and return error (segment will be skipped upstream).
+**Error handling**: On `ConfigurePmtForVodTs`, `ConfigurePmtForAdsTs`, or `InjectSpliceEvent` failure, retry once. If still fails, log the error (with channelID, segment sequence, and dest) and return error (segment will be skipped upstream).
 
 ---
 

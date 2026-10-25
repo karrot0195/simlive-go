@@ -62,7 +62,7 @@ As a downstream partner, when the PMT content does change for any reason, the ve
 ### Functional Requirements
 
 - **FR-001**: System MUST declare the SCTE-35 elementary stream (stream_type 0x86) in the PMT for every segment, regardless of whether that segment contains SCTE-35 packets.
-- **FR-002**: System MUST keep the PMT content identical across all segments of the same stream (same set of elementary streams, same stream_type values, same ES PIDs). The PMT is constructed once at stream initialization and reused for all segments.
+- **FR-002**: System MUST keep the PMT content identical across all segments of the same stream (same set of elementary streams, same stream_type values, same ES PIDs). Each segment is configured from its source through exactly one PMT-configuration path (VOD, ad, or splice-injected), all of which declare the same SCTE-35 stream (PID 0x1F00, stream_type 0x86, registration 0x43554549), producing byte-identical PMT content.
 - **FR-003**: System MUST increment the PMT version_number by 1 modulo 32 whenever the PMT content changes for any reason (e.g., elementary stream added, removed, or PID reassigned).
 - **FR-004**: System MUST NOT change the SCTE-35 elementary stream PID between segments unless the version_number is incremented.
 - **FR-005**: System MUST log PMT anomalies — including unexpected content changes mid-stream, version_number mismatches, and PMT construction failures — using the project's structured logging conventions.
@@ -87,16 +87,24 @@ As a downstream partner, when the PMT content does change for any reason, the ve
 
 ### Session 2026-10-23
 
-- Q: When is the PMT for a segment constructed — once at stream initialization or freshly per segment? → A: At stream initialization — PMT is built once when the stream starts and reused for all segments.
+- Q: When is the PMT for a segment constructed — once at stream initialization or freshly per segment? → A: Per segment, from source, via one of three idempotent `tsp -P pmt` paths (VOD, ad, splice-injected), all declaring the same SCTE-35 stream, so PMT content is identical across segments.
 - Q: Should PMT construction and consistency events be logged with structured logging? → A: Log only anomalies — PMT content changes mid-stream, version_number mismatches, construction failures.
 - Q: Which parts of the streaming pipeline are explicitly out of scope for this change? → A: Only the PMT generation in the segment builder — no changes to SCTE-35 packet insertion, ad logic, or playlist generation.
 - Q: At what scale should the fix be validated during testing? → A: Multi-channel, multi-rendition (360p/720p/1080p) — full ladder as defined in the constitution.
 - Q: What should happen if PMT construction fails for a segment? → A: Retry PMT construction; if still fails, skip the segment.
 
+## Links
+
+- Request: [231026-partner-feedback-number-version-pmt-static.md](../../requests/231026-partner-feedback-number-version-pmt-static.md)
+- Plan: [plan.md](plan.md)
+- Tasks: [tasks.md](tasks.md)
+- Verification Skill: [scte35-pmt-verify/SKILL.md](../../.agents/skills/scte35-pmt-verify/SKILL.md)
+- Verification Report: [verification-report.md](verification-report.md) (pending)
+
 ## Assumptions
 
 - The streaming system generates PMTs as part of HLS segment generation for MPEG-TS streams.
-- The PMT is constructed once at stream initialization and reused for all segments, rather than being rebuilt per segment.
+- The PMT is configured per segment from source through an idempotent `tsp -P pmt` step, rather than being built once at stream initialization, so PMT content stays identical across segments.
 - The partner's demuxer treats any change in PMT content (not just version_number) as a signal to reset stream metadata.
 - The SCTE-35 elementary stream PID is known and stable at stream initialization time.
 - ISO/IEC 13818-1 §2.4.4.9 is the authoritative standard for PMT version_number behavior.

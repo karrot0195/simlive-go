@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(go:*)",
+      "Shell(cd:*)",
+      "Shell(sed:*)",
+      "Shell(/tmp/pmt-verify:*)",
+      "Shell(cd /home/kai/Workspaces/espx/simlive-go && ls config/bin/ 2>/dev/null; echo \"---docker---\"; docker ps 2>/dev/null | head; echo \"---redis---\"; redis-cli ping 2>/dev/null || echo \"no redis-cli/redis\")",
+      "Shell(cd /home/kai/Workspaces/espx/simlive-go && cat .env 2>/dev/null | head -30; echo \"---procs---\"; pgrep -a redis 2>/dev/null; pgrep -a postgres 2>/dev/null; echo \"---listening ports---\"; ss -tlnp 2>/dev/null | grep -E '5432|6379|8080' || echo \"none\")",
+      "Shell(nc -w2 localhost 6371 2 > /dev/null)",
+      "Shell(nc -w2 localhost 6379 2 > /dev/null)",
+      "Shell(make:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

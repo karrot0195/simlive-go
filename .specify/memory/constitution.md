@@ -40,6 +40,7 @@ Start simple. The rendition ladder is fixed (360p, 720p, 1080p). The segment cac
 - **Testing**: Unit tests for pure logic (PTS math, m3u8 parsing, segment item construction). Integration tests for planner→engine→API flow require the full stack.
 - **Code review**: All PRs must verify constitution compliance (schema-first, data-plane separation, streaming-first). Complexity must be justified.
 - **Documentation**: Architecture decisions in `wiki/arch/`; task specs in `wiki/tasks/`; workstream logs in `wiki/workstreams/`. The `projects/simlive/` wiki is the living reference — update it when behavior changes.
+- **Partner Request Flow**: Partner/raw requests follow the standardized flow in `.agents/skills/feature-delivery-flow/SKILL.md`. Intake format: `.specify/templates/request-template.md`. Each request gets a verification skill under `.agents/skills/<slug>-verify/`. Status tracked in the request file; resume via `CURRENT_FLOW`. A request is `done` only when its verification report verdict is PASS.
 
 ## Governance
 

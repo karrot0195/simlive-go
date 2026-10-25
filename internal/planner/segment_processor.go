@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"path"
 	"simlive/internal/configs"
 	customerrors "simlive/internal/custom-errors"
@@ -382,24 +381,21 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 		return // Guard against empty slice panics
 	}
 
-	// Determine items to process based on synchAllItem flag
+	// Sync every accumulated segment to Redis so none are dropped between
+	// intermediate flushes. Only the in-memory retention below is limited.
 	itemsToProcess := sp.planner.processingSegments
-	if !synchAllItem && sizeItems > 5 {
-		itemsToProcess = sp.planner.processingSegments[sizeItems-5:]
-	}
 
 	for _, segment := range itemsToProcess {
 		member, err := json.Marshal(segment)
 		if err != nil {
-			log.Printf("[Planner] json.Marshal(SegmentItem) failed: %v", err)
+			sp.logger.Error("[Planner] json.Marshal(SegmentItem) failed", "error", err)
 			continue
 		}
 
 		if utils.IsDev() {
 			t := time.Unix(int64(segment.RunningTime), 0)
 
-			sp.logger.VInfo("[Sequence %d] %s IsAd=%t ptsOffset=%f %s",
-				segment.Sequence, t.Format(time.TimeOnly), segment.IsAd, segment.PtsOffset, segment.TimeText)
+			sp.logger.Info("[Sequence]", "seq", segment.Sequence, "time", t.Format(time.TimeOnly), "isAd", segment.IsAd, "ptsOffset", segment.PtsOffset, "timeText", segment.TimeText)
 		}
 
 		sp.pipe.ZAdd(ctx, sp.timelineKey(), redis.Z{
@@ -409,14 +405,10 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 	}
 
 	processCount := len(itemsToProcess)
-	sp.logger.VInfo(`synched data from %s to %s with total=%d`,
-		itemsToProcess[0].TimeText,
-		itemsToProcess[processCount-1].TimeText,
-		processCount,
-	)
+	sp.logger.Info("synched data", "from", itemsToProcess[0].TimeText, "to", itemsToProcess[processCount-1].TimeText, "total", processCount)
 
 	if _, err := sp.pipe.Exec(ctx); err != nil {
-		log.Printf("[Planner] synchSegmentIntoRedis Exec error: %v", err)
+		sp.logger.Error("[Planner] synchSegmentIntoRedis Exec error", "error", err)
 	}
 
 	// Retain last 5 items in memory if synchAllItem is false, otherwise clear all

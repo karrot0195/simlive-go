@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math"
 	"os"
 	"os/exec"
@@ -102,7 +101,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 	for _, ren := range RENDITIONMAP {
 		renDIR := filepath.Join(e.tmpDir, channelID, ren)
 		if err := os.MkdirAll(renDIR, 0755); err != nil {
-			log.Printf("[%s] mkdir rung dir %s error: %v", channelID, renDIR, err)
+			logger.Error("mkdir rung dir error", "channel", channelID, "dir", renDIR, "error", err)
 			return
 		}
 	}
@@ -124,19 +123,20 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			allSegs := e.fetchTimeline(ctx, channelID, nowUnix)
 			if len(allSegs) == 0 {
 				logger.Warn("allSegs are empty")
-				e.generateMasterPlaylist(ctx, channelID, e.activeRungMeta(ctx, channelID))
+				e.generateMasterPlaylist(ctx, logger, channelID, e.activeRungMeta(ctx, channelID))
 				continue
 			}
 
 			candidateSegs := e.selectCandidateWindow(allSegs, nowFloat)
 			if len(candidateSegs) == 0 {
 				logger.Warn("candidateSegs are empty")
-				e.generateMasterPlaylist(ctx, channelID, e.activeRungMeta(ctx, channelID))
+				e.generateMasterPlaylist(ctx, logger, channelID, e.activeRungMeta(ctx, channelID))
 				continue
 			}
 
 			// skip if the same segment is already being processed
 			if currSeg.Sequence == candidateSegs[0].Sequence {
+				logger.Warn("same segment is already being processed", "sequence", currSeg.Sequence, "time", currSeg.TimeText)
 				continue
 			}
 
@@ -170,18 +170,22 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 			// behind := lookBehindSegment(allSegs, candidateSegs[0])
 			for i, rend := range rendBuckets {
 				if rend != "" {
-					e.generateRenditionPlaylist(ctx, channelID, RENDITIONMAP[i], candidateSegs)
+					e.generateRenditionPlaylist(ctx, logger, channelID, RENDITIONMAP[i], candidateSegs)
 				}
 			}
 
-			e.generateMasterPlaylist(ctx, channelID, meta)
+			e.generateMasterPlaylist(ctx, logger, channelID, meta)
 
 			liveSeg := int64(-1)
 			if len(candidateSegs) > 0 {
 				liveSeg = candidateSegs[0].Sequence
 			}
-			logger.Info(fmt.Sprintf("[INFO] channel=%s live_segment=%d download_ahead=%d active_rungs=%d segments_in_window=%d",
-				channelID, liveSeg, e.downloadAhead, len(meta), len(candidateSegs)))
+			logger.Info("channel playout",
+				"channel", channelID,
+				"live_segment", liveSeg,
+				"download_ahead", e.downloadAhead,
+				"active_rungs", len(meta),
+				"segments_in_window", len(candidateSegs))
 		}
 	}
 }
@@ -390,7 +394,20 @@ func (e *Engine) activeRungMeta(ctx context.Context, channelID string) []Renditi
 	if meta, err := e.loadRenditionMeta(ctx, channelID); err == nil && len(meta) > 0 {
 		return sortRungsByLadder(meta)
 	}
-	return ActiveLadder
+	allowed := map[string]bool{}
+	for _, r := range allowedRenditionLabels() {
+		allowed[r] = true
+	}
+	out := make([]RenditionMeta, 0, len(ActiveLadder))
+	for _, m := range ActiveLadder {
+		if allowed[m.Rendition] {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		out = ActiveLadder
+	}
+	return out
 }
 
 func (e *Engine) downloadAndPrepareJobs(parentCtx context.Context, logger *utils.Logger, dir, channelID string, jobs []downloadJob) {
@@ -461,11 +478,9 @@ func (e *Engine) prepareSegmentFromSource(parentCtx context.Context, logger *uti
 		return e.markPrepared(marker)
 	}
 
-	if seg.IsAd || len(seg.SliceInserts) > 0 {
-		err := e.applySliceEvents(parentCtx, seg, dest, channelID)
-		if err != nil {
-			return err
-		}
+	err := e.applySliceEvents(parentCtx, seg, dest, channelID)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -474,23 +489,55 @@ func (e *Engine) applySliceEvents(parentCtx context.Context, seg models.SegmentI
 	events := seg.SliceInserts
 	currentFile := dest
 
+	logger := utils.GetLogger(fmt.Sprintf("ENGINE:%s", channelID))
+
 	if len(events) == 0 {
+
 		if seg.IsAd {
 			tempFile := fmt.Sprintf("%s.splice.tmp", currentFile)
 			err := utils.ConfigurePmtForAdsTs(parentCtx, seg, currentFile, tempFile)
 			if err != nil {
-				if _, err := os.Stat(tempFile); err == nil {
+				// retry once (FR-006)
+				err = utils.ConfigurePmtForAdsTs(parentCtx, seg, currentFile, tempFile)
+			}
+			if err != nil {
+				if _, statErr := os.Stat(tempFile); statErr == nil {
 					_ = os.Remove(tempFile)
 				}
-				return utils.Error("Splice injection failed for %s - %v", dest, err)
+				logger.Error("[SCTE35] event=pmt_config_retry_exhausted", "channel", channelID, "seq", seg.Sequence, "dest", dest, "error", err)
+				return utils.Error("PMT configuration failed for %s - %v", dest, err)
 			}
 
 			err = os.Rename(tempFile, currentFile)
 			if err != nil {
+				if _, statErr := os.Stat(tempFile); statErr == nil {
+					_ = os.Remove(tempFile)
+				}
 				return utils.Error("[SCTE35] event=rename_failed channel=%s temp=%s dest=%s error=%v", channelID, tempFile, currentFile, err)
 			}
+			return nil
 		}
 
+		// VOD segment: declare SCTE-35 (0x86) in PMT for consistency (FR-001/FR-002).
+		tempFile := fmt.Sprintf("%s.pmt.tmp", currentFile)
+		err := utils.ConfigurePmtForVodTs(parentCtx, seg, currentFile, tempFile)
+		if err != nil {
+			// retry once (FR-006)
+			err = utils.ConfigurePmtForVodTs(parentCtx, seg, currentFile, tempFile)
+		}
+		if err != nil {
+			if _, statErr := os.Stat(tempFile); statErr == nil {
+				_ = os.Remove(tempFile)
+			}
+			logger.Error("[SCTE35] event=pmt_config_retry_exhausted", "channel", channelID, "seq", seg.Sequence, "dest", dest, "error", err)
+			return utils.Error("PMT configuration failed for %s - %v", dest, err)
+		}
+		if err := os.Rename(tempFile, currentFile); err != nil {
+			if _, statErr := os.Stat(tempFile); statErr == nil {
+				_ = os.Remove(tempFile)
+			}
+			return utils.Error("[SCTE35] event=rename_failed channel=%s temp=%s dest=%s error=%v", channelID, tempFile, currentFile, err)
+		}
 		return nil
 	}
 
@@ -500,9 +547,17 @@ func (e *Engine) applySliceEvents(parentCtx context.Context, seg models.SegmentI
 
 		errr := utils.InjectSpliceEvent(parentCtx, currentFile, tempFile, se)
 		if errr != nil {
+			// retry once (FR-006)
 			if _, err := os.Stat(tempFile); err == nil {
 				_ = os.Remove(tempFile)
 			}
+			errr = utils.InjectSpliceEvent(parentCtx, currentFile, tempFile, se)
+		}
+		if errr != nil {
+			if _, err := os.Stat(tempFile); err == nil {
+				_ = os.Remove(tempFile)
+			}
+			logger.Error("[SCTE35] event=splice_injection_failed", "channel", channelID, "seq", seg.Sequence, "dest", dest, "error", errr)
 			return utils.Error("[SCTE35] event=splice_injection_failed file=%s - %s", dest, errr)
 		}
 
@@ -553,7 +608,7 @@ func (e *Engine) rewritePtsOffset(parentCtx context.Context, dest, marker string
 	return e.markPrepared(marker)
 }
 
-func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendition string, segments []models.SegmentItem) {
+func (e *Engine) generateRenditionPlaylist(ctx context.Context, logger *utils.Logger, channelID, rendition string, segments []models.SegmentItem) {
 	if len(segments) == 0 {
 		return
 	}
@@ -588,7 +643,7 @@ func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendi
 
 	playlist, err := buildMediaPlaylistBody(segments, targetDuration)
 	if err != nil {
-		log.Printf("[Engine] channel=%s rung=%s buildMediaPlaylistBody: %v", channelID, rendition, err)
+		logger.Error("buildMediaPlaylistBody failed", "channel", channelID, "rung", rendition, "error", err)
 		return
 	}
 
@@ -602,7 +657,7 @@ func (e *Engine) generateRenditionPlaylist(ctx context.Context, channelID, rendi
 	_ = e.rdb.Set(ctx, renditionMediaRedisKey(channelID, rendition), playlist, 24*time.Hour).Err()
 }
 
-func (e *Engine) generateMasterPlaylist(ctx context.Context, channelID string, meta []RenditionMeta) {
+func (e *Engine) generateMasterPlaylist(ctx context.Context, logger *utils.Logger, channelID string, meta []RenditionMeta) {
 	if len(meta) == 0 {
 		meta = []RenditionMeta{{Rendition: DefaultRendition}}
 	}
@@ -613,7 +668,7 @@ func (e *Engine) generateMasterPlaylist(ctx context.Context, channelID string, m
 
 	chRoot := channelDir(e.tmpDir, channelID)
 	if err := os.MkdirAll(chRoot, 0755); err != nil {
-		log.Printf("[%s] mkdir channel dir error: %v", channelID, err)
+		logger.Error("mkdir channel dir error", "channel", channelID, "error", err)
 		return
 	}
 	playlistPath := filepath.Join(chRoot, "playlist.m3u8")

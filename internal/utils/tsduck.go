@@ -12,8 +12,32 @@ import (
 	"time"
 )
 
-const TSP_BINARY = "tsp"  // Ensure tsp is in PATH
-const SCTE35_PID = "0x30" // Typical PID for SCTE-35
+const TSP_BINARY = "tsp"    // Ensure tsp is in PATH
+const SCTE35_PID = "0x1F00" // Normalized PID for SCTE-35 stream.
+// Rationale: Chose 0x1F00 over 0x30 because ConfigurePmtForAdsTs already uses 0x1F00.
+// Using 0x30 would require changing ConfigurePmtForAdsTs, risking regression on ad segments.
+// See specs/001-static-scte35-pmt/research.md Decision 2.
+//
+// Idempotency guarantee: tsp -P pmt --add-pid is idempotent for the elementary stream
+// entry — running it twice on the same segment does not duplicate the ES entry.
+// However, --add-registration descriptors ARE duplicated on repeated runs.
+// In practice, each segment is configured from source (no SCTE-35 in PMT), so
+// the command runs exactly once per segment and PMT content is identical across segments.
+//
+// TSDuck tsp version_number behavior (verified 2026-10-24, tsp 3.44):
+// - tsp -P pmt --add-pid does NOT auto-increment version_number when PMT content changes.
+//   Adding a different PID keeps version_number unchanged (tested: stayed 0 after adding 0x1F02/0x06).
+// - Adding the same PID twice is idempotent for the elementary stream entry, but the
+//   registration descriptor (--add-registration) IS duplicated on repeated runs.
+// - Use --increment-version to increment version_number by 1 modulo 32.
+// - Use --new-version <N> to set an explicit version_number.
+// - The --increment-version flag increments unconditionally, even when PMT content
+//   is logically unchanged (e.g., re-adding the same PID).
+//
+// In practice, each segment is configured from source (no SCTE-35 in PMT), so PMT
+// content is identical across all segments and version_number stays consistent.
+// If future changes require PMT content to differ between segments, add
+// --increment-version to the tsp command to ensure ISO/IEC 13818-1 §2.4.4.9 compliance.
 
 const PTS_MASK int64 = 0x1FFFFFFFF
 
@@ -169,7 +193,34 @@ func generateXmlForAds(seg models.SegmentItem) *string {
 // ConfigurePmtForAdsTs runs TSDuck tsp to register the SCTE-35 PID in the PMT of a TS file,
 // without injecting any splice command. Used for ad segments that carry no
 // splice event but must still declare the SCTE-35 PID in their PMT.
+// The tsp --add-pid command is idempotent for the ES entry: running it on a segment
+// that already has the SCTE-35 PID produces identical PMT content (same ES list).
 func ConfigurePmtForAdsTs(parentCtx context.Context, seg models.SegmentItem, inputFile string, outputFile string) error {
+
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
+	defer cancel()
+
+	command := fmt.Sprintf(
+		"%s -a 1/10 -I file \"%s\" -P pmt --add-pid 0x1F00/0x86 --add-registration 0x43554549 -O file \"%s\"",
+		TSP_BINARY, inputFile, outputFile,
+	)
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	err := cmd.Run()
+	if err != nil {
+		return Error("[SCTE35] event=pmt_config_failed file=%s error=%v", inputFile, err)
+	}
+	return nil
+}
+
+// ConfigurePmtForVodTs configures the PMT of a VOD segment (no splice events,
+// not an ad) to declare the SCTE-35 elementary stream (stream_type 0x86) with
+// PID 0x1F00 and registration descriptor 0x43554549 (CUEI). This ensures the
+// PMT content is identical across all segments of a stream per FR-002.
+// The tsp --add-pid command is idempotent for the ES entry: running it on a segment
+// that already has the SCTE-35 PID produces identical PMT content (same ES list).
+func ConfigurePmtForVodTs(parentCtx context.Context, seg models.SegmentItem, inputFile string, outputFile string) error {
 
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
 	defer cancel()

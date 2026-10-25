@@ -4,9 +4,11 @@
 
 **Input**: Feature specification from `specs/001-static-scte35-pmt/spec.md`
 
+**Request**: [231026-partner-feedback-number-version-pmt-static.md](../../requests/231026-partner-feedback-number-version-pmt-static.md)
+
 ## Summary
 
-Ensure the SCTE-35 elementary stream (stream_type 0x86) is declared in the PMT for **every** segment regardless of whether it carries SCTE-35 packets. Currently, the engine only runs `tsp -P pmt --add-pid` for ad segments (via `ConfigurePmtForAdsTs`) and segments with splice events (via `InjectSpliceEvent`). Regular VOD segments without splice events leave the PMT unchanged — meaning the SCTE-35 stream is absent from those segments' PMTs. The fix extends PMT configuration to all segments at the stream level so the PMT is built once at stream initialization and reused, keeping it identical across all segments.
+Ensure the SCTE-35 elementary stream (stream_type 0x86) is declared in the PMT for **every** segment regardless of whether it carries SCTE-35 packets. Currently, the engine only runs `tsp -P pmt --add-pid` for ad segments (via `ConfigurePmtForAdsTs`) and segments with splice events (via `InjectSpliceEvent`). Regular VOD segments without splice events leave the PMT unchanged — meaning the SCTE-35 stream is absent from those segments' PMTs. The fix extends PMT configuration to all segments: every segment is processed from its source through exactly one of three `tsp -P pmt --add-pid 0x1F00/0x86` paths (VOD, ad, or splice-injected), so the SCTE-35 stream is declared in every PMT and the resulting PMT content is byte-identical across segments. Each path is idempotent on the elementary stream entry, so repeated runs do not duplicate the ES entry.
 
 ## Technical Context
 
@@ -75,6 +77,13 @@ internal/
 ```
 
 **Structure Decision**: Single Go project. The PMT fix primarily touches `internal/utils/tsduck.go` (add a new function or modify existing PMT configuration) and `internal/engine/engine.go` (call site in segment preparation pipeline).
+
+## Links
+
+- Request: [231026-partner-feedback-number-version-pmt-static.md](../../requests/231026-partner-feedback-number-version-pmt-static.md)
+- Spec: [spec.md](spec.md)
+- Tasks: [tasks.md](tasks.md)
+- Verification Skill: [scte35-pmt-verify/SKILL.md](../../.agents/skills/scte35-pmt-verify/SKILL.md)
 
 ## Complexity Tracking
 
