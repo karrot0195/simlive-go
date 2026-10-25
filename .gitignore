@@ -7,3 +7,7 @@ vendor/
 *.out
 *.log
 bin/
+*.pid
+.commandcode/
+config/deploy-targets.json
+config/DEPLOY.md

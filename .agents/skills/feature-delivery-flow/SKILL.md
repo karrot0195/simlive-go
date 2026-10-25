@@ -62,12 +62,13 @@ Read the request file first. Note `STATUS` and `CURRENT_FLOW`. Jump to the match
 
 1. Run `speckit-tasks`.
 2. Ensure a final "Verification against partner request" task exists mapping ACs to evidence.
-3. **GATE**: user approves task list → set `STATUS: implement`, `CURRENT_FLOW: speckit-implement`, append LOGS.
+3. **GATE**: user approves task list → set `STATUS: implement`, `CURRENT_FLOW: speckit-implement`, append LOGS. Do NOT run speckit-implement yet.
 
-### Step 5 — Implement (STATUS: implement)
+### Step 5 — Implement (GATE) (STATUS: implement)
 
-1. Run `speckit-implement`.
-2. Set `STATUS: analyze`, `CURRENT_FLOW: speckit-analyze`, append LOGS.
+1. **GATE**: confirm with user "Proceed to speckit-implement now? (code changes will begin)" before running. On confirm, continue; on decline, stay in tasks.
+2. Run `speckit-implement`.
+3. Set `STATUS: analyze`, `CURRENT_FLOW: speckit-analyze`, append LOGS.
 
 ### Step 6 — Analyze (GATE) (STATUS: analyze)
 
@@ -88,9 +89,21 @@ Read the request file first. Note `STATUS` and `CURRENT_FLOW`. Jump to the match
 4. **GATE**: verdict must be PASS and all AC checkboxes checked. On FAIL, fix and re-verify.
 5. On PASS: set `STATUS: done`, `CURRENT_FLOW: done`, append LOGS; update request index.
 
-## Resume
+## Resume / Status Check
 
 - Read `STATUS` and `CURRENT_FLOW` from the request file; jump to that step.
+- To check all requests: scan `requests/` and report each request's SLUG, STATUS, CURRENT_FLOW, and the next step to run.
+- Suggest the next command based on CURRENT_FLOW:
+  - intake → scaffold request (Step 0)
+  - specify → run speckit-specify
+  - clarify → run speckit-clarify (or skip with confirmation)
+  - plan → run speckit-plan
+  - tasks → run speckit-tasks
+  - implement → confirm, then run speckit-implement
+  - analyze → run speckit-analyze
+  - review → code review
+  - verify → run verification skill
+  - done → re-verify if needed
 - Never skip a GATE; if a gate was not recorded as passed, re-run it.
 
 ## Status Transitions & Logging
@@ -116,6 +129,7 @@ A request is `done` iff:
 
 ## Notes
 
+- **GATE means: at the end of the step, stop and wait for explicit user confirmation before transitioning to the next step. Never auto-proceed past a GATE.**
 - Gates are mandatory; OPTIONAL steps may be skipped only with explicit user confirmation.
 - Open questions must be solved (answered) before leaving clarify.
 - All flow documents must link together; broken links fail the verify step.

@@ -35,10 +35,7 @@ type Planner struct {
 	bucketName string
 	adsBucket  string
 
-	isBlockingProcessing bool
-	processingSegments   []models.SegmentItem
-	adsId                uint32
-	logger               *utils.Logger
+	logger *utils.Logger
 }
 
 func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {

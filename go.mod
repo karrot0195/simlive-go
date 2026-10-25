@@ -8,7 +8,6 @@ require (
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.22.0
 	golang.org/x/term v0.40.0
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/driver/postgres v1.6.2
 	gorm.io/gorm v1.31.2
 )

@@ -29,7 +29,10 @@ type SegmentProcessor struct {
 	lastAdTime      float64
 	totalAdsAdded   int
 	nowUnix         float64
-	adSegments      []models.SegmentItem
+	adSegments          []models.SegmentItem
+	isBlockingProcessing bool
+	processingSegments  []models.SegmentItem
+	adsId               uint32
 
 	runningTime        float64
 	totalSegmentsAdded int64
@@ -206,10 +209,10 @@ func (sp *SegmentProcessor) processSegment(streamID string, renditions []string,
 
 func (sp *SegmentProcessor) processingVerifyNearingAds(actualStartTime float64) {
 	interval := utils.GetPlannerSettings().AdInsertionInterval
-	if !sp.planner.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > float64(interval-12) {
-		sp.planner.isBlockingProcessing = true
-	} else if sp.planner.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > 8 {
-		sp.planner.isBlockingProcessing = false
+	if !sp.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > float64(interval-12) {
+		sp.isBlockingProcessing = true
+	} else if sp.isBlockingProcessing && (actualStartTime-sp.lastAdTime) > 8 {
+		sp.isBlockingProcessing = false
 	}
 }
 
@@ -229,21 +232,21 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.
 		if preRollPts < 0 {
 			continue
 		}
-		idx, ok := findSegmentContainingPts(sp.planner.processingSegments, preRollPts)
+		idx, ok := findSegmentContainingPts(sp.processingSegments, preRollPts)
 		if !ok {
 			continue
 		}
 		ev := models.SpliceInsert{
 			Type:               "out",
-			EventID:            (sp.planner.adsId),
+			EventID:            (sp.adsId),
 			SpliceTimePTS:      int64(preRollPtsOffset * 90000.0),
 			SpliceTimeSeconds:  preRollPts,
 			Duration:           breakDuration,
-			UniqueProgramID:    (sp.planner.adsId),
+			UniqueProgramID:    (sp.adsId),
 			SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_START,
 		}
-		sp.planner.processingSegments[idx].AdBreakID = sp.planner.adsId
-		appendSpliceInsertUnique(&sp.planner.processingSegments[idx], ev)
+		sp.processingSegments[idx].AdBreakID = sp.adsId
+		appendSpliceInsertUnique(&sp.processingSegments[idx], ev)
 	}
 
 	breakEnd := breakStart + breakDuration
@@ -267,7 +270,7 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.
 		adItem.PtsOffset = currentPtsOffset
 
 		adItem.IsAd = true
-		adItem.AdBreakID = sp.planner.adsId
+		adItem.AdBreakID = sp.adsId
 		adItem.AdBreakStart = breakStart
 		adItem.AdBreakDuration = breakDuration
 
@@ -275,11 +278,11 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.
 			adItem.AdType = "out"
 			appendSpliceInsertUnique(&adItem, models.SpliceInsert{
 				Type:               "out",
-				EventID:            (sp.planner.adsId),
+				EventID:            (sp.adsId),
 				SpliceTimePTS:      int64(breakStart * 90000.0),
 				SpliceTimeSeconds:  breakStart,
 				Duration:           breakDuration,
-				UniqueProgramID:    (sp.planner.adsId),
+				UniqueProgramID:    (sp.adsId),
 				SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_START,
 			})
 		}
@@ -302,36 +305,36 @@ func (sp *SegmentProcessor) insertAdsIfNeeded(actualStartTime float64) (*models.
 			continue
 		}
 
-		idx, ok := findSegmentContainingPts(sp.planner.processingSegments, preRollPts)
+		idx, ok := findSegmentContainingPts(sp.processingSegments, preRollPts)
 		if !ok {
 			continue
 		}
 		ev := models.SpliceInsert{
 			Type:               "in",
-			EventID:            (sp.planner.adsId),
+			EventID:            (sp.adsId),
 			SpliceTimePTS:      int64(preRollPtsOffset * 90000.0),
 			SpliceTimeSeconds:  preRollPts,
 			Duration:           breakDuration,
-			UniqueProgramID:    (sp.planner.adsId),
+			UniqueProgramID:    (sp.adsId),
 			SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_END,
 		}
-		sp.planner.processingSegments[idx].AdBreakID = sp.planner.adsId
-		appendSpliceInsertUnique(&sp.planner.processingSegments[idx], ev)
+		sp.processingSegments[idx].AdBreakID = sp.adsId
+		appendSpliceInsertUnique(&sp.processingSegments[idx], ev)
 	}
 
 	// return CUE in for inject to next segment
 	cueOutEvent := &models.SpliceInsert{
 		Type:               "in",
-		EventID:            (sp.planner.adsId),
+		EventID:            (sp.adsId),
 		SpliceTimePTS:      int64(breakEnd * 90000.0),
 		SpliceTimeSeconds:  breakEnd,
-		UniqueProgramID:    (sp.planner.adsId),
+		UniqueProgramID:    (sp.adsId),
 		SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_END,
 		Duration:           breakDuration,
 	}
 
 	sp.lastAdTime = sp.runningTime
-	sp.planner.adsId++
+	sp.adsId++
 	return cueOutEvent, nil
 }
 
@@ -359,9 +362,9 @@ func (sp *SegmentProcessor) addSegment(ctx context.Context, runningTime float64,
 
 	data.TimeText = utils.TimeNumToText(data.StartTime)
 	data.RunningTime = runningTime
-	sp.planner.processingSegments = append(sp.planner.processingSegments, data)
+	sp.processingSegments = append(sp.processingSegments, data)
 
-	if sp.planner.isBlockingProcessing {
+	if sp.isBlockingProcessing {
 		return nil
 	}
 
@@ -376,14 +379,14 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 		return
 	}
 
-	sizeItems := len(sp.planner.processingSegments)
+	sizeItems := len(sp.processingSegments)
 	if sizeItems == 0 {
 		return // Guard against empty slice panics
 	}
 
 	// Sync every accumulated segment to Redis so none are dropped between
 	// intermediate flushes. Only the in-memory retention below is limited.
-	itemsToProcess := sp.planner.processingSegments
+	itemsToProcess := sp.processingSegments
 
 	for _, segment := range itemsToProcess {
 		member, err := json.Marshal(segment)
@@ -413,9 +416,9 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 
 	// Retain last 5 items in memory if synchAllItem is false, otherwise clear all
 	if !synchAllItem && sizeItems > 5 {
-		sp.planner.processingSegments = sp.planner.processingSegments[sizeItems-5:]
+		sp.processingSegments = sp.processingSegments[sizeItems-5:]
 	} else if synchAllItem {
-		sp.planner.processingSegments = nil
+		sp.processingSegments = nil
 	}
 }
 

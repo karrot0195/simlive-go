@@ -11,7 +11,6 @@ ExecStart=/root/simlive-go/bin/engines
 Restart=always
 RestartSec=10
 EnvironmentFile=/root/simlive-go/.env
-Environment=LOG_ROTATE_DAYS=3
 
 # Core environment variables
 Environment=REDIS_ADDR=localhost:6371
@@ -30,11 +29,6 @@ Environment=SIMLIVE_KEEP_BEHIND=5
 Environment=SIMLIVE_DOWNLOAD_AHEAD=5
 
 # Log rotation configuration
-Environment=LOG_PATH=/var/log/simlive/
-Environment=LOG_FILE=simlive-engines.log
-Environment=LOG_MAX_SIZE=100M
-Environment=LOG_MAX_FILES=10
-Environment=LOG_MAX_AGE=3d
 
 # Application-specific settings
 Environment=ENABLE_CLEAN_UP=true

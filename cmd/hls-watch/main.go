@@ -326,7 +326,7 @@ func (m *HLSMonitor) parseSCTE35FromOutput(output string) SCTE35Info {
 			info.EventType = "splice_schedule"
 		}
 	}
-	if strings.Contains(outputLower, "segmentation_descriptor") || strings.Contains(outputLower, "segmentation descriptor") {
+	if strings.Contains(outputLower, "segmentation_descriptor") || strings.Contains(outputLower, "segmentation descriptor") || strings.Contains(outputLower, "segmentation") {
 		info.HasSegmentationDesc = true
 		if info.EventType == "" {
 			info.EventType = "segmentation_descriptor"

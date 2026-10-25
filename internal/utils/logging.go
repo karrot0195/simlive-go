@@ -3,14 +3,10 @@ package utils
 import (
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
-
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type Logger struct {
@@ -19,29 +15,9 @@ type Logger struct {
 }
 
 var (
-	logDirOnce   sync.Once
-	logDirPath   string
-	verboseW     io.Writer
 	loggerCache  = make(map[string]*Logger)
 	loggerCacheMu sync.Mutex
 )
-
-func initLogDir() {
-	dir := GetSettings().TMPDir + "/" + "logs"
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		fmt.Printf("Error ensuring directory %s exists: %v\n", dir, err)
-		dir = os.TempDir()
-		_ = os.MkdirAll(dir, 0755)
-	}
-	logDirPath = dir
-	verboseW = &lumberjack.Logger{
-		Filename:   filepath.Join(dir, "verbose.log"),
-		MaxSize:    500,
-		MaxAge:     7,
-		MaxBackups: 10,
-		Compress:   true,
-	}
-}
 
 func parseLogLevel() slog.Level {
 	switch strings.ToLower(os.Getenv("LOG_LEVEL")) {
@@ -69,20 +45,8 @@ func GetLogger(logName string) *Logger {
 		return l
 	}
 
-	logDirOnce.Do(initLogDir)
-
-	channelWriter := &lumberjack.Logger{
-		Filename:   filepath.Join(logDirPath, logName+".log"),
-		MaxSize:    500,
-		MaxAge:     7,
-		MaxBackups: 10,
-		Compress:   true,
-	}
-
-	multiWriter := io.MultiWriter(os.Stdout, channelWriter, verboseW)
-
 	level := parseLogLevel()
-	logger := slog.New(slog.NewJSONHandler(multiWriter, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,
 	}))
 

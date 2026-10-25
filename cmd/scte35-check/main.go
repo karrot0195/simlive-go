@@ -95,19 +95,30 @@ func parsePmtInfo(psiOutput string) (hasSCTE35 bool, pid int, streamType int, ha
 			hasCUEI = true
 		}
 
-		// Check for SCTE-35 elementary stream
-		if strings.Contains(l, "SCTE-35") || strings.Contains(l, "SCTE35") || strings.Contains(l, "stream_type: 0x86") {
+		// Check for SCTE-35 elementary stream (tsduck psi output uses
+		// "Elementary stream: type 0x86 (SCTE 35 Splice Info), PID: 0x1F00 (...)").
+		isSCTELine := strings.Contains(l, "stream_type: 0x86") ||
+			(strings.Contains(l, "Elementary stream") && (strings.Contains(l, "SCTE") || strings.Contains(l, "0x86")))
+		if isSCTELine {
 			hasSCTE35 = true
-			re := regexp.MustCompile(`PID\s+(0x[0-9a-fA-F]+|\d+)`)
-			if matches := re.FindStringSubmatch(l); len(matches) > 1 {
-				if strings.HasPrefix(matches[1], "0x") {
-					if p, err := strconv.Atoi(matches[1]); err == nil {
-						pid = p
+			pidRe := regexp.MustCompile(`PID[:\s]+(0x[0-9a-fA-F]+|\d+)`)
+			if matches := pidRe.FindStringSubmatch(l); len(matches) > 1 {
+				v := matches[1]
+				if strings.HasPrefix(v, "0x") {
+					if p, err := strconv.ParseInt(v, 0, 64); err == nil {
+						pid = int(p)
 					}
 				} else {
-					if p, err := strconv.Atoi(matches[1]); err == nil {
+					if p, err := strconv.Atoi(v); err == nil {
 						pid = p
 					}
+				}
+			}
+			typeRe := regexp.MustCompile(`type[:\s]+(0x[0-9a-fA-F]+|\d+)`)
+			if matches := typeRe.FindStringSubmatch(l); len(matches) > 1 {
+				v := matches[1]
+				if p, err := strconv.ParseInt(v, 0, 64); err == nil {
+					streamType = int(p)
 				}
 			}
 		}

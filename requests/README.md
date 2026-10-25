@@ -5,7 +5,7 @@ Table of all partner/raw requests tracked in this project.
 | Date | Slug | Status | Spec Dir | Verification Skill | Request File |
 |------|------|--------|----------|--------------------|--------------|
 | 2026-10-23 | static-scte35-pmt | verify | specs/001-static-scte35-pmt/ | .agents/skills/scte35-pmt-verify/ | [231026-partner-feedback-number-version-pmt-static.md](231026-partner-feedback-number-version-pmt-static.md) |
-
+| 2026-10-25 | shared-data-cross-channel | done | specs/002-shared-data-cross-channel/ | .agents/skills/shared-data-cross-channel-verify/ | [251026-partner-feedback-shared-data-cross-channel.md](251026-partner-feedback-shared-data-cross-channel.md) |
 ## Status Values
 
 `intake` | `specify` | `clarify` | `plan` | `tasks` | `implement` | `analyze` | `review` | `verify` | `done`

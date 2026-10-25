@@ -36,4 +36,7 @@ echo "synch compose"
 $SCPCMD -r ./docker-compose.yml  root@$SERVER:$PROJECT_PATH
 
 echo "synch script"
-$SCPCMD -r ./scripts/start_service.sh  root@$SERVER:$PROJECT_PATH
+$SCPCMD -r ./scripts/enable-services.sh  root@$SERVER:$PROJECT_PATH
+$SCPCMD -r ./scripts/restart-services.sh  root@$SERVER:$PROJECT_PATH
+$SCPCMD -r ./journald.conf root@$SERVER:/etc/systemd/
+$SSHCMD "systemctl restart systemd-journald"

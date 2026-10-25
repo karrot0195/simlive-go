@@ -5,11 +5,19 @@
       "Shell(cd:*)",
       "Shell(sed:*)",
       "Shell(/tmp/pmt-verify:*)",
-      "Shell(cd /home/kai/Workspaces/espx/simlive-go && ls config/bin/ 2>/dev/null; echo \"---docker---\"; docker ps 2>/dev/null | head; echo \"---redis---\"; redis-cli ping 2>/dev/null || echo \"no redis-cli/redis\")",
-      "Shell(cd /home/kai/Workspaces/espx/simlive-go && cat .env 2>/dev/null | head -30; echo \"---procs---\"; pgrep -a redis 2>/dev/null; pgrep -a postgres 2>/dev/null; echo \"---listening ports---\"; ss -tlnp 2>/dev/null | grep -E '5432|6379|8080' || echo \"none\")",
       "Shell(nc -w2 localhost 6371 2 > /dev/null)",
       "Shell(nc -w2 localhost 6379 2 > /dev/null)",
-      "Shell(make:*)"
+      "Shell(make:*)",
+      "Shell(tsp:*)",
+      "Shell(mkdir:*)",
+      "Shell(tstables:*)",
+      "Shell(curl -s http://localhost:*)",
+      "Shell(ssh -i ~/.ssh/espx_vultr -o StrictHostKeyChecking=no root@140.82.51.24 'DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io nginx ffmpeg tsduck rclone 2>&1 | tail -20')",
+      "Shell(ssh -i ~/.ssh/espx_vultr -o StrictHostKeyChecking=no root@140.82.51.24 'DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io nginx ffmpeg rclone 2>&1 | tail -20')",
+      "Shell(ssh -i ~/.ssh/espx_vultr -o StrictHostKeyChecking=no root@140.82.51.24 'apt-cache search tsduck 2>&1 | head; echo \"---\"; ls /usr/bin | grep -i ts')",
+      "Shell(ssh -i ~/.ssh/espx_vultr -o StrictHostKeyChecking=no root@140.82.51.24 'cd /tmp && wget -q https://github.com/tsduck/tsduck/releases/download/v3.45-4798/tsduck_3.45-4798.ubuntu26_amd64.deb && dpkg -i tsduck_3.45-4798.ubuntu26_amd64.deb 2>&1 | tail -10')",
+      "Shell(ssh -i ~/.ssh/espx_vultr -o StrictHostKeyChecking=no root@140.82.51.24 'apt-get -f install -y 2>&1 | tail -10; tsp --version 2>&1 | head -3')",
+      "Shell(bash config/scripts/deploy-client.sh 140.82.51.24 2 >& 1)"
     ],
     "deny": [],
     "defaultMode": "default"

@@ -14,14 +14,19 @@ export type Rendition = (typeof RENDITIONS)[number]
 
 const stripLeadingSlash = (s: string) => s.replace(/^\/+/, '')
 
+const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+/** Resolve a possibly-relative LIVE_API base into an absolute URL. */
+const base = LIVE_API.startsWith('/') ? `${origin}${LIVE_API}` : LIVE_API
+
 /** Master playlist: `/live/{channelId}/playlist.m3u8` */
 export const masterPlaylistUrl = (channelId: string): string =>
-  `${LIVE_API}/${stripLeadingSlash(channelId)}/playlist.m3u8`
+  `${base}/${stripLeadingSlash(channelId)}/playlist.m3u8`
 
 /** Per-rung media playlist: `/live/{channelId}/{rendition}/playlist.m3u8` */
 export const rungPlaylistUrl = (channelId: string, rendition: Rendition): string =>
-  `${LIVE_API}/${stripLeadingSlash(channelId)}/${rendition}/playlist.m3u8`
+  `${base}/${stripLeadingSlash(channelId)}/${rendition}/playlist.m3u8`
 
 /** Per-rung .ts segment: `/live/{channelId}/{rendition}/{segment}` */
 export const segmentUrl = (channelId: string, rendition: Rendition, segment: string): string =>
-  `${LIVE_API}/${stripLeadingSlash(channelId)}/${rendition}/${stripLeadingSlash(segment)}`
+  `${base}/${stripLeadingSlash(channelId)}/${rendition}/${stripLeadingSlash(segment)}`

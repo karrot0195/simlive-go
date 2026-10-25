@@ -233,7 +233,7 @@ const props = defineProps({
 
 const isSuperAdmin = computed(() => localStorage.getItem('is_super_admin') === 'true')
 
-const src = computed(() => masterPlaylistUrl(props.node?.id))
+const src = computed(() => (props.node?.id ? masterPlaylistUrl(props.node.id) : ''))
 let player = ref<any>(null)
 const currentSegment = ref<any>(null)
 const allSegments = ref<any[]>([])
@@ -250,7 +250,9 @@ const displaySegments = computed(() => {
   return allSegments.value
 })
 
+const reloadErrorCount = ref(0)
 const reloadVideo = () => {
+  if (!player.value || !src.value) return
   console.log('trigger reload')
   player.value.src(src.value)
   player.value.load()
@@ -301,13 +303,16 @@ const navigateToTmpData = (segment: any) => {
   }
 }
 
-const fetchM3u8Content = async () => {
+const fetchM3u8Content = async (depth = 0) => {
+  if (depth > 5) return
   try {
     let urlToFetch = src.value
 
     if (mediaPlaylistUrl.value) {
       urlToFetch = mediaPlaylistUrl.value
     }
+
+    if (!urlToFetch) return
 
     const response = await fetch(urlToFetch)
     const content = await response.text()
@@ -319,7 +324,7 @@ const fetchM3u8Content = async () => {
         if (!line.startsWith('#') && line.includes('.m3u8')) {
           const baseUrl = urlToFetch.substring(0, urlToFetch.lastIndexOf('/') + 1)
           mediaPlaylistUrl.value = baseUrl + line
-          await fetchM3u8Content()
+          await fetchM3u8Content(depth + 1)
           return
         }
       }
@@ -433,7 +438,7 @@ const updatePlaylistInfo = () => {
   if (!player.value) return
 
   const tech = player.value.tech({ IWillNotUseThisInPlugins: true })
-  if (!tech || !tech.vhs) return
+  if (!tech || !tech.vhs || !tech.vhs.playlists) return
 
   const vhs = tech.vhs
   const playlist = vhs.playlists?.media()
@@ -578,10 +583,15 @@ const trackCurrentSegment = () => {
 let m3u8FetchInterval: any = null
 let segmentTrackingInterval: any = null
 
-watch(
+  watch(
   () => props.node?.id,
   (newId, oldId) => {
     if (!player.value || newId === oldId) return
+
+    if (m3u8FetchInterval) clearInterval(m3u8FetchInterval)
+    if (segmentTrackingInterval) clearInterval(segmentTrackingInterval)
+    m3u8FetchInterval = null
+    segmentTrackingInterval = null
 
     currentSegment.value = null
     allSegments.value = []
@@ -589,10 +599,15 @@ watch(
     rawM3u8Content.value = ''
     mediaPlaylistUrl.value = ''
     seenSegmentUris.value = new Set()
+    reloadErrorCount.value = 0
 
     if (props.node.status === 'LIVE' || props.node.status === 'PREPARE') {
       reloadVideo()
-      fetchM3u8Content()
+      startM3u8Polling()
+      trackCurrentSegment()
+      segmentTrackingInterval = setInterval(() => {
+        trackCurrentSegment()
+      }, 1000)
     }
   },
   { flush: 'post' }
@@ -632,7 +647,11 @@ onMounted(() => {
     player.value.on('ready', () => {
       console.log('player is ready')
       ;(window as any).vjsPlayer = player.value
-      player.value.qualityMenu()
+      try {
+        if (typeof player.value.qualityMenu === 'function') player.value.qualityMenu()
+      } catch (e) {
+        console.warn('qualityMenu unavailable', e)
+      }
 
       // Auto-select lowest resolution by default
       const selectLowestResolution = () => {
@@ -677,8 +696,13 @@ onMounted(() => {
     })
 
     player.value.on('error', function (error: any) {
-      console.error('Error occurred. Reloading video...', error)
-      reloadVideo()
+      console.error('Error occurred.', error)
+      if (reloadErrorCount.value < 3) {
+        reloadErrorCount.value++
+        reloadVideo()
+      } else {
+        console.error('Too many reload errors; stopping auto-reload.')
+      }
     })
   }
 })

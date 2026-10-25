@@ -203,7 +203,8 @@ func SummarizeRawPsi(raw string) (pmtLine string, scteLine string, cueiFound boo
 				pmtLine = l
 			}
 		}
-		if strings.Contains(l, "SCTE-35") || strings.Contains(l, "SCTE35") || strings.Contains(l, "stream_type: 0x86") {
+		if strings.Contains(l, "SCTE-35") || strings.Contains(l, "SCTE35") || strings.Contains(l, "SCTE 35") || strings.Contains(l, "stream_type: 0x86") ||
+			(strings.Contains(l, "Elementary stream") && strings.Contains(l, "0x86")) {
 			if scteLine == "" {
 				scteLine = l
 			}
