@@ -437,11 +437,10 @@ func (e *Engine) downloadAndPrepareJobs(parentCtx context.Context, logger *utils
 			e.workerPool <- struct{}{}
 			defer func() { <-e.workerPool }()
 
-			logger.VInfo("downloading %s", dest)
 			if err := e.prepareSegmentFromSource(parentCtx, logger, channelID, dir, s, d, sr); err != nil {
-				logger.VError("download error %s - %v", dest, err)
+				logger.Error(logger.Format("download error %s - %v", dest, err))
 			} else {
-				logger.VInfo("downloaded %s", dest)
+				logger.Info(logger.Format("downloaded %s", dest))
 			}
 
 		}(seg, dest, src)
@@ -460,14 +459,16 @@ func (e *Engine) prepareSegmentFromSource(parentCtx context.Context, logger *uti
 	needDownload := false
 	if _, err := os.Stat(dest); err != nil {
 		if !os.IsNotExist(err) {
-			logger.VError("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
+			logger.Error(logger.Format("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err))
 		}
 		needDownload = true
 	}
 	if needDownload {
+		dlStart := time.Now()
 		if err := e.rclone.CopyTo(parentCtx, src, dest); err != nil {
 			return utils.Error("download %s: %v", src, err)
 		}
+		logger.Info(logger.Format("downloaded %s in %s", dest, time.Since(dlStart)))
 	}
 
 	if _, err := os.Stat(dest); err != nil {

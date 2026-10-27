@@ -1,7 +1,6 @@
 package utils
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -59,25 +58,8 @@ func (logger *Logger) format(msg string, args ...interface{}) string {
 	return fmt.Sprintf("[%s]: %s", logger.name, fmt.Sprintf(msg, args...))
 }
 
-func (logger *Logger) VInfo(msg string, args ...interface{}) {
-	logger.Info(logger.format(msg, args...))
-}
-
-func (logger *Logger) VWarning(msg string, args ...interface{}) {
-	logger.Warn(logger.format(msg, args...))
-}
-
-func (logger *Logger) VError(msg string, args ...interface{}) {
-	logger.Error(logger.format(msg, args...))
-}
-
-func (logger *Logger) VErrorWithError(msg string, args ...interface{}) error {
-	textError := logger.format(msg, args...)
-	logger.Error(textError)
-	return errors.New(textError)
-}
-
-func (logger *Logger) VFatalf(msg string, args ...interface{}) {
-	logger.VError(msg, args...)
-	os.Exit(1)
+// Format preserves the legacy "[name]: " prefix so call sites can use the
+// native slog methods (Info/Warn/Error) while keeping consistent output.
+func (logger *Logger) Format(msg string, args ...interface{}) string {
+	return logger.format(msg, args...)
 }

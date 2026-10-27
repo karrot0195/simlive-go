@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func ParseESPXTime(timeStr, tzStr string) (time.Time, error) {
+func ParsePARTNERTime(timeStr, tzStr string) (time.Time, error) {
 	loc, err := time.LoadLocation(tzStr)
 	if err != nil {
 		loc = GetLoc()

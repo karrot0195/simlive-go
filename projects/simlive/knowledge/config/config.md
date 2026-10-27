@@ -11,13 +11,13 @@ Application configuration and settings. Loads environment variables, database se
 
 ## What belongs here
 
-- Settings struct (DB host/port/user/password, Redis addr, ESPX URL, video bucket, ads stream ID)
+- Settings struct (DB host/port/user/password, Redis addr, PARTNER URL, video bucket, ads stream ID)
 - Planner settings (retry policy, lookahead seconds, retention seconds)
 - DATE_FORMAT constant
 - Environment variable loading
 
 ## Related hubs
 
-- [[api]] — API server uses settings for DB/Redis/ESPX connections
+- [[api]] — API server uses settings for DB/Redis/PARTNER connections
 - [[planner]] — planner uses settings for retry and timeline config
 - [[engine]] — engine uses settings for TMP dir and max workers

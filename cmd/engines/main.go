@@ -63,7 +63,11 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
 	// 3. Init Services
-	rcloneSvc := storage.NewRcloneService()
+	rcloneVerbose := true
+	if v := os.Getenv("SIMLIVE_RCLONE_VERBOSE"); v != "" {
+		rcloneVerbose = !(v == "false" || v == "0" || v == "no")
+	}
+	rcloneSvc := storage.NewRcloneService(rcloneVerbose)
 	ctx := context.Background()
 	engineSvc := engine.NewEngine(rdb, rcloneSvc, maxWorkers)
 

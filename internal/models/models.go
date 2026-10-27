@@ -34,11 +34,11 @@ type PlayoutChannel struct {
 	UseAdEpgAds     bool          `json:"use_ad_epg_ads"`
 }
 
-// ESPXChannelListItem is a single entry in the ESPX API 1 response
+// PARTNERChannelListItem is a single entry in the PARTNER API 1 response
 // (`GET /api/v2/common/channel-playouts`). Promoted from the anonymous
-// struct inside `ESPXChannelListResp` so the new `/api/channels/esp` REST
+// struct inside `PARTNERChannelListResp` so the new `/api/channels/esp` REST
 // route can return a stable shape independent of the upstream response.
-type ESPXChannelListItem struct {
+type PARTNERChannelListItem struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	BaseName        string `json:"base_name"`
@@ -118,19 +118,19 @@ type SegmentItem struct {
 	SliceInserts []SpliceInsert `json:"splice_inserts,omitempty"`
 }
 
-// Response structs for ESPX APIs
-type ESPXChannelListResp struct {
-	Data []ESPXChannelListItem `json:"data"`
+// Response structs for PARTNER APIs
+type PARTNERChannelListResp struct {
+	Data []PARTNERChannelListItem `json:"data"`
 }
 
-type ESPXChannelDetailResp struct {
+type PARTNERChannelDetailResp struct {
 	ID         string `json:"id"`
 	ChannelEpg struct {
 		ID string `json:"id"`
 	} `json:"channelEpg"`
 }
 
-type ESPXProgrammeStream struct {
+type PARTNERProgrammeStream struct {
 	StreamID      string `json:"stream_id"`
 	StreamPath    string `json:"stream_path"`
 	SchemaVersion int    `json:"schema_ver"`
@@ -139,7 +139,7 @@ type ESPXProgrammeStream struct {
 	Name          string `json:"name"`
 }
 
-type ESPXScheduleItem struct {
+type PARTNERScheduleItem struct {
 	ID             string `json:"id"`
 	Type           string `json:"type"`
 	Duration       string `json:"duration"`         // Needs parsing string -> int/float
@@ -149,15 +149,15 @@ type ESPXScheduleItem struct {
 		ID               string `json:"id"`
 		Name             string `json:"name"`
 		ShortURL         string `json:"short_url"` // PROGRAMME ID, DO NOT USE THIS AS THE PATH
-		ProgrammeStreams []ESPXProgrammeStream
+		ProgrammeStreams []PARTNERProgrammeStream
 		IsAds            bool `json:"is_ads"`
 	} `json:"programme"`
 }
 
-type ESPXSchedulesResponse struct {
+type PARTNERSchedulesResponse struct {
 	Date       string             `json:"date"`
 	TotalItems int                `json:"total_items"`
-	Data       []ESPXScheduleItem `json:"data"`
+	Data       []PARTNERScheduleItem `json:"data"`
 }
 
 type CreateChannelReq struct {
@@ -186,18 +186,18 @@ type ListChannelsResp struct {
 	PageSize int              `json:"page_size"`
 }
 
-// ESpxChannelsListResp is the response for GET /api/channels/esp. `Registered`
-// is keyed by the ESPX channel id; `true` means the channel already exists
+// PartnerChannelsListResp is the response for GET /api/channels/esp. `Registered`
+// is keyed by the PARTNER channel id; `true` means the channel already exists
 // in our local playout_channels table. Built with a single
 // `SELECT id FROM playout_channels WHERE id IN (...)` so the round-trip
 // stays O(1) regardless of the fleet size.
-type ESpxChannelsListResp struct {
-	Data       []ESPXChannelListItem `json:"data"`
+type PartnerChannelsListResp struct {
+	Data       []PARTNERChannelListItem `json:"data"`
 	Registered map[string]bool       `json:"registered"`
 }
 
 const ScheduleItemTypeAds = "ads"
 
-func (m *ESPXScheduleItem) IsAdsScheduleItem() bool {
+func (m *PARTNERScheduleItem) IsAdsScheduleItem() bool {
 	return m.Type == ScheduleItemTypeAds
 }

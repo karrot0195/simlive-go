@@ -20,7 +20,7 @@ All units under `config/system/`, installed to `/etc/systemd/system/`.
 ## Configuration
 
 - `config/docker-compose.yml` → postgres (5432) + redis (6371)
-- `config/.env` → DB, Redis, ESPX, TMP_DIR, renditions, workers
+- `config/.env` → DB, Redis, PARTNER, TMP_DIR, renditions, workers
 - nginx config: proxy `/` and `/live` to `127.0.0.1:8080`, SSL cert configured
 - `config/rclone` → `/root/.config/rclone`
 

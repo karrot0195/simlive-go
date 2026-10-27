@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -27,7 +28,7 @@ var logger = utils.GetLogger("PLANNER")
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		logger.VWarning(fmt.Sprintf("Failed to load .env file: %v", err))
+		logger.Warn(logger.Format("Failed to load .env file: %v", err))
 	}
 
 	settings := utils.GetSettings()
@@ -36,18 +37,24 @@ func main() {
 		settings.DBHost, settings.DBUser, settings.DBPassword, settings.DBName, settings.DBPort)
 	db, err := gorm.Open(postgres.Open(DBDNS), &gorm.Config{})
 	if err != nil {
-		logger.VFatalf("Failed to connect DB: %v", err)
+		logger.Error(logger.Format("Failed to connect DB: %v", err))
+		os.Exit(1)
 	}
 
 	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
-		logger.VFatalf("Failed to migrate DB: %v", err)
+		logger.Error(logger.Format("Failed to migrate DB: %v", err))
+		os.Exit(1)
 	}
 
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
-	espxClient := api.NewESPXClient(settings.EspxURL)
-	rcloneSvc := storage.NewRcloneService()
-	plannerSvc := planner.NewPlanner(db, rdb, espxClient, rcloneSvc)
+	partnerClient := api.NewPARTNERClient(settings.PartnerURL)
+	rcloneVerbose := true
+	if v := os.Getenv("SIMLIVE_RCLONE_VERBOSE"); v != "" {
+		rcloneVerbose = !(v == "false" || v == "0" || v == "no")
+	}
+	rcloneSvc := storage.NewRcloneService(rcloneVerbose)
+	plannerSvc := planner.NewPlanner(db, rdb, partnerClient, rcloneSvc)
 
 	mainCtx := context.Background()
 
@@ -61,7 +68,7 @@ func main() {
 		interval := plannerInterval()
 		workers := plannerWorkerCount()
 		const pollInterval = 1 * time.Second
-		logger.VInfo("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval)
+		logger.Info(logger.Format("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval))
 
 		var inFlightMu sync.Mutex
 		inFlight := make(map[string]struct{})
@@ -78,8 +85,8 @@ func main() {
 
 			isOverToday := tomorrow.After(endOfDay)
 
-			logger.VInfo("Processing active channel: %s (%s), today=%s tomorrow=%s",
-				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+			logger.Info(logger.Format("Processing active channel: %s (%s), today=%s tomorrow=%s",
+				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
 
 			// 1. Check if today has data (skips if present, plans if missing)
 			prepareDateWithRetry(chCtx, plannerSvc, ch, today)
@@ -154,7 +161,7 @@ func main() {
 			if len(activeChannels) == 0 {
 				return
 			}
-			logger.VInfo("tick: %d active channel(s)", len(activeChannels))
+			logger.Info(logger.Format("tick: %d active channel(s)", len(activeChannels)))
 			logMetrics(logger, mainCtx, plannerSvc, activeChannels)
 
 			runPlannerTick(mainCtx, activeChannels, workers, &inFlightMu, inFlight, &cancelMu, cancelMap, processRunner)
@@ -258,7 +265,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	if err != nil {
 		logger.Error(fmt.Sprintf("[Planner] HasDateInTimeline(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), err))
 	} else if has {
-		logger.VInfo("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+		logger.Info(logger.Format("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
 		p.ResetFailureCounterForChannel(ctx, ch.ID)
 		p.MarkChannelLiveForChannel(ctx, ch.ID)
 		return

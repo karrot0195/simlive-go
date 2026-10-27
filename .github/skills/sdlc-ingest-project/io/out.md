@@ -5,7 +5,7 @@ domain: simulated-live HLS playout (24/7 linear streaming)
 modules:
   - planner (PrepareSimlive — EPG → Redis timeline)
   - engine (StartSimlive — sliding HLS playlist + PTS/DTS rewrite)
-  - api (REST channel management + ESPX client)
+  - api (REST channel management + PARTNER client)
   - models (Postgres + Redis structs, SegmentItem, SpliceInsert)
   - storage (rclone wrapper)
   - config (env vars + config loading)

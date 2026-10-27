@@ -30,7 +30,7 @@ type LastSegmentState struct {
 type Planner struct {
 	db         *gorm.DB
 	rdb        *redis.Client
-	espx       *api.ESPXClient
+	partner       *api.PARTNERClient
 	rclone     *storage.RcloneService
 	bucketName string
 	adsBucket  string
@@ -38,11 +38,11 @@ type Planner struct {
 	logger *utils.Logger
 }
 
-func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
+func NewPlanner(db *gorm.DB, rdb *redis.Client, partner *api.PARTNERClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
 		db:         db,
 		rdb:        rdb,
-		espx:       espx,
+		partner:       partner,
 		rclone:     rclone,
 		bucketName: utils.GetSettings().VideoBucket,
 		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),
@@ -80,7 +80,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	}
 	horizon := utils.EndOfDay(processDate)
 
-	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
+	schedules, err := p.partner.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
 	if err != nil || len(schedules.Data) == 0 {
 		return err
 	}

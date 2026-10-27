@@ -21,7 +21,7 @@ End-to-end flow for provisioning or updating a SimLive server using the assets u
 - Common tools allowed during execution: `ssh`, `scp`, `read_file`, and other standard CLI/file tools for inspection and sync.
 
 - `server_ip`: target server IP or hostname.
-- `ssh_key`: path to SSH private key (default `~/.ssh/espx_vultr`).
+- `ssh_key`: path to SSH private key (default `~/.ssh/partner_vultr`).
 - `ssh_user`: SSH user (default `root`).
 - Persisted target file: `./config/deploy-targets.json` (created by this skill).
 
@@ -32,7 +32,7 @@ Store targets in `./config/deploy-targets.json`:
 ```json
 {
   "targets": [
-    { "name": "prod", "ip": "1.2.3.4", "user": "root", "key": "~/.ssh/espx_vultr", "last_used": "2026-..." }
+    { "name": "prod", "ip": "1.2.3.4", "user": "root", "key": "~/.ssh/partner_vultr", "last_used": "2026-..." }
   ],
   "default": "prod"
 }

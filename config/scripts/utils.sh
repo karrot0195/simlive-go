@@ -6,6 +6,6 @@ if [ -z "$SERVER" ]; then
 fi
 
 PROJECT_PATH="/root/simlive-go"
-SSH_KEY="~/.ssh/espx_vultr"
+SSH_KEY="~/.ssh/partner_vultr"
 SSHCMD="ssh -i $SSH_KEY root@$SERVER"
 SCPCMD="scp -i $SSH_KEY"

@@ -54,13 +54,13 @@ var allowedStatuses = map[string]bool{
 // The planner reads the same columns (is_active, status) so a manual flip takes effect on the next planner tick.
 type ChannelHandler struct {
 	db   *gorm.DB
-	espx *ESPXClient
+	partner *PARTNERClient
 	rdb  *redis.Client
 }
 
 // NewChannelHandler wires the dependencies. `rdb` may be nil — start/stop then log a warning and continue (a Redis blip should never 5xx the operator; the DB flip is the durable part of the operation).
-func NewChannelHandler(db *gorm.DB, espx *ESPXClient, rdb *redis.Client) *ChannelHandler {
-	return &ChannelHandler{db: db, espx: espx, rdb: rdb}
+func NewChannelHandler(db *gorm.DB, partner *PARTNERClient, rdb *redis.Client) *ChannelHandler {
+	return &ChannelHandler{db: db, partner: partner, rdb: rdb}
 }
 
 // ----- Path guard --------------------------------------------------------
@@ -76,7 +76,7 @@ func channelIDGuard(c *gin.Context, id string) bool {
 
 // ----- POST /api/channels (create / upsert) ------------------------------
 
-// CreateOrUpsertChannel validates the channel ID against the ESPX API
+// CreateOrUpsertChannel validates the channel ID against the PARTNER API
 // and upserts the playout_channels row. Renamed for naming consistency
 // with other CRUD verbs.
 func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
@@ -86,10 +86,10 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		return
 	}
 
-	// Validate Channel ID against the ESPX API
-	detail, err := h.espx.GetChannelDetailWithEPG(req.ChannelID)
+	// Validate Channel ID against the PARTNER API
+	detail, err := h.partner.GetChannelDetailWithEPG(req.ChannelID)
 	if err != nil || detail.ID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in ESPX API"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in PARTNER API"})
 		return
 	}
 
@@ -187,13 +187,13 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 	return
 }
 
-// ----- GET /api/channels/esp (list ESPX channels) -----------------------
+// ----- GET /api/channels/esp (list PARTNER channels) -----------------------
 
-// ListESpxChannels proxies ESPX API 1 and annotates each item with a `registered` boolean (true if the channel is already in our local playout_channels table). Single SELECT id ... IN (...) keeps the round-trip count constant in the fleet size.
-func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
-	items, err := h.espx.ListESpxChannels()
+// ListPartnerChannels proxies PARTNER API 1 and annotates each item with a `registered` boolean (true if the channel is already in our local playout_channels table). Single SELECT id ... IN (...) keeps the round-trip count constant in the fleet size.
+func (h *ChannelHandler) ListPartnerChannels(c *gin.Context) {
+	items, err := h.partner.ListPartnerChannels()
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch channels from ESPX: " + err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch channels from PARTNER: " + err.Error()})
 		return
 	}
 
@@ -207,8 +207,8 @@ func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
 		if err := h.db.Model(&models.PlayoutChannel{}).
 			Where("id IN ?", ids).
 			Pluck("id", &existing).Error; err != nil {
-			// Don't fail the whole response on a DB blip — return the ESPX list with all `registered` set to false.
-			log.Printf("[api] ListESpxChannels: SELECT id IN (...) error: %v", err)
+			// Don't fail the whole response on a DB blip — return the PARTNER list with all `registered` set to false.
+			log.Printf("[api] ListPartnerChannels: SELECT id IN (...) error: %v", err)
 		} else {
 			for _, id := range existing {
 				registered[id] = true
@@ -216,7 +216,7 @@ func (h *ChannelHandler) ListESpxChannels(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, models.ESpxChannelsListResp{
+	c.JSON(http.StatusOK, models.PartnerChannelsListResp{
 		Data:       items,
 		Registered: registered,
 	})

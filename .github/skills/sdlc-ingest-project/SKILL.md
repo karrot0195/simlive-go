@@ -16,7 +16,7 @@ Ingest a Go/HLS playout project (`simlive-go`) and produce a standard, reproduci
 - Triggers: `sdlc-ingest-project`, `ingest`, `project scan`, `summary`, `feature detail`.
 
 ## Inputs (from prompt / workspace)
-- Workspace root: `/home/kai/Workspaces/espx/simlive-project/simlive-go`
+- Workspace root: `/home/kai/Workspaces/partner/simlive-project/simlive-go`
 - Key source files: `docs/specification.md`, `.github/instructions/simlive-summary.instructions.md`, `docs/memories.md`, `docs/structure.md`, `README.md`, `go.mod`
 - Feature reference: planner prepare mapping data (`docs/300826_0620-multi-rendition-abr-ladder.md`, planner module `internal/planner/planner.go`)
 

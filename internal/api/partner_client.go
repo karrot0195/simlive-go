@@ -10,20 +10,20 @@ import (
 	"time"
 )
 
-type ESPXClient struct {
+type PARTNERClient struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
-func NewESPXClient(baseURL string) *ESPXClient {
-	return &ESPXClient{
+func NewPARTNERClient(baseURL string) *PARTNERClient {
+	return &PARTNERClient{
 		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // API 1: Fetch Channel List
-func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
+func (c *PARTNERClient) GetChannels() (*models.PARTNERChannelListResp, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts?$limit=50&is_playout_assigned=true", c.baseURL)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -31,28 +31,28 @@ func (c *ESPXClient) GetChannels() (*models.ESPXChannelListResp, error) {
 	}
 	defer resp.Body.Close()
 
-	var result models.ESPXChannelListResp
+	var result models.PARTNERChannelListResp
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return &result, err
 }
 
-// ListESpxChannels is a thin wrapper over GetChannels that returns the
+// ListPartnerChannels is a thin wrapper over GetChannels that returns the
 // items directly (rather than the wrapped response). Used by the new
 // GET /api/channels/esp REST route — keeps the upstream URL constant
 // in one place so a future endpoint rename is a one-line change.
-func (c *ESPXClient) ListESpxChannels() ([]models.ESPXChannelListItem, error) {
+func (c *PARTNERClient) ListPartnerChannels() ([]models.PARTNERChannelListItem, error) {
 	resp, err := c.GetChannels()
 	if err != nil {
 		return nil, err
 	}
 	if resp == nil {
-		return []models.ESPXChannelListItem{}, nil
+		return []models.PARTNERChannelListItem{}, nil
 	}
 	return resp.Data, nil
 }
 
 // API 2: Get Playout Detail to extract channelEpg.id
-func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
+func (c *PARTNERClient) GetChannelEPGID(playoutID string) (string, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]&$limit=50&is_playout_assigned=true", c.baseURL, playoutID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -60,7 +60,7 @@ func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	var result models.ESPXChannelDetailResp
+	var result models.PARTNERChannelDetailResp
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", err
 	}
@@ -68,7 +68,7 @@ func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 }
 
 // API 3: Get Schedules
-func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
+func (c *PARTNERClient) GetEPGScheduleItems(epgID, date, tz string) (*models.PARTNERSchedulesResponse, error) {
 	// 1. Parse base URL path
 	endpoint := fmt.Sprintf("%s/api/v2/common/channel-epg/%s/schedules", c.baseURL, epgID)
 	u, err := url.Parse(endpoint)
@@ -94,12 +94,12 @@ func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSc
 	}
 	defer resp.Body.Close()
 
-	var result models.ESPXSchedulesResponse
+	var result models.PARTNERSchedulesResponse
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return &result, err
 }
 
-type ESPXChannelDetailFullResp struct {
+type PARTNERChannelDetailFullResp struct {
 	ID              string `json:"id"`
 	Name            string `json:"name"`
 	BaseName        string `json:"base_name"`
@@ -109,7 +109,7 @@ type ESPXChannelDetailFullResp struct {
 	} `json:"channelEpg"`
 }
 
-func (c *ESPXClient) GetChannelDetailWithEPG(channelID string) (*ESPXChannelDetailFullResp, error) {
+func (c *PARTNERClient) GetChannelDetailWithEPG(channelID string) (*PARTNERChannelDetailFullResp, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]", c.baseURL, channelID)
 	resp, err := c.httpClient.Get(url)
 	if err != nil {
@@ -121,7 +121,7 @@ func (c *ESPXClient) GetChannelDetailWithEPG(channelID string) (*ESPXChannelDeta
 		return nil, fmt.Errorf("channel not found, status: %d", resp.StatusCode)
 	}
 
-	var result ESPXChannelDetailFullResp
+	var result PARTNERChannelDetailFullResp
 	err = json.NewDecoder(resp.Body).Decode(&result)
 	return &result, err
 }

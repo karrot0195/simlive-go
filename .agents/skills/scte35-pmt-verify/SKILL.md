@@ -188,6 +188,6 @@ Full HLS segment analysis with SCTE-35, PTS, and PMT inspection.
 
 - **No segments appearing**: Ensure engines are running (`make start-engines`), check `logs/engines.log`
 - **tsp fails with signal: killed**: TSDuck timeout too short — check `context.WithTimeout` in the engine code
-- **rclone copyto error**: Verify object storage is accessible (`rclone ls espx-video-lib:`)
+- **rclone copyto error**: Verify object storage is accessible (`rclone ls partner-video-lib:`)
 - **Verifier shows no output**: Ensure the channel has active segments in the playlist
 - **tsp --no-warnings not recognized**: tsp 3.44 removed these flags; `pmt-verify` has been updated to omit them

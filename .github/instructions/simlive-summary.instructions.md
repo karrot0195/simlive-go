@@ -13,7 +13,7 @@
 |---|---|---|
 | Planner | `internal/planner/` | EPG → Redis timeline mapping (`prepareDate`, `ProcessEPGToTimeline`, `SegmentProcessor`) |
 | Engine | `internal/engine/` | Sliding HLS playlist + PTS rewrite (`StartSimlive`, tick loop, bounded window) |
-| API | `internal/api/` | REST channel CRUD + HLS routes + ESPX client |
+| API | `internal/api/` | REST channel CRUD + HLS routes + PARTNER client |
 | Models | `internal/models/` | Postgres + Redis structs (`SegmentItem`, `RenditionMeta`, `SpliceInsert`) |
 | Storage | `internal/storage/` | rclone wrapper (cat / copyto / ls) |
 | Config | `internal/configs/` | Env vars + config loading |

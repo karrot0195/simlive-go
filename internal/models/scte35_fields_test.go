@@ -31,7 +31,7 @@ func TestSegmentItem_AdFields_OmitWhenEmpty(t *testing.T) {
 func TestSegmentItem_AdFields_RoundTrip(t *testing.T) {
 	src := SegmentItem{
 		Sequence:        42,
-		StoragePath:     "espx-video-lib:espx-video-lib/ads-v3/L2/seg_42.ts",
+		StoragePath:     "partner-video-lib:partner-video-lib/ads-v3/L2/seg_42.ts",
 		Duration:        6.0,
 		IsAd:            true,
 		AdBreakID:       1,

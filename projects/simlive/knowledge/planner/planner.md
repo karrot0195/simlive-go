@@ -7,7 +7,7 @@ project: simlive
 
 # Planner
 
-The planner processes EPG schedule data from ESPX, builds per-channel timelines, loads ad segments, and manages retry/failure logic for channel preparation.
+The planner processes EPG schedule data from PARTNER, builds per-channel timelines, loads ad segments, and manages retry/failure logic for channel preparation.
 
 ## What belongs here
 

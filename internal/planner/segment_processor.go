@@ -47,7 +47,7 @@ type SegmentProcessor struct {
 	useEpgAds bool
 }
 
-func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
+func (sp *SegmentProcessor) ProcessScheduleItem(item models.PARTNERScheduleItem, channel models.PlayoutChannel, nowLocal time.Time) error {
 	if err := sp.ctx.Err(); err != nil {
 		return err
 	}
@@ -56,7 +56,7 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		return nil
 	}
 	// get main stream with IsVod=true and IsTrailer=false
-	var stream *models.ESPXProgrammeStream // replace ProgrammeStream with your actual type
+	var stream *models.PARTNERProgrammeStream // replace ProgrammeStream with your actual type
 
 	for i := range item.Programme.ProgrammeStreams {
 		s := &item.Programme.ProgrammeStreams[i]
@@ -74,11 +74,11 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 		return customerrors.UnspportStreamSchema
 	}
 
-	startTime, err := utils.ParseESPXTime(item.LocalDateStart, channel.ContentTimezone)
+	startTime, err := utils.ParsePARTNERTime(item.LocalDateStart, channel.ContentTimezone)
 	if err != nil {
 		return err
 	}
-	if endTime, err := utils.ParseESPXTime(item.LocalDateEnd, channel.ContentTimezone); err == nil && endTime.Before(nowLocal) {
+	if endTime, err := utils.ParsePARTNERTime(item.LocalDateEnd, channel.ContentTimezone); err == nil && endTime.Before(nowLocal) {
 		return nil
 	}
 
@@ -94,7 +94,7 @@ func (sp *SegmentProcessor) ProcessScheduleItem(item models.ESPXScheduleItem, ch
 	return sp.processStreamSegments(*stream, item.Programme.IsAds)
 }
 
-func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStream, isAds bool) error {
+func (sp *SegmentProcessor) processStreamSegments(stream models.PARTNERProgrammeStream, isAds bool) error {
 
 	streamRelativePath := stream.StreamPath
 	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)

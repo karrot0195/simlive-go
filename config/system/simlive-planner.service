@@ -19,7 +19,7 @@ Environment=DB_USER=postgres
 Environment=DB_PASSWORD=postgrespassword
 Environment=DB_NAME=simlive
 Environment=DB_PORT=5432
-Environment=ESPX_URL=https://api2.espx.cloud
+Environment=PARTNER_URL=https://api2.partner.cloud
 Environment=TMP_DIR=/root/simlive-go/outputs
 Environment=SIMLIVE_QUALITY=360p
 Environment=PLANNER_INTERVAL=5m

@@ -13,7 +13,7 @@ type Settings struct {
 	DBName     string
 	RedisAddr  string
 	RedisPass  string
-	EspxURL    string
+	PartnerURL    string
 
 	VideoBucket string
 	AdsStreamId string
@@ -112,9 +112,9 @@ func GetSettings() *Settings {
 	dbName := GetEnv("DB_NAME", "simlive")
 
 	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
-	espxURL := GetEnv("ESPX_API_URL", "https://api2.espx.cloud")
+	partnerURL := GetEnv("EPG_API_URL", "https://epg.cloud")
 
-	videoBucket := GetEnv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
+	videoBucket := GetEnv("STORAGE_BUCKET", "partner-video-lib:partner-video-lib")
 
 	adsStreamId := "ads-v4"
 	return &Settings{
@@ -124,7 +124,7 @@ func GetSettings() *Settings {
 		DBUser:      dbUser,
 		DBPassword:  dbPass,
 		RedisAddr:   redisAddr,
-		EspxURL:     espxURL,
+		PartnerURL:     partnerURL,
 		VideoBucket: videoBucket,
 		AdsStreamId: adsStreamId,
 		TMPDir:      GetEnv("TMP_DIR", os.TempDir()),
