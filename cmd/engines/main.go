@@ -22,7 +22,7 @@ import (
 )
 
 type trackedTask struct {
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	ch     models.PlayoutChannel
 }
 
@@ -119,13 +119,13 @@ func reconcileEngines(
 		newCh, stillActive := activeMap[id]
 		if !stillActive {
 			log.Printf("[Engine] Stopping playout engine for channel: %s (no longer active)", id)
-			task.cancel()
+			task.cancel(fmt.Errorf("channel %s no longer active", id))
 			delete(*tasks, id)
 			engineSvc.ClearChannelCache(id)
 			cleanupChannelDiskDir(tmpDir, id)
 		} else if isChannelChanged(task.ch, newCh) {
-			log.Printf("[Engine] Channel %s definition changed, restarting playout loop", id)
-			task.cancel()
+			log.Printf("[Engine] Channel %s definition changed, restarting playout loop: old(updatedAt=%v status=%s) new(updatedAt=%v status=%s)", id, task.ch.UpdatedAt, task.ch.Status, newCh.UpdatedAt, newCh.Status)
+			task.cancel(fmt.Errorf("channel %s definition changed", id))
 			delete(*tasks, id)
 			engineSvc.ClearChannelCache(id)
 		}
@@ -135,7 +135,7 @@ func reconcileEngines(
 	for id, ch := range activeMap {
 		if _, running := (*tasks)[id]; !running {
 			log.Printf("[Engine] Starting playout engine for channel: %s", id)
-			channelCtx, cancel := context.WithCancel(parent)
+			channelCtx, cancel := context.WithCancelCause(parent)
 			(*tasks)[id] = trackedTask{
 				cancel: cancel,
 				ch:     ch,
@@ -155,10 +155,19 @@ func reconcileEngines(
 }
 
 func isChannelChanged(oldCh, newCh models.PlayoutChannel) bool {
-	if oldCh.UpdatedAt != newCh.UpdatedAt {
+	if oldCh.Name != newCh.Name {
 		return true
 	}
-	if oldCh.Status != newCh.Status {
+	if oldCh.BaseName != newCh.BaseName {
+		return true
+	}
+	if oldCh.ContentTimezone != newCh.ContentTimezone {
+		return true
+	}
+	if oldCh.ChannelEpgID != newCh.ChannelEpgID {
+		return true
+	}
+	if oldCh.UseAdEpgAds != newCh.UseAdEpgAds {
 		return true
 	}
 	return false

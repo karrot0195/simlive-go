@@ -111,6 +111,7 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Warn("playout loop context done", "channel", channelID, "cause", context.Cause(ctx))
 			return
 		case <-ticker.C:
 			nowFloat := float64(time.Now().UnixNano()) / 1e9

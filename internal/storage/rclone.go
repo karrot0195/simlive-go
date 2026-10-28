@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"time"
 )
@@ -55,6 +56,13 @@ func (r *RcloneService) CopyTo(parentCtx context.Context, srcRemotePath, localDe
 
 	err := cmd.Run()
 	if err != nil {
+		if parentCtx.Err() != nil {
+			slog.Error("rclone copyto cancelled by parent ctx", "src", srcRemotePath, "dest", localDestPath, "err", err, "parentErr", parentCtx.Err(), "cause", context.Cause(parentCtx))
+		} else if ctx.Err() != nil {
+			slog.Error("rclone copyto timed out", "src", srcRemotePath, "dest", localDestPath, "err", err, "ctxErr", ctx.Err())
+		} else {
+			slog.Error("rclone copyto error", "src", srcRemotePath, "dest", localDestPath, "err", err, "stderr", stderr.String())
+		}
 		return fmt.Errorf("rclone copyto error: %v, stderr: %s", err, stderr.String())
 	}
 	return nil

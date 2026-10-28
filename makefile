@@ -64,6 +64,10 @@ start-all: build
 	@echo "All services started in background."
 	@echo "Tail logs with: make logs  (or: tail -f $(LOG_DIR)/*.log)"
 
+
+build-testredis:
+	go build -o bin/testredis ./cmd/testredis/
+
 build:
 	@mkdir -p $(BIN_DIR)
 	@echo "Building all services..."
