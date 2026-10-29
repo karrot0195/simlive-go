@@ -9,5 +9,6 @@ vendor/
 bin/
 *.pid
 .commandcode/
+.env
 config/deploy-targets.json
 config/DEPLOY.md

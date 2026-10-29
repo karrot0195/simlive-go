@@ -70,13 +70,12 @@ func main() {
 		cancelMap := make(map[string]context.CancelFunc)
 
 		processRunner := func(chCtx context.Context, ch models.PlayoutChannel) {
-			location := utils.GetLoc()
+			location := utils.LocalLocation()
 			nowInCh := time.Now().In(location)
 			today := utils.StartOfDay(nowInCh)
-			endOfDay := utils.EndOfDay(nowInCh)
-			tomorrow := utils.StartOfDay(nowInCh.Add(DIFF_TIME_AHEAD * time.Hour))
+			tomorrow := today.Add(24 * time.Hour)
 
-			isOverToday := tomorrow.After(endOfDay)
+			isOverToday := nowInCh.After(tomorrow.Add(-DIFF_TIME_AHEAD * time.Hour))
 
 			logger.VInfo("Processing active channel: %s (%s), today=%s tomorrow=%s",
 				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD))
@@ -103,7 +102,7 @@ func main() {
 				logger.Error("[Planner] ProcessWindow(%s) error: %v", ch.ID, err)
 			}
 
-			logger.Info("[PLANER] processed")
+			logger.Info("[PLANER] processed", "channelId", ch.ID)
 
 			// 3. Clean up expired data AFTER tick processing completes
 			plannerSvc.CleanupOldSegments(chCtx, ch.ID)
@@ -249,7 +248,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 		return
 	}
 
-	loc := utils.GetLoc()
+	loc := utils.LocalLocation()
 	day := date.In(loc)
 	dayStart := utils.StartOfDay(day)
 	dayEnd := utils.EndOfDay(day)

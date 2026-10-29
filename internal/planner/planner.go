@@ -73,19 +73,27 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	callStartedAt := time.Now()
 
-	loc := utils.GetLoc()
+	loc := utils.LocalLocation()
 	processDate := utils.StartOfDay(callStartedAt).In(loc)
 	if parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD, dateStr, loc); err == nil {
 		processDate = utils.StartOfDay(parsed)
 	}
 	horizon := utils.EndOfDay(processDate)
 
-	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, configs.TZ_NUM)
+	// Convert local timezone to +HH:MM for ESPX
+	tzNum := utils.LocalTZOffset()
+	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
 	if err != nil || len(schedules.Data) == 0 {
 		return err
 	}
 
 	p.logger.Info("pulled schedule data", "processDate", processDate, "time", time.Since(callStartedAt), "total items", schedules.TotalItems)
+
+	// Temporary gap-fill: duplicate tail/head schedule items so the timeline
+	// covers from now until the end of the day. Time fields are reset so the
+	// existing processor can handle them. Remove with schedule_pad.go once the
+	// real schedule-gap strategy is ready.
+	schedules.Data = padScheduleToCoverDay(schedules.Data, callStartedAt, horizon, channel.ContentTimezone)
 
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
@@ -124,7 +132,6 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 			if errors.Is(err, ErrEndOfTimeline) {
 				break
 			}
-
 			return err
 		}
 	}
