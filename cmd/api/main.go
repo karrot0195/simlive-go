@@ -91,8 +91,11 @@ func main() {
 		// playlist_:rendition ordering rule from the M1.5 plan,
 		// docs/300826-multi-rendition-abr-ladder.md §3 cmd/api/main.go).
 		apiGroup.GET("/channels/esp", channelHandler.ListESpxChannels)
+		// GET /api/channels/timeline/running — upcoming timelines for all enabled channels.
+		apiGroup.GET("/channels/timeline/running", channelHandler.GetRunningChannelsTimeline)
 		// /channels/:id CRUD + start/stop.
 		apiGroup.GET("/channels/:id", channelHandler.GetChannel)
+		apiGroup.GET("/channels/:id/prepared", channelHandler.GetPreparedSegments)
 		apiGroup.PUT("/channels/:id", channelHandler.UpdateChannel)
 		apiGroup.PATCH("/channels/:id", channelHandler.PatchChannel)
 		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
@@ -222,6 +225,15 @@ func main() {
 		// inside ./client; emits ./client/dist/index.html + ./client/dist/assets/*.
 		// The matching /assets/* route is registered above so the
 		// hashed JS / CSS referenced by this HTML resolve correctly.
+		c.File(filepath.Join(clientDistDir, "index.html"))
+	})
+
+	r.NoRoute(func(c *gin.Context) {
+		// SPA fallback: serve index.html for client-side routes.
+		if strings.HasPrefix(c.Request.URL.Path, "/api") || strings.HasPrefix(c.Request.URL.Path, "/live") {
+			c.Status(http.StatusNotFound)
+			return
+		}
 		c.File(filepath.Join(clientDistDir, "index.html"))
 	})
 

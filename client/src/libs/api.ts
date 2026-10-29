@@ -14,7 +14,9 @@ import type {
   ListChannelsParams,
   ListChannelsResp,
   PlayoutChannel,
-  UpdateChannelReq
+  UpdateChannelReq,
+  TimelineResponse,
+  PreparedSegmentsResp
 } from '@/types/api'
 
 const buildParams = (params: ListChannelsParams | undefined): Record<string, unknown> => {
@@ -101,5 +103,17 @@ export const api = {
   async listESpxChannels(config?: AxiosRequestConfig) {
     const resp = await client.get<unknown>('/channels/esp', config)
     return dataOf<ESpxChannelsListResp>(resp)
+  },
+
+  /** GET /api/channels/timeline/running — upcoming timelines for all enabled channels. */
+  async getRunningChannelsTimeline(config?: AxiosRequestConfig) {
+    const resp = await client.get<unknown>('/channels/timeline/running', config)
+    return dataOf<TimelineResponse>(resp)
+  },
+
+  /** GET /api/channels/{id}/prepared — rendition support + prepared segment files. */
+  async getPreparedSegments(id: string, config?: AxiosRequestConfig) {
+    const resp = await client.get<unknown>(`/channels/${encodeURIComponent(id)}/prepared`, config)
+    return dataOf<PreparedSegmentsResp>(resp)
   }
 }

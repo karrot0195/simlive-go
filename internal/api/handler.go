@@ -5,9 +5,11 @@
 package api
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -465,6 +467,100 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, row)
 }
 
+// ----- GET /api/channels/timeline/running -------------------------------
+// Returns upcoming timeline entries (running_time >= now) for all enabled
+// channels, grouped by channel, ordered by created_at DESC.
+func (h *ChannelHandler) GetRunningChannelsTimeline(c *gin.Context) {
+	now := time.Now()
+	nowUnix := float64(now.Unix())
+
+	var channels []models.PlayoutChannel
+	if err := h.db.Where("is_active = ?", true).Order("created_at DESC").Find(&channels).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list running channels"})
+		return
+	}
+
+	resp := TimelineResponse{Channels: []ChannelTimeline{}, GeneratedAt: nowUnix}
+
+	for _, ch := range channels {
+		key := "simlive:timeline:" + ch.ID
+		items, err := h.rdb.ZRangeByScore(c.Request.Context(), key, &redis.ZRangeBy{
+			Min: fmtFloat(nowUnix),
+			Max: "+inf",
+		}).Result()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read timeline for channel " + ch.ID})
+			return
+		}
+
+		entries := []TimelineEntry{}
+		for _, raw := range items {
+			var seg models.SegmentItem
+			if err := json.Unmarshal([]byte(raw), &seg); err != nil {
+				continue
+			}
+			if seg.RunningTime < nowUnix {
+				continue
+			}
+			entries = append(entries, TimelineEntry{
+				Sequence:        seg.Sequence,
+				RunningTime:     seg.RunningTime,
+				Duration:        seg.Duration,
+				TimeText:        seg.TimeText,
+				IsAd:            seg.IsAd,
+				AdType:          seg.AdType,
+				AdBreakID:       seg.AdBreakID,
+				AdBreakStart:    seg.AdBreakStart,
+				AdBreakDuration: seg.AdBreakDuration,
+			})
+		}
+
+		resp.Channels = append(resp.Channels, ChannelTimeline{
+			ChannelID:   ch.ID,
+			ChannelName: ch.Name,
+			Entries:     entries,
+		})
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (h *ChannelHandler) GetPreparedSegments(c *gin.Context) {
+	id := c.Param("id")
+	if !channelIDGuard(c, id) {
+		return
+	}
+	tmpDir := os.Getenv("TMP_DIR")
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+	renditions := []string{"360p", "720p", "1080p"}
+	out := map[string][]string{}
+	for _, r := range renditions {
+		dir := filepath.Join(tmpDir, id, r)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			out[r] = []string{}
+			continue
+		}
+		var segs []string = []string{}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if strings.HasSuffix(name, ".ts") {
+				segs = append(segs, name)
+			}
+		}
+		out[r] = segs
+	}
+	c.JSON(http.StatusOK, gin.H{"channel_id": id, "renditions": out})
+}
+func fmtFloat(f float64) string {
+	// redis ZRangeBy Min expects string; use strconv to avoid scientific notation.
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
 func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !channelIDGuard(c, id) {

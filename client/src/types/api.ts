@@ -59,6 +59,30 @@ export interface ESpxChannelsListResp {
   registered: Record<string, boolean>
 }
 
-export interface ApiError {
-  error: string
+export interface TimelineEntry {
+  sequence: number
+  running_time: number
+  duration: number
+  time_text: string
+  is_ad: boolean
+  ad_type?: string
+  ad_break_id?: number
+  ad_break_start?: number
+  ad_break_duration?: number
+}
+
+export interface ChannelTimeline {
+  channel_id: string
+  channel_name: string
+  entries: TimelineEntry[]
+}
+
+export interface TimelineResponse {
+  channels: ChannelTimeline[]
+  generated_at: number
+}
+
+export interface PreparedSegmentsResp {
+  channel_id: string
+  renditions: Record<string, string[]>
 }

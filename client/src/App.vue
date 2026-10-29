@@ -14,7 +14,8 @@ const isActive = (routeName) => {
 const isSuperAdmin = localStorage.getItem('is_super_admin') === 'true'
 
 const allMenuItems = [
-  { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' }
+  { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' },
+  { name: 'timeline', path: '/timeline', label: 'Running Timeline', icon: 'mdi-timeline-clock' }
 ]
 
 const menuItems = computed(() => {
@@ -26,9 +27,6 @@ const menuItems = computed(() => {
     <MainProvider>
       <v-app>
         <v-app-bar title="Simulated Live">
-          <template #prepend>
-            <img width="200px" src="https://static-cdn.espx.cloud/img/logo.png" alt="" />
-          </template>
           <template #append>
             <v-btn
               v-for="item in menuItems"
