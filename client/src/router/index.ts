@@ -2,6 +2,20 @@ import Panel from '@/views/Panel.vue'
 import RunningChannelsTimeline from '@/views/RunningChannelsTimeline.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
+const adminId = (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
+
+const getCurrentUserId = () => {
+  try {
+    const raw = localStorage.getItem('userInfo')
+    if (!raw) return ''
+    const parsed = JSON.parse(raw)
+    const id = parsed?.sub ?? parsed?.id ?? parsed?.user_id ?? ''
+    return id.toString().trim().toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
@@ -16,6 +30,18 @@ const router = createRouter({
       component: RunningChannelsTimeline
     }
   ]
+})
+
+router.beforeEach((to, from, next) => {
+  if (to.name === 'timeline') {
+    if (adminId && getCurrentUserId() === adminId) {
+      next()
+    } else {
+      next('/')
+    }
+  } else {
+    next()
+  }
 })
 
 export default router

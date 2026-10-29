@@ -163,6 +163,10 @@ You **MUST** consider the user input before proceeding (if not empty).
    - **Integration work**: Database connections, middleware, logging, external services
    - **Polish and validation**: Unit tests, performance optimization, documentation
 
+7a. **Scope Guard (during implementation)**: If a user request is not defined in `spec.md`, `plan.md`, or `tasks.md`:
+   - If it fits the current feature's domain (in-scope but unspecified): capture it and sync back into `tasks.md` (and note in `spec.md`) using `/speckit-scope-sync` so the artifacts stay synchronized. Do not implement it silently without recording.
+   - If it is completely out of scope for the current feature: do not modify artifacts; advise the user to run `/speckit-specify` for a new feature instead.
+
 8. Progress tracking and error handling:
    - Report progress after each completed task
    - Halt execution if any non-parallel task fails

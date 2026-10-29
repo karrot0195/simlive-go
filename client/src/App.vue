@@ -11,15 +11,29 @@ const isActive = (routeName) => {
   return route.name === routeName
 }
 
-const isSuperAdmin = localStorage.getItem('is_super_admin') === 'true'
+const adminId = (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
+
+const getCurrentUserId = () => {
+  try {
+    const raw = localStorage.getItem('userInfo')
+    if (!raw) return ''
+    const parsed = JSON.parse(raw)
+    const id = parsed?.sub ?? parsed?.id ?? parsed?.user_id ?? ''
+    return id.toString().trim().toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+const isAdmin = computed(() => !!adminId && getCurrentUserId() === adminId)
 
 const allMenuItems = [
   { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' },
-  { name: 'timeline', path: '/timeline', label: 'Running Timeline', icon: 'mdi-timeline-clock' }
+  { name: 'timeline', path: '/timeline', label: 'Running Timeline', icon: 'mdi-timeline-clock', adminOnly: true }
 ]
 
 const menuItems = computed(() => {
-  return allMenuItems.filter((item) => !item.adminOnly || isSuperAdmin)
+  return allMenuItems.filter((item) => !item.adminOnly || isAdmin.value)
 })
 </script>
 <template>

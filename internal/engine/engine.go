@@ -26,6 +26,7 @@ const (
 	DefaultDownloadAhead         = 5
 	PlaylistWindowSize           = 5
 	DefaultTimelineRetentionSecs = 600 // Keep 10 minutes of past timeline segments in Redis
+	MinSegmentBytes             = 1000
 )
 
 var RENDITIONMAP = []string{
@@ -454,36 +455,53 @@ func (e *Engine) prepareSegmentFromSource(parentCtx context.Context, logger *uti
 
 	marker := dest + ".pts"
 
-	if _, err := os.Stat(marker); err == nil {
-		return nil
+	// If already prepared and file meets minimum size, skip.
+	if info, err := os.Stat(marker); err == nil && info != nil {
+		if tsInfo, err := os.Stat(dest); err == nil && tsInfo.Size() >= MinSegmentBytes {
+			return nil
+		}
+		// Stale marker or undersized file: remove marker and reprocess.
+		_ = os.Remove(marker)
+	}
+
+	// Remove any stale partial/undersized dest file before re-downloading.
+	if info, err := os.Stat(dest); err == nil {
+		if info.Size() < MinSegmentBytes {
+			_ = os.Remove(dest)
+		}
+	} else if !os.IsNotExist(err) {
+		logger.VError("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
 	}
 
 	needDownload := false
 	if _, err := os.Stat(dest); err != nil {
-		if !os.IsNotExist(err) {
-			logger.VError("[%s] Stat dest error: %v (will re-download)", filepath.Base(dir), err)
-		}
 		needDownload = true
 	}
 	if needDownload {
 		if err := e.rclone.CopyTo(parentCtx, src, dest); err != nil {
+			_ = os.Remove(dest)
 			return utils.Error("download %s: %v", src, err)
 		}
 	}
 
-	if _, err := os.Stat(dest); err != nil {
+	if info, err := os.Stat(dest); err != nil {
 		return utils.Error("verify dest after download: %v", err)
+	} else if info.Size() < MinSegmentBytes {
+		_ = os.Remove(dest)
+		return utils.Error("downloaded file too small: %s (%d bytes)", dest, info.Size())
 	}
 
 	if err := e.rewritePtsOffset(parentCtx, dest, marker, seg); err != nil {
-		return e.markPrepared(marker)
-	}
-
-	err := e.applySliceEvents(parentCtx, seg, dest, channelID)
-	if err != nil {
+		_ = os.Remove(marker)
 		return err
 	}
-	return nil
+
+	if err := e.applySliceEvents(parentCtx, seg, dest, channelID); err != nil {
+		_ = os.Remove(marker)
+		return err
+	}
+
+	return e.markPrepared(marker)
 }
 
 func (e *Engine) applySliceEvents(parentCtx context.Context, seg models.SegmentItem, dest, channelID string) error {
@@ -606,7 +624,7 @@ func (e *Engine) rewritePtsOffset(parentCtx context.Context, dest, marker string
 		_ = os.Remove(tmp)
 		return err
 	}
-	return e.markPrepared(marker)
+	return nil
 }
 
 func (e *Engine) generateRenditionPlaylist(ctx context.Context, logger *utils.Logger, channelID, rendition string, segments []models.SegmentItem) {
@@ -622,8 +640,11 @@ func (e *Engine) generateRenditionPlaylist(ctx context.Context, logger *utils.Lo
 	var available []models.SegmentItem
 	for _, seg := range segments {
 		marker := filepath.Join(rDir, fmt.Sprintf("seg_%d.ts.pts", seg.Sequence))
+		segPath := filepath.Join(rDir, fmt.Sprintf("seg_%d.ts", seg.Sequence))
 		if _, err := os.Stat(marker); err == nil {
-			available = append(available, seg)
+			if info, err := os.Stat(segPath); err == nil && info.Size() >= MinSegmentBytes {
+				available = append(available, seg)
+			}
 		}
 	}
 	if len(available) == 0 {

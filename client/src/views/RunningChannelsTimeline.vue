@@ -106,6 +106,9 @@ const visibleChannels = computed(() => {
   }))
 })
 
+const loadedAhead = (ch: ChannelTimeline) =>
+  ch.entries.filter((e) => e.running_time + e.duration > now.value && isPrepared(ch, e)).length
+
 const channelSummary = (ch: ChannelTimeline) => {
   const entries = ch.entries.filter((e) => e.running_time + e.duration > now.value)
   if (!entries.length) return 'No upcoming entries.'
@@ -168,7 +171,7 @@ onUnmounted(() => {
 
     <v-card v-for="ch in visibleChannels" :key="ch.channel_id" class="mb-4">
       <v-card-title>{{ ch.channel_name }} ({{ ch.channel_id }})</v-card-title>
-      <v-card-subtitle>{{ channelSummary(ch) }}</v-card-subtitle>
+      <v-card-subtitle>{{ channelSummary(ch) }} • Loaded ahead: {{ loadedAhead(ch) }}</v-card-subtitle>
       <v-card-text>
         <div v-if="!ch.entries.length" class="text-medium-emphasis">No upcoming entries.</div>
         <div v-else class="timeline-scroll">

@@ -1,0 +1,11 @@
+hooks:
+  before_implement:
+    - extension: scope-sync
+      command: speckit.scope.sync
+      description: "Capture and sync unspecified requests before implementation"
+      optional: true
+  after_implement:
+    - extension: scope-sync
+      command: speckit.scope.sync
+      description: "Sync any captured unspecified requests after implementation"
+      optional: true
