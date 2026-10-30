@@ -1,42 +1,53 @@
 #!/bin/bash
 set -euo pipefail
 
-DIR=$(dirname $(dirname "$0"))
-
-echo "access $DIR"
-
-cd "$DIR"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+CONFIG_DIR=$(dirname "$SCRIPT_DIR")
+cd "$CONFIG_DIR"
 
 SERVER=${1:-}
-
 if [ -z "$SERVER" ]; then
     echo "Error: Please provide a server name or IP address as an argument." >&2
     exit 1
 fi
 
-PROJECT_PATH="/root/simlive-go"
-SSH_KEY="~/.ssh/espx_vultr"
-SSHCMD="ssh -i $SSH_KEY root@$SERVER"
-SCPCMD="scp -i $SSH_KEY"
+source "$SCRIPT_DIR/utils.sh" "$SERVER"
 
 echo "synch rclone"
-$SSHCMD "mkdir -p $PROJECT_PATH; mkdir -p /root/.config/rclone"
-$SCPCMD -r ./rclone root@$SERVER:/root/.config
+remote "mkdir -p /root/.config/rclone"
+init_remote_state
+
+echo "archive previous .env on server"
+archive_remote_file "$PROJECT_PATH/.env" env
+
+echo "synch rclone config"
+$SCPCMD -r ./rclone "${SSH_USER}@${SERVER}:/root/.config"
 
 echo "synch system"
-$SCPCMD -r ./system/* root@$SERVER:/etc/systemd/system/
+$SCPCMD -r ./system/* "${SSH_USER}@${SERVER}:/etc/systemd/system/"
 
-echo "synch app"
-$SCPCMD -r ./bin root@$SERVER:$PROJECT_PATH/bin
+if [ -n "$(ls -A ./bin 2>/dev/null)" ]; then
+    echo "archive previous bin on server"
+    archive_remote "$PROJECT_PATH/bin" bin .rollback_bin
+
+    echo "synch app"
+    remote "rm -rf '$PROJECT_PATH/bin'; mkdir -p '$PROJECT_PATH/bin'"
+    $SCPCMD -r ./bin/* "${SSH_USER}@${SERVER}:$PROJECT_PATH/bin"
+else
+    echo "skip bin sync: ./bin is empty (run 'make build' first)"
+fi
 
 echo "synch env"
-$SCPCMD -r ./.env root@$SERVER:$PROJECT_PATH
+$SCPCMD ./.env "${SSH_USER}@${SERVER}:$PROJECT_PATH"
 
 echo "synch compose"
-$SCPCMD -r ./docker-compose.yml  root@$SERVER:$PROJECT_PATH
+$SCPCMD ./docker-compose.yml "${SSH_USER}@${SERVER}:$PROJECT_PATH"
 
 echo "synch script"
-$SCPCMD -r ./scripts/enable-services.sh  root@$SERVER:$PROJECT_PATH
-$SCPCMD -r ./scripts/restart-services.sh  root@$SERVER:$PROJECT_PATH
-$SCPCMD -r ./journald.conf root@$SERVER:/etc/systemd/
-$SSHCMD "systemctl restart systemd-journald"
+for script in enable-services.sh restart-services.sh rollback.sh; do
+    $SCPCMD "./scripts/$script" "${SSH_USER}@${SERVER}:$PROJECT_PATH"
+done
+$SCPCMD ./journald.conf "${SSH_USER}@${SERVER}:/etc/systemd/"
+remote "systemctl restart systemd-journald"
+
+remote "echo '$TS deploy-server synced (env/system/bin/compose/scripts)' >> '$PROJECT_PATH/LOG-CHANGES.md'"
