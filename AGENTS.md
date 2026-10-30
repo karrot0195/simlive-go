@@ -13,3 +13,6 @@ Add important architectural decisions and patterns here.
 
 ## Common Workflows
 Document frequently used workflows and commands here.
+
+## MUST
+don't keep secret information in this project
