@@ -5,14 +5,21 @@ BIN_DIR := config/bin
 GO ?= go
 CLIENT_DIR := client
 
-# Reusable: kill a service if its pidfile points to a live process.
-# Usage: $(call kill_if_running,name)
+# Reusable: kill a service by pidfile AND by process name (so stale/missing
+# pidfiles cannot leave a duplicate running). Usage: $(call kill_if_running,name)
 define kill_if_running
-	@if [ -f "$(LOG_DIR)/$(1).pid" ]; then \
-		pid=$$(cat "$(LOG_DIR)/$(1).pid"); \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+	@pids=""; \
+	if [ -f "$(LOG_DIR)/$(1).pid" ]; then \
+		pp=$$(cat "$(LOG_DIR)/$(1).pid" 2>/dev/null); \
+		[ -n "$$pp" ] && pids="$$pids $$pp"; \
+	fi; \
+	for pp in $$(pgrep -x "$(1)" 2>/dev/null); do pids="$$pids $$pp"; done; \
+	pids=$$(printf '%s\n' $$pids | sort -u | tr '\n' ' '); \
+	for pid in $$pids; do \
+		[ -n "$$pid" ] || continue; \
+		if kill -0 "$$pid" 2>/dev/null; then \
 			echo "  Stopping existing $(1) (pid $$pid)..."; \
-			kill "$$pid"; \
+			kill "$$pid" 2>/dev/null || true; \
 			for i in 1 2 3 4 5 6 7 8 9 10; do \
 				kill -0 "$$pid" 2>/dev/null || break; \
 				sleep 0.2; \
@@ -23,8 +30,8 @@ define kill_if_running
 			fi; \
 			echo "  $(1) stopped."; \
 		fi; \
-		rm -f "$(LOG_DIR)/$(1).pid"; \
-	fi
+	done; \
+	rm -f "$(LOG_DIR)/$(1).pid"
 endef
 
 # Reusable: start a service in the background and record its pid
@@ -92,13 +99,10 @@ logs:
 
 stop:
 	@echo "Stopping all services..."
-	@for f in "$(LOG_DIR)"/*.pid; do \
-		[ -f "$$f" ] || continue; \
-		pid=$$(cat "$$f"); \
-		name=$$(basename "$$f" .pid); \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
+	@for name in api planner engines; do \
+		for pid in $$(pgrep -x "$$name" 2>/dev/null); do \
 			echo "  Stopping $$name (pid $$pid)..."; \
-			kill "$$pid"; \
+			kill "$$pid" 2>/dev/null || true; \
 			for i in 1 2 3 4 5 6 7 8 9 10; do \
 				kill -0 "$$pid" 2>/dev/null || break; \
 				sleep 0.2; \
@@ -108,9 +112,9 @@ stop:
 				kill -9 "$$pid" 2>/dev/null || true; \
 			fi; \
 			echo "  $$name stopped."; \
-		fi; \
-		rm -f "$$f"; \
+		done; \
 	done
+	@rm -f "$(LOG_DIR)"/*.pid
 	@echo "All services stopped."
 
 restart:
@@ -118,14 +122,12 @@ restart:
 	@$(MAKE) start-all
 
 status:
-	@for f in "$(LOG_DIR)"/*.pid; do \
-		[ -f "$$f" ] || continue; \
-		name=$$(basename "$$f" .pid); \
-		pid=$$(cat "$$f"); \
-		if [ -n "$$pid" ] && kill -0 "$$pid" 2>/dev/null; then \
-			echo "$$name: running (pid $$pid)"; \
+	@for name in api planner engines; do \
+		pids=$$(pgrep -x "$$name" 2>/dev/null | tr '\n' ' '); \
+		if [ -n "$$pids" ]; then \
+			echo "$$name: running (pids $$pids)"; \
 		else \
-			echo "$$name: not running (stale pid $$pid)"; \
+			echo "$$name: not running"; \
 		fi; \
 	done
 

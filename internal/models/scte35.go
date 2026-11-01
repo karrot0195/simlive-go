@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Comcast/scte35-go/pkg/scte35"
-
 )
 
 func buildSpliceInsert(eventID uint32, durSec float64, out bool) (string, error) {

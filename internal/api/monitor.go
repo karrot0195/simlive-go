@@ -161,10 +161,13 @@ func (h *ChannelHandler) buildTimelinePayload(ctx context.Context) map[string]in
 				AdBreakDuration: seg.AdBreakDuration,
 			})
 		}
+		fallbackActive, fallbackSourceDate := h.fallbackStateFor(ctx, ch.ID, nowUnix)
 		respChannels = append(respChannels, ChannelTimeline{
-			ChannelID:   ch.ID,
-			ChannelName: ch.Name,
-			Entries:     entries,
+			ChannelID:          ch.ID,
+			ChannelName:        ch.Name,
+			Entries:            entries,
+			FallbackActive:     fallbackActive,
+			FallbackSourceDate: fallbackSourceDate,
 		})
 
 		// Segment track recording is handled solely by StartSegmentTrackRecorder
@@ -174,4 +177,40 @@ func (h *ChannelHandler) buildTimelinePayload(ctx context.Context) map[string]in
 		"channels":     respChannels,
 		"generated_at": nowUnix,
 	}
+}
+
+// fallbackStateFor reports whether the channel's coverage at nowUnix comes from
+// a fallback-filled day, plus the retained schedule's source day. State for
+// other days (e.g. tomorrow's placeholder planned tonight) is ignored.
+func (h *ChannelHandler) fallbackStateFor(ctx context.Context, channelID string, nowUnix float64) (bool, string) {
+	if h.rdb == nil {
+		return false, ""
+	}
+	values, err := h.rdb.HGetAll(ctx, "planner:fallback:"+channelID).Result()
+	if err != nil {
+		return false, ""
+	}
+	return selectFallbackState(values, nowUnix)
+}
+
+// selectFallbackState picks the fallback entry whose host-local day window
+// contains nowUnix. Entries for other days are ignored.
+func selectFallbackState(values map[string]string, nowUnix float64) (bool, string) {
+	for _, raw := range values {
+		var state struct {
+			SourceDate string `json:"source_date"`
+			DayStart   int64  `json:"day_start"`
+			DayEnd     int64  `json:"day_end"`
+		}
+		if err := json.Unmarshal([]byte(raw), &state); err != nil {
+			continue
+		}
+		if state.DayStart <= 0 || state.DayEnd <= state.DayStart {
+			continue
+		}
+		if nowUnix >= float64(state.DayStart) && nowUnix <= float64(state.DayEnd) {
+			return true, state.SourceDate
+		}
+	}
+	return false, ""
 }

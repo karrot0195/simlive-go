@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"simlive/internal/models"
 	"simlive/internal/planner"
 	"simlive/internal/utils"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,12 +17,11 @@ import (
 func prepareEnv(logger *utils.Logger, ctx context.Context, db *gorm.DB, rdb *redis.Client) {
 	cleanUp := utils.GetEnv("ENABLE_CLEAN_UP", "") == "true"
 	if cleanUp {
-		logger.Info("[Planner] startup: ENABLE_CLEAN_UP=true, flushing all Redis keys + removing TMP_DIR")
+		logger.Info("[Planner] startup: ENABLE_CLEAN_UP=true, flushing all Redis keys + removing TMP_DIR (EPG cache preserved)")
 		if rdb != nil {
 			rdb.FlushAll(ctx)
 		}
-		tmpDir := utils.GetEnv("TMP_DIR", os.TempDir())
-		os.RemoveAll(tmpDir)
+		wipeTmpDirExcept(logger, utils.GetEnv("TMP_DIR", os.TempDir()), utils.GetSettings().EpgCacheDir)
 		if db != nil {
 			db.Model(&models.PlayoutChannel{}).
 				Where("status = ?", models.PlayoutLIVEStatus).
@@ -29,6 +30,30 @@ func prepareEnv(logger *utils.Logger, ctx context.Context, db *gorm.DB, rdb *red
 		return
 	}
 	logger.Info("[Planner] startup: preserving all Redis keys + TMP_DIR cache")
+}
+
+// wipeTmpDirExcept removes every child of tmpDir except keepDir, so the
+// retained EPG schedule survives a cold start. keepDir may live outside tmpDir.
+func wipeTmpDirExcept(logger *utils.Logger, tmpDir, keepDir string) {
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.Info("[Planner] startup: cannot read TMP_DIR", "dir", tmpDir, "error", err)
+		}
+		return
+	}
+
+	keep := filepath.Clean(keepDir)
+	for _, entry := range entries {
+		target := filepath.Clean(filepath.Join(tmpDir, entry.Name()))
+		// Skip the cache itself and any ancestor directory that contains it.
+		if keep != "" && (target == keep || strings.HasPrefix(keep, target+string(os.PathSeparator))) {
+			continue
+		}
+		if err := os.RemoveAll(target); err != nil {
+			logger.Info("[Planner] startup: failed to remove", "path", target, "error", err)
+		}
+	}
 }
 
 func plannerInterval() time.Duration {
@@ -55,7 +80,6 @@ func logMetrics(logger *utils.Logger, ctx context.Context, p *planner.Planner, c
 		if cursor > 0 {
 			cursorStr = time.Unix(cursor, 0).UTC().Format("2006-01-02T15:04:05Z")
 		}
-		logger.Info("[METRIC] channel=%s name=%q zset_size=%d cursor=%s live_segment=%d download_ahead=%d",
-			ch.ID, ch.Name, size, cursorStr, cursor, 5)
+		logger.Info("[METRIC]", "channel", ch.ID, "name", ch.Name, "zset_size", size, "cursor", cursorStr, "live_segment", cursor, "download_ahead", 5)
 	}
 }

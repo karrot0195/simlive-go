@@ -22,6 +22,11 @@ import (
 
 var ErrEndOfTimeline = errors.New("end of timeline reached - processing complete")
 
+// ErrNoScheduleData means the provider returned no usable schedule and the
+// channel has no retained schedule to fall back to. The caller must treat the
+// day as NOT prepared (failure counter / channel status), never as success.
+var ErrNoScheduleData = errors.New("no schedule data from provider or retained schedule")
+
 type LastSegmentState struct {
 	Sequence    int64
 	RunningTime float64
@@ -34,6 +39,7 @@ type Planner struct {
 	rclone     *storage.RcloneService
 	bucketName string
 	adsBucket  string
+	cacheDir   string
 
 	logger *utils.Logger
 }
@@ -46,6 +52,7 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *st
 		rclone:     rclone,
 		bucketName: utils.GetSettings().VideoBucket,
 		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),
+		cacheDir:   utils.GetSettings().EpgCacheDir,
 		logger:     utils.GetLogger("PLANNER"),
 	}
 }
@@ -74,28 +81,113 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	callStartedAt := time.Now()
 
 	loc := utils.LocalLocation()
-	processDate := utils.StartOfDay(callStartedAt).In(loc)
+	nowLocal := callStartedAt.In(loc)
+	processDate := utils.StartOfDay(nowLocal)
 	if parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD, dateStr, loc); err == nil {
 		processDate = utils.StartOfDay(parsed)
 	}
 	horizon := utils.EndOfDay(processDate)
+	targetDate := processDate.Format(configs.DATE_FORMAT_YYYY_MM_DD)
+
+	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
 	// Convert local timezone to +HH:MM for ESPX
 	tzNum := utils.LocalTZOffset()
-	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
-	if err != nil || len(schedules.Data) == 0 {
+	schedules, fetchErr := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
+
+	var (
+		items        []models.ESPXScheduleItem
+		fallbackFrom *RetainedSchedule
+	)
+
+	if fetchErr == nil && schedules != nil && len(schedules.Data) > 0 {
+		items = schedules.Data
+		p.logger.Info("pulled schedule data", "processDate", processDate, "time", time.Since(callStartedAt), "total items", schedules.TotalItems)
+
+		// Retain the raw provider payload before any gap-fill rewriting.
+		p.saveProviderSchedule(channel, dateStr, items)
+
+		// Temporary gap-fill: duplicate tail/head schedule items so the timeline
+		// covers from now until the end of the day. Time fields are reset so the
+		// existing processor can handle them. Remove with schedule_pad.go once the
+		// real schedule-gap strategy is ready.
+		items = padScheduleToCoverDay(items, callStartedAt, horizon, channel.ContentTimezone)
+	} else {
+		if fetchErr != nil {
+			logger.VWarning("provider schedule error for channel=%s date=%s, trying retained schedule: %v", channel.ID, dateStr, fetchErr)
+		} else {
+			logger.VWarning("provider returned no schedule items for channel=%s date=%s, trying retained schedule", channel.ID, dateStr)
+		}
+
+		// FR-007: fallback must never duplicate or rewind existing coverage.
+		hasCoverage, err := p.HasDateInTimeline(ctx, channel.ID, processDate, horizon)
+		if err != nil {
+			return fmt.Errorf("check fallback coverage for %s: %w", channel.ID, err)
+		}
+
+		cached, hasRetained := p.loadRetainedSchedule(channel)
+
+		switch decideFallback(hasCoverage, hasRetained) {
+		case fallbackSkipCovered:
+			logger.Info("target day already covered, skipping fallback generation", "channel", channel.ID, "date", targetDate)
+			return nil
+		case fallbackUnavailable:
+			logger.Error("no schedule data (provider empty, cache empty)", "channel", channel.ID, "date", dateStr)
+			return ErrNoScheduleData
+		}
+
+		items = buildFallbackSchedule(cached.Items, processDate, horizon, channel.ContentTimezone)
+		if len(items) == 0 {
+			logger.Error("no schedule data (provider empty, cache usable items empty)", "channel", channel.ID, "date", dateStr, "source_date", cached.SourceDate)
+			return ErrNoScheduleData
+		}
+		fallbackFrom = cached
+	}
+
+	if err := p.planScheduleItems(ctx, channel, processDate, horizon, items, fallbackFrom != nil); err != nil {
 		return err
 	}
 
-	p.logger.Info("pulled schedule data", "processDate", processDate, "time", time.Since(callStartedAt), "total items", schedules.TotalItems)
+	if fallbackFrom != nil {
+		// The label must reflect committed coverage: a fallback that produced
+		// nothing is a failure, not a prepared day.
+		covered, err := p.HasDateInTimeline(ctx, channel.ID, processDate, horizon)
+		if err != nil {
+			logger.Error("failed to verify fallback coverage", "channel", channel.ID, "date", targetDate, "error", err)
+			return err
+		}
+		if !covered {
+			logger.Error("no schedule data (fallback produced no coverage)", "channel", channel.ID, "date", dateStr, "source_date", fallbackFrom.SourceDate)
+			return ErrNoScheduleData
+		}
 
-	// Temporary gap-fill: duplicate tail/head schedule items so the timeline
-	// covers from now until the end of the day. Time fields are reset so the
-	// existing processor can handle them. Remove with schedule_pad.go once the
-	// real schedule-gap strategy is ready.
-	schedules.Data = padScheduleToCoverDay(schedules.Data, callStartedAt, horizon, channel.ContentTimezone)
+		state := FallbackState{
+			TargetDate:  targetDate,
+			SourceDate:  fallbackFrom.SourceDate,
+			SourceEpgID: fallbackFrom.ChannelEpgID,
+			DayStart:    processDate.Unix(),
+			DayEnd:      horizon.Unix(),
+			CreatedAt:   time.Now().Unix(),
+		}
+		if err := p.MarkFallbackDay(ctx, channel.ID, state); err != nil {
+			logger.Error("failed to record fallback state", "channel", channel.ID, "date", targetDate, "error", err)
+		}
+		logger.Info("fallback used", "channel", channel.ID, "source_date", fallbackFrom.SourceDate, "target_date", targetDate, "items", len(items))
+	}
 
-	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
+	p.logger.Info(fmt.Sprintf("finished plan for %s", processDate))
+	return nil
+}
+
+// planScheduleItems walks items through the existing segment processor,
+// seeding sequence and running time from the current timeline tail so
+// coverage stays continuous. useFallback only affects logging.
+func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutChannel, processDate, horizon time.Time, items []models.ESPXScheduleItem, useFallback bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	nowLocal := time.Now().In(utils.LocalLocation())
 
 	var adSegments []models.SegmentItem
 
@@ -103,24 +195,23 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		adSegments, _ = p.loadAdSegments()
 	}
 
-	// Fetch last sequence and running time from Redis to guarantee sequence & time continuity across days
 	lastState := p.getLastSegmentState(ctx, channel.ID)
 
 	processor := &SegmentProcessor{
 		planner:         p,
 		pipe:            p.rdb.Pipeline(),
 		ctx:             ctx,
-		nowUnix:         float64(callStartedAt.Unix()),
+		nowUnix:         float64(nowLocal.Unix()),
 		sequenceCounter: lastState.Sequence,
 		runningTime:     lastState.RunningTime,
 		adSegments:      adSegments,
 		channelID:       channel.ID,
 		horizon:         horizon,
-		logger:          logger,
+		logger:          utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID)),
 		useEpgAds:       channel.UseAdEpgAds,
 	}
 
-	for _, item := range schedules.Data {
+	for _, item := range items {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -128,7 +219,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 			break
 		}
 
-		if err := processor.ProcessScheduleItem(item, channel, callStartedAt); err != nil {
+		if err := processor.ProcessScheduleItem(item, channel, nowLocal); err != nil {
 			if errors.Is(err, ErrEndOfTimeline) {
 				break
 			}
@@ -139,8 +230,54 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 	// Sync the last segment into Redis.
 	processor.synchSegmentIntoRedis(ctx, true)
 
-	p.logger.Info(fmt.Sprintf("finished plan for %s", processDate))
+	if useFallback {
+		p.logger.Info("planned fallback coverage", "channel", channel.ID, "date", processDate.Format(configs.DATE_FORMAT_YYYY_MM_DD), "next_sequence", processor.sequenceCounter)
+	}
 	return processor.flush()
+}
+
+// RecoverFallbackDay switches a fallback-covered day back to real provider
+// data. It reports false when the day is not a fallback day or the provider
+// still has nothing for it. Real coverage replaces only the not-yet-played
+// part of the timeline, and the marker is cleared only after the replan
+// succeeds.
+func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.PlayoutChannel, day time.Time) (bool, error) {
+	dayStart := utils.StartOfDay(day.In(utils.LocalLocation()))
+
+	state, ok := p.HasFallbackDay(ctx, channel.ID, dayStart)
+	if !ok {
+		return false, nil
+	}
+
+	dateStr := dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD)
+	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
+	if err != nil {
+		return false, err
+	}
+	if schedules == nil || len(schedules.Data) == 0 {
+		return false, nil
+	}
+
+	p.saveProviderSchedule(channel, dateStr, schedules.Data)
+
+	cutoff := recoveryCutoff(time.Now(), dayStart, utils.GetPlannerSettings().WindowBufferSeconds)
+	if _, err := p.rdb.ZRemRangeByScore(ctx, timelineKeyFor(channel.ID), fmt.Sprintf("%d", cutoff), "+inf").Result(); err != nil {
+		return false, err
+	}
+
+	horizon := utils.EndOfDay(dayStart)
+	items := padScheduleToCoverDay(schedules.Data, time.Now(), horizon, channel.ContentTimezone)
+
+	if err := p.planScheduleItems(ctx, channel, dayStart, horizon, items, false); err != nil {
+		return false, err
+	}
+
+	if err := p.ClearFallbackDay(ctx, channel.ID, dayStart); err != nil {
+		p.logger.Error("[Planner] failed to clear fallback state", "channel", channel.ID, "date", dateStr, "error", err)
+	}
+	p.logger.Info("fallback recovered with real data",
+		"channel", channel.ID, "date", dateStr, "source_date", state.SourceDate, "cutoff", cutoff, "items", len(schedules.Data))
+	return true, nil
 }
 
 func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {

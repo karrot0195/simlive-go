@@ -2,6 +2,7 @@ package utils
 
 import (
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -19,6 +20,10 @@ type Settings struct {
 	AdsStreamId string
 
 	TMPDir string
+	// EpgCacheDir holds the retained (last known-good) EPG schedule per
+	// channel. It lives under TMP_DIR by default and is preserved when
+	// ENABLE_CLEAN_UP=true wipes TMP_DIR.
+	EpgCacheDir string
 }
 
 // PlannerSettings holds the planner's tunables. Some fields are sourced from
@@ -117,6 +122,7 @@ func GetSettings() *Settings {
 	videoBucket := GetEnv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
 
 	adsStreamId := "ads-v4"
+	tmpDir := GetEnv("TMP_DIR", os.TempDir())
 	return &Settings{
 		DBHost:      dbHost,
 		DBName:      dbName,
@@ -127,7 +133,8 @@ func GetSettings() *Settings {
 		EspxURL:     espxURL,
 		VideoBucket: videoBucket,
 		AdsStreamId: adsStreamId,
-		TMPDir:      GetEnv("TMP_DIR", os.TempDir()),
+		TMPDir:      tmpDir,
+		EpgCacheDir: GetEnv("EPG_CACHE_DIR", filepath.Join(tmpDir, "epg-cache")),
 	}
 
 }

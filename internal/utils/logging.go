@@ -15,7 +15,7 @@ type Logger struct {
 }
 
 var (
-	loggerCache  = make(map[string]*Logger)
+	loggerCache   = make(map[string]*Logger)
 	loggerCacheMu sync.Mutex
 )
 

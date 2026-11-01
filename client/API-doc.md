@@ -85,7 +85,15 @@ Reads `simlive:hls:{ch}` (Redis); falls back to `{TMP_DIR}/{ch}/playlist.m3u8`. 
 | `simlive:timeline:{ch}` | planner (legacy) | yes |
 | `simlive:renditions:{ch}` | planner (ladder meta) | yes |
 | `planner:cursor:{ch}` | planner | yes |
+| `planner:fallback:{ch}` | planner (hash: target day → fallback state) | yes |
 | `planner:failures:{ch}` | planner (breaker) | **NO** (cleared by `start`) |
+
+`planner:fallback:{ch}` holds one field per fallback-filled day (`YYYY-MM-DD`). Each
+value: `target_date`, `source_date`, `source_epg_id`, `day_start`, `day_end` (host-local
+day bounds, unix seconds), `created_at`. TTL is refreshed to `REDIS_EXPIRY_HOURS` (26h)
+on every write; a field is removed only after real provider data replaces that day's
+coverage. The timeline API projects it as `fallback_active` /
+`fallback_source_date` on each `channels[]` entry (both omitted when not active).
 
 ---
 
@@ -112,6 +120,9 @@ Current client surface:
 - `PLANNER_INTERVAL` (default `5m`) — `plannerTickHint()`.
 - `REDIS_ADDR` (default `6371`) — `rdb`.
 - `TMP_DIR` (default `./outputs`) — disk fallback.
+- `EPG_CACHE_DIR` (default `{TMP_DIR}/epg-cache`) — retained EPG schedule per channel
+  (`{channel_id}.json`), used when the provider returns no data. Survives
+  `ENABLE_CLEAN_UP=true`; delete the directory to reset fallback.
 
 ---
 

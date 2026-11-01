@@ -44,7 +44,7 @@ func TestSegmentItem_AdFields_RoundTrip(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"is_ad":true`,
-		`"ad_break_id":"adbreak-1725014400"`,
+		`"ad_break_id":1`,
 		`"ad_break_start":1725014400`,
 		`"ad_break_duration":30`,
 	} {
@@ -60,7 +60,7 @@ func TestSegmentItem_AdFields_RoundTrip(t *testing.T) {
 		t.Fatalf("IsAd = false, want true")
 	}
 	if out.AdBreakID != src.AdBreakID {
-		t.Fatalf("AdBreakID = %q, want %q", out.AdBreakID, src.AdBreakID)
+		t.Fatalf("AdBreakID = %d, want %d", out.AdBreakID, src.AdBreakID)
 	}
 	if out.AdBreakStart != src.AdBreakStart {
 		t.Fatalf("AdBreakStart = %v, want %v", out.AdBreakStart, src.AdBreakStart)

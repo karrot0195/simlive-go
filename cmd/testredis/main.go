@@ -96,7 +96,7 @@ func main() {
 		}
 
 		// Print as YYYY-MM-DD HH:MM:SS <TZ>  sequence=XXXXX
-		fmt.Printf("%s %s  sequence=%d %s\n",
+		fmt.Printf("%s %s  sequence=%d is_ad=%t\n",
 			t.Format("2006-01-02 15:04:05"),
 			zoneName,
 			entry.Sequence,

@@ -30,15 +30,15 @@ func TestSegmentItem_Rendition_Roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !strings.Contains(string(b), `"rendition":"720p"`) {
-		t.Fatalf("expected JSON to contain rendition=720p, got %s", b)
+	if !strings.Contains(string(b), `"rendition":["720p"]`) {
+		t.Fatalf("expected JSON to contain rendition=[\"720p\"], got %s", b)
 	}
 	var out SegmentItem
 	if err := json.Unmarshal(b, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out.Renditions[0] != "720p" {
-		t.Fatalf("Rendition = %q, want 720p", out.Renditions)
+	if len(out.Renditions) != 1 || out.Renditions[0] != "720p" {
+		t.Fatalf("Renditions = %q, want [720p]", out.Renditions)
 	}
 }
 
@@ -51,7 +51,7 @@ func TestSegmentItem_LegacyUnmarshal_NoRenditionField(t *testing.T) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(s.Renditions) == 0 {
+	if len(s.Renditions) != 0 {
 		t.Fatalf("legacy member: Rendition = %q, want empty", s.Renditions)
 	}
 	if s.Sequence != 7 {
@@ -68,10 +68,10 @@ func TestSegmentItem_Rendition_MultiRung(t *testing.T) {
 
 	ab, _ := json.Marshal(a)
 	bb, _ := json.Marshal(b)
-	if !strings.Contains(string(ab), `"rendition":"360p"`) {
+	if !strings.Contains(string(ab), `"rendition":["360p"]`) {
 		t.Fatalf("a missing rendition tag: %s", ab)
 	}
-	if !strings.Contains(string(bb), `"rendition":"720p"`) {
+	if !strings.Contains(string(bb), `"rendition":["720p"]`) {
 		t.Fatalf("b missing rendition tag: %s", bb)
 	}
 

@@ -142,11 +142,6 @@ func ReadSegmentTrack(channelID string, limit int) ([]SegmentTrackEntry, error) 
 	}
 	defer f.Close()
 
-	prepared := map[int64]bool{}
-	for _, s := range scanPreparedSequences(channelID) {
-		prepared[s] = true
-	}
-
 	var all []SegmentTrackEntry
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -157,10 +152,6 @@ func ReadSegmentTrack(channelID string, limit int) ([]SegmentTrackEntry, error) 
 		}
 		var e SegmentTrackEntry
 		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			continue
-		}
-		// Evict stale entries whose segment files no longer exist on disk.
-		if len(prepared) > 0 && !prepared[e.Sequence] {
 			continue
 		}
 		all = append(all, e)

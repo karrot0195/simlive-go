@@ -22,17 +22,17 @@ var PreRollCUEINDelaysSec = []float64{4}
 const DefaulStreamName = "Default Stream"
 
 type SegmentProcessor struct {
-	planner         *Planner
-	pipe            redis.Pipeliner
-	ctx             context.Context
-	sequenceCounter int64
-	lastAdTime      float64
-	totalAdsAdded   int
-	nowUnix         float64
-	adSegments          []models.SegmentItem
+	planner              *Planner
+	pipe                 redis.Pipeliner
+	ctx                  context.Context
+	sequenceCounter      int64
+	lastAdTime           float64
+	totalAdsAdded        int
+	nowUnix              float64
+	adSegments           []models.SegmentItem
 	isBlockingProcessing bool
-	processingSegments  []models.SegmentItem
-	adsId               uint32
+	processingSegments   []models.SegmentItem
+	adsId                uint32
 
 	runningTime        float64
 	totalSegmentsAdded int64

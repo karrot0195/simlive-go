@@ -23,6 +23,21 @@ All units under `config/system/`, installed to `/etc/systemd/system/`.
 - `config/.env` → DB, Redis, ESPX, TMP_DIR, renditions, workers
 - nginx config: proxy `/` and `/live` to `127.0.0.1:8080`, SSL cert configured
 - `config/rclone` → `/root/.config/rclone`
+- `EPG_CACHE_DIR` (default `{TMP_DIR}/epg-cache`) → retained EPG schedule per channel, used when the provider returns empty. Preserved across `ENABLE_CLEAN_UP=true` restarts; delete the directory to reset the fallback.
+
+## EPG cache fallback
+
+The planner writes the last non-empty provider schedule for each channel to
+`{EPG_CACHE_DIR}/{channel_id}.json` (atomic temp-file + rename). When a provider
+fetch returns an empty payload or errors, the planner repeats that retained
+schedule, time-shifted to cover the host-local target day, instead of going dark.
+A successful fetch replaces the file; empty/error responses never touch it.
+Fallback usage is recorded in Redis (`planner:fallback:{channel_id}`) and shown as
+a `FALLBACK: <source_date>` chip on the admin timeline.
+
+- File schema: `version` (1), `channel_id`, `channel_epg_id`, `source_date`, `fetched_at`, `timezone`, `items`.
+- A file whose version/channel/EPG id does not match, or that is unreadable/corrupt, is ignored (never fatal).
+- No age-based expiry: retained schedules are reused indefinitely.
 
 ## Layout on server
 
@@ -32,6 +47,7 @@ All units under `config/system/`, installed to `/etc/systemd/system/`.
   client/dist/    Vue admin UI (served by nginx or api)
   .env
   outputs/        TMP_DIR for segments
+  outputs/epg-cache/  EPG_CACHE_DIR (retained schedules; survives ENABLE_CLEAN_UP)
   logs/           (journald via stdout; no file logs)
 ```
 

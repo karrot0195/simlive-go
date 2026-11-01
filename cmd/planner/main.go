@@ -27,7 +27,7 @@ var logger = utils.GetLogger("PLANNER")
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		logger.VWarning(fmt.Sprintf("Failed to load .env file: %v", err))
+		logger.VWarning("Failed to load .env file: %v", err)
 	}
 
 	settings := utils.GetSettings()
@@ -257,7 +257,16 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	if err != nil {
 		logger.Error(fmt.Sprintf("[Planner] HasDateInTimeline(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), err))
 	} else if has {
-		logger.VInfo("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+		// The day is already covered. If it was covered by fallback content,
+		// probe the provider and switch back to real data when it recovers.
+		recovered, recErr := p.RecoverFallbackDay(ctx, ch, dayStart)
+		if recErr != nil {
+			logger.VError("[Planner] RecoverFallbackDay(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), recErr)
+		} else if recovered {
+			logger.VInfo("[Planner] channel=%s date=%s recovered from fallback with provider data", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+		} else {
+			logger.VInfo("[Planner] channel=%s date=%s already prepared, skipping", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
+		}
 		p.ResetFailureCounterForChannel(ctx, ch.ID)
 		p.MarkChannelLiveForChannel(ctx, ch.ID)
 		return

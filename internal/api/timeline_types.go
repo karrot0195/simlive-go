@@ -19,6 +19,14 @@ type ChannelTimeline struct {
 	ChannelID   string          `json:"channel_id"`
 	ChannelName string          `json:"channel_name"`
 	Entries     []TimelineEntry `json:"entries"`
+
+	// FallbackActive is true while now falls inside a fallback-filled day,
+	// meaning the upcoming coverage comes from a retained schedule rather than
+	// the provider. Omitted when false.
+	FallbackActive bool `json:"fallback_active,omitempty"`
+	// FallbackSourceDate is the retained schedule's day (YYYY-MM-DD).
+	// Omitted when FallbackActive is false.
+	FallbackSourceDate string `json:"fallback_source_date,omitempty"`
 }
 
 // TimelineResponse is the body of GET /api/channels/timeline/running.

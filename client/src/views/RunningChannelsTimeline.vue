@@ -36,6 +36,9 @@ const connectSSE = () => {
     try {
       const data = JSON.parse(ev.data)
       if (Array.isArray(data.channels)) {
+        // Update watched channels in place; channels that were un-watched
+        // (omitted from the payload) are left untouched so they remain
+        // visible but stop receiving segment updates.
         const next = [...channels.value]
         for (const ch of data.channels) {
           const idx = next.findIndex((c) => c.channel_id === ch.channel_id)
@@ -87,7 +90,7 @@ const gapSeconds = (a: TimelineEntry, b: TimelineEntry) =>
   b.running_time - (a.running_time + a.duration)
 
 const fetchPrepared = async () => {
-  const ids = channels.value.map((c) => c.channel_id)
+  const ids = channels.value.filter((c) => monitored.value.has(c.channel_id)).map((c) => c.channel_id)
   const results = await Promise.all(
     ids.map((id) =>
       api.getPreparedSegments(id).catch(() => null)
@@ -251,6 +254,11 @@ onUnmounted(() => {
     <v-card v-for="ch in visibleChannels" :key="ch.channel_id" class="mb-4">
       <v-card-title>
   {{ ch.channel_name }} ({{ ch.channel_id }})
+  <span class="fallback-slot">
+    <v-chip v-if="ch.fallback_active" color="warning" size="small" class="ml-2" variant="flat">
+      FALLBACK: {{ ch.fallback_source_date || 'unknown' }}
+    </v-chip>
+  </span>
   <v-btn size="small" class="ml-2" @click="toggleWatch(ch.channel_id)">
     {{ monitored.has(ch.channel_id) ? 'Unwatch' : 'Watch' }}
   </v-btn>
@@ -334,6 +342,13 @@ onUnmounted(() => {
   </v-container>
 </template>
 <style scoped>
+.fallback-slot {
+  display: inline-flex;
+  align-items: center;
+  min-width: 190px;
+  min-height: 24px;
+  vertical-align: middle;
+}
 .timeline-scroll {
   overflow-x: auto;
   padding-bottom: 8px;

@@ -26,7 +26,7 @@ const (
 	DefaultDownloadAhead         = 5
 	PlaylistWindowSize           = 5
 	DefaultTimelineRetentionSecs = 600 // Keep 10 minutes of past timeline segments in Redis
-	MinSegmentBytes             = 1000
+	MinSegmentBytes              = 1000
 )
 
 var RENDITIONMAP = []string{

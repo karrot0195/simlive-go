@@ -75,6 +75,10 @@ export interface ChannelTimeline {
   channel_id: string
   channel_name: string
   entries: TimelineEntry[]
+  /** True while coverage comes from a retained schedule instead of the provider. */
+  fallback_active?: boolean
+  /** Day (YYYY-MM-DD) of the retained schedule backing the fallback coverage. */
+  fallback_source_date?: string
 }
 
 export interface TimelineResponse {
