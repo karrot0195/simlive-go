@@ -19,16 +19,16 @@ const enableTemporaryScheduleGapFill = true
 // item, so the timeline covers from now until the end of the day.
 // Time fields are rewritten so the existing processor can handle the duplicated
 // items without any other changes.
-func padScheduleToCoverDay(items []models.ESPXScheduleItem, now, horizon time.Time, tzStr string) []models.ESPXScheduleItem {
+func padScheduleToCoverDay(items []models.PartnerScheduleItem, now, horizon time.Time, tzStr string) []models.PartnerScheduleItem {
 	if !enableTemporaryScheduleGapFill || len(items) == 0 {
 		return items
 	}
 
-	firstStart, err := utils.ParseESPXTime(items[0].LocalDateStart, tzStr)
+	firstStart, err := utils.ParsePartnerTime(items[0].LocalDateStart, tzStr)
 	if err != nil {
 		return items
 	}
-	lastEnd, err := utils.ParseESPXTime(items[len(items)-1].LocalDateEnd, tzStr)
+	lastEnd, err := utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
 	if err != nil {
 		return items
 	}
@@ -39,7 +39,7 @@ func padScheduleToCoverDay(items []models.ESPXScheduleItem, now, horizon time.Ti
 	}
 
 	// Recalculate after prepending.
-	lastEnd, err = utils.ParseESPXTime(items[len(items)-1].LocalDateEnd, tzStr)
+	lastEnd, err = utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
 	if err != nil {
 		return items
 	}
@@ -55,20 +55,20 @@ func padScheduleToCoverDay(items []models.ESPXScheduleItem, now, horizon time.Ti
 // prependLeadIn duplicates a slice of tail schedule items and prepends them so
 // the block ends at firstStart. Items are walked from the end until the total
 // duration covers the gap.
-func prependLeadIn(items []models.ESPXScheduleItem, now, firstStart time.Time, tzStr string) []models.ESPXScheduleItem {
+func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time, tzStr string) []models.PartnerScheduleItem {
 	gap := firstStart.Sub(now)
 	if gap <= 0 {
 		return items
 	}
 
 	n := len(items)
-	var selected []models.ESPXScheduleItem
+	var selected []models.PartnerScheduleItem
 	var total time.Duration
 
 	for i := n - 1; i >= 0; i-- {
 		item := items[i]
-		start, _ := utils.ParseESPXTime(item.LocalDateStart, tzStr)
-		end, _ := utils.ParseESPXTime(item.LocalDateEnd, tzStr)
+		start, _ := utils.ParsePartnerTime(item.LocalDateStart, tzStr)
+		end, _ := utils.ParsePartnerTime(item.LocalDateEnd, tzStr)
 		dur := end.Sub(start)
 		if dur <= 0 {
 			continue
@@ -76,7 +76,7 @@ func prependLeadIn(items []models.ESPXScheduleItem, now, firstStart time.Time, t
 		total += dur
 
 		// Prepend to keep chronological order within the block.
-		selected = append([]models.ESPXScheduleItem{item}, selected...)
+		selected = append([]models.PartnerScheduleItem{item}, selected...)
 		if total >= gap {
 			break
 		}
@@ -87,12 +87,12 @@ func prependLeadIn(items []models.ESPXScheduleItem, now, firstStart time.Time, t
 	}
 
 	// Shift each selected item backwards so the block ends at firstStart.
-	shifted := make([]models.ESPXScheduleItem, len(selected))
+	shifted := make([]models.PartnerScheduleItem, len(selected))
 	currentEnd := firstStart
 	for i := len(selected) - 1; i >= 0; i-- {
 		original := selected[i]
-		start, _ := utils.ParseESPXTime(original.LocalDateStart, tzStr)
-		end, _ := utils.ParseESPXTime(original.LocalDateEnd, tzStr)
+		start, _ := utils.ParsePartnerTime(original.LocalDateStart, tzStr)
+		end, _ := utils.ParsePartnerTime(original.LocalDateEnd, tzStr)
 		dur := end.Sub(start)
 
 		newEnd := currentEnd
@@ -111,8 +111,8 @@ func prependLeadIn(items []models.ESPXScheduleItem, now, firstStart time.Time, t
 // appendTail duplicates a slice of head schedule items and appends them so the
 // block starts at the current lastEnd and continues until the gap to the
 // horizon is covered.
-func appendTail(items []models.ESPXScheduleItem, horizon time.Time, tzStr string) []models.ESPXScheduleItem {
-	lastEnd, err := utils.ParseESPXTime(items[len(items)-1].LocalDateEnd, tzStr)
+func appendTail(items []models.PartnerScheduleItem, horizon time.Time, tzStr string) []models.PartnerScheduleItem {
+	lastEnd, err := utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
 	if err != nil {
 		return items
 	}
@@ -121,7 +121,7 @@ func appendTail(items []models.ESPXScheduleItem, horizon time.Time, tzStr string
 		return items
 	}
 
-	var selected []models.ESPXScheduleItem
+	var selected []models.PartnerScheduleItem
 	var total time.Duration
 	n := len(items)
 
@@ -129,8 +129,8 @@ func appendTail(items []models.ESPXScheduleItem, horizon time.Time, tzStr string
 		advanced := false
 		for i := 0; i < n; i++ {
 			item := items[i]
-			start, _ := utils.ParseESPXTime(item.LocalDateStart, tzStr)
-			end, _ := utils.ParseESPXTime(item.LocalDateEnd, tzStr)
+			start, _ := utils.ParsePartnerTime(item.LocalDateStart, tzStr)
+			end, _ := utils.ParsePartnerTime(item.LocalDateEnd, tzStr)
 			dur := end.Sub(start)
 			if dur <= 0 {
 				continue
@@ -152,11 +152,11 @@ func appendTail(items []models.ESPXScheduleItem, horizon time.Time, tzStr string
 		return items
 	}
 
-	shifted := make([]models.ESPXScheduleItem, len(selected))
+	shifted := make([]models.PartnerScheduleItem, len(selected))
 	currentStart := lastEnd
 	for i, original := range selected {
-		start, _ := utils.ParseESPXTime(original.LocalDateStart, tzStr)
-		end, _ := utils.ParseESPXTime(original.LocalDateEnd, tzStr)
+		start, _ := utils.ParsePartnerTime(original.LocalDateStart, tzStr)
+		end, _ := utils.ParsePartnerTime(original.LocalDateEnd, tzStr)
 		dur := end.Sub(start)
 
 		newStart := currentStart
@@ -172,9 +172,9 @@ func appendTail(items []models.ESPXScheduleItem, horizon time.Time, tzStr string
 	return append(items, shifted...)
 }
 
-func cloneScheduleItem(item models.ESPXScheduleItem) models.ESPXScheduleItem {
+func cloneScheduleItem(item models.PartnerScheduleItem) models.PartnerScheduleItem {
 	clone := item
-	clone.Programme.ProgrammeStreams = make([]models.ESPXProgrammeStream, len(item.Programme.ProgrammeStreams))
+	clone.Programme.ProgrammeStreams = make([]models.PartnerProgrammeStream, len(item.Programme.ProgrammeStreams))
 	copy(clone.Programme.ProgrammeStreams, item.Programme.ProgrammeStreams)
 	return clone
 }

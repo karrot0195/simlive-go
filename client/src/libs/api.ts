@@ -10,7 +10,7 @@ import type { AxiosRequestConfig } from 'axios'
 import { client } from '@/libs/client'
 import type {
   CreateChannelReq,
-  ESpxChannelsListResp,
+  PartnerChannelsListResp,
   ListChannelsParams,
   ListChannelsResp,
   PlayoutChannel,
@@ -101,9 +101,9 @@ export const api = {
   },
 
   /** GET /api/channels/esp — ESPX upstream list + registered map. */
-  async listESpxChannels(config?: AxiosRequestConfig) {
+  async listPartnerChannels(config?: AxiosRequestConfig) {
     const resp = await client.get<unknown>('/channels/esp', config)
-    return dataOf<ESpxChannelsListResp>(resp)
+    return dataOf<PartnerChannelsListResp>(resp)
   },
 
   /** GET /api/channels/timeline/running — upcoming timelines for all enabled channels. */

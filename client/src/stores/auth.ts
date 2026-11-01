@@ -31,7 +31,7 @@ export const useAuthStore = defineStore('auth', {
           this.token = token
           localStorage.setItem('token', token)
           localStorage.setItem('userInfo', JSON.stringify(response.data))
-          localStorage.setItem('is_super_admin', String(response.data.sub === '365fa149-e89f-4e6e-af7a-ee31d2f74cc4'))
+          localStorage.setItem('is_super_admin', String(response.data.sub === (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()))
           console.log('Token verified successfully:', response.data)
         })
         .catch((error) => {

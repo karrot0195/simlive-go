@@ -42,8 +42,8 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
 	// 3. Init Services
-	espxClient := api.NewESPXClient(settings.EspxURL)
-	channelHandler := api.NewChannelHandler(db, espxClient, rdb)
+	partnerClient := api.NewPartnerClient(settings.PartnerURL)
+	channelHandler := api.NewChannelHandler(db, partnerClient, rdb)
 	api.StartSegmentTrackRecorder(db, rdb)
 
 	// 4. HTTP REST API
@@ -91,7 +91,7 @@ func main() {
 		// radix tree treats `esp` as a static prefix (mirrors the
 		// playlist_:rendition ordering rule from the M1.5 plan,
 		// docs/300826-multi-rendition-abr-ladder.md §3 cmd/api/main.go).
-		apiGroup.GET("/channels/esp", channelHandler.ListESpxChannels)
+		apiGroup.GET("/channels/esp", channelHandler.ListPartnerChannels)
 		// GET /api/channels/timeline/running — upcoming timelines for all enabled channels.
 		apiGroup.GET("/channels/timeline/running", channelHandler.GetRunningChannelsTimeline)
 		apiGroup.GET("/channels/monitored", channelHandler.ListMonitoredChannels)

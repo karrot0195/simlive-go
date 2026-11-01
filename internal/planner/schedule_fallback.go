@@ -12,8 +12,8 @@ import (
 // horizon, time-shifting each occurrence so the produced items cover the whole
 // target day. Durations come from the retained items; timestamps are formatted
 // in tz (the channel content timezone) so the processor's
-// ParseESPXTime(..., channel.ContentTimezone) yields the intended instants.
-func buildFallbackSchedule(items []models.ESPXScheduleItem, targetDayStart, horizon time.Time, tz string) []models.ESPXScheduleItem {
+// ParsePartnerTime(..., channel.ContentTimezone) yields the intended instants.
+func buildFallbackSchedule(items []models.PartnerScheduleItem, targetDayStart, horizon time.Time, tz string) []models.PartnerScheduleItem {
 	if len(items) == 0 || !targetDayStart.Before(horizon) {
 		return nil
 	}
@@ -21,17 +21,17 @@ func buildFallbackSchedule(items []models.ESPXScheduleItem, targetDayStart, hori
 	loc := fallbackFormatLocation(tz)
 
 	type sequencedItem struct {
-		item     models.ESPXScheduleItem
+		item     models.PartnerScheduleItem
 		duration time.Duration
 	}
 
 	sequence := make([]sequencedItem, 0, len(items))
 	for _, item := range items {
-		start, err := utils.ParseESPXTime(item.LocalDateStart, tz)
+		start, err := utils.ParsePartnerTime(item.LocalDateStart, tz)
 		if err != nil {
 			continue
 		}
-		end, err := utils.ParseESPXTime(item.LocalDateEnd, tz)
+		end, err := utils.ParsePartnerTime(item.LocalDateEnd, tz)
 		if err != nil {
 			continue
 		}
@@ -45,7 +45,7 @@ func buildFallbackSchedule(items []models.ESPXScheduleItem, targetDayStart, hori
 		return nil
 	}
 
-	result := make([]models.ESPXScheduleItem, 0, len(sequence))
+	result := make([]models.PartnerScheduleItem, 0, len(sequence))
 	cursor := targetDayStart
 	for cursor.Before(horizon) {
 		advanced := false
@@ -97,7 +97,7 @@ func decideFallback(dayHasCoverage, hasRetained bool) fallbackDecision {
 	}
 }
 
-// fallbackFormatLocation mirrors utils.ParseESPXTime's location resolution so
+// fallbackFormatLocation mirrors utils.ParsePartnerTime's location resolution so
 // formatting and parsing round-trip to the same instants.
 func fallbackFormatLocation(tz string) *time.Location {
 	if loc, err := time.LoadLocation(tz); err == nil {

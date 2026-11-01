@@ -15,7 +15,7 @@ func retainedFixture() *RetainedSchedule {
 		ChannelEpgID: "epg-1",
 		SourceDate:   "2026-10-29",
 		Timezone:     "UTC",
-		Items: []models.ESPXScheduleItem{
+		Items: []models.PartnerScheduleItem{
 			makeScheduleItem("A", "2026-10-29 00:00:00", "2026-10-29 01:00:00"),
 		},
 	}
@@ -52,7 +52,7 @@ func TestSaveRetainedScheduleOverwritesAtomically(t *testing.T) {
 
 	newer := retainedFixture()
 	newer.SourceDate = "2026-10-30"
-	newer.Items = []models.ESPXScheduleItem{
+	newer.Items = []models.PartnerScheduleItem{
 		makeScheduleItem("B", "2026-10-30 00:00:00", "2026-10-30 02:00:00"),
 	}
 	if err := saveRetainedSchedule(dir, newer); err != nil {
@@ -83,7 +83,7 @@ func TestSaveProviderScheduleIgnoresEmptyItems(t *testing.T) {
 	channel := models.PlayoutChannel{ID: "ch-1", ChannelEpgID: "epg-1"}
 
 	p.saveProviderSchedule(channel, "2026-10-29", nil)
-	p.saveProviderSchedule(channel, "2026-10-29", []models.ESPXScheduleItem{})
+	p.saveProviderSchedule(channel, "2026-10-29", []models.PartnerScheduleItem{})
 
 	if _, ok := loadRetainedSchedule(dir, "ch-1", "epg-1"); ok {
 		t.Fatalf("expected no cache file after empty provider response")
@@ -129,7 +129,7 @@ func TestLoadRetainedScheduleRejectsInvalidCache(t *testing.T) {
 				}
 			} else {
 				sched := *valid
-				sched.Items = append([]models.ESPXScheduleItem(nil), valid.Items...)
+				sched.Items = append([]models.PartnerScheduleItem(nil), valid.Items...)
 				if tt.mutate != nil {
 					tt.mutate(&sched)
 				}

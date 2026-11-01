@@ -35,7 +35,7 @@ type LastSegmentState struct {
 type Planner struct {
 	db         *gorm.DB
 	rdb        *redis.Client
-	espx       *api.ESPXClient
+	partner       *api.PartnerClient
 	rclone     *storage.RcloneService
 	bucketName string
 	adsBucket  string
@@ -44,11 +44,11 @@ type Planner struct {
 	logger *utils.Logger
 }
 
-func NewPlanner(db *gorm.DB, rdb *redis.Client, espx *api.ESPXClient, rclone *storage.RcloneService) *Planner {
+func NewPlanner(db *gorm.DB, rdb *redis.Client, partner *api.PartnerClient, rclone *storage.RcloneService) *Planner {
 	return &Planner{
 		db:         db,
 		rdb:        rdb,
-		espx:       espx,
+		partner:       partner,
 		rclone:     rclone,
 		bucketName: utils.GetSettings().VideoBucket,
 		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),
@@ -93,10 +93,10 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	// Convert local timezone to +HH:MM for ESPX
 	tzNum := utils.LocalTZOffset()
-	schedules, fetchErr := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
+	schedules, fetchErr := p.partner.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
 
 	var (
-		items        []models.ESPXScheduleItem
+		items        []models.PartnerScheduleItem
 		fallbackFrom *RetainedSchedule
 	)
 
@@ -182,7 +182,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 // planScheduleItems walks items through the existing segment processor,
 // seeding sequence and running time from the current timeline tail so
 // coverage stays continuous. useFallback only affects logging.
-func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutChannel, processDate, horizon time.Time, items []models.ESPXScheduleItem, useFallback bool) error {
+func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutChannel, processDate, horizon time.Time, items []models.PartnerScheduleItem, useFallback bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -250,7 +250,7 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	}
 
 	dateStr := dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD)
-	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
+	schedules, err := p.partner.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
 	if err != nil {
 		return false, err
 	}

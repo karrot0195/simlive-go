@@ -9,8 +9,8 @@ import (
 	"simlive/internal/utils"
 )
 
-func makeScheduleItem(id, start, end string) models.ESPXScheduleItem {
-	return models.ESPXScheduleItem{
+func makeScheduleItem(id, start, end string) models.PartnerScheduleItem {
+	return models.PartnerScheduleItem{
 		ID:             id,
 		LocalDateStart: start,
 		LocalDateEnd:   end,
@@ -19,7 +19,7 @@ func makeScheduleItem(id, start, end string) models.ESPXScheduleItem {
 
 func TestPadScheduleToCoverDayLeadInAndTail(t *testing.T) {
 	tz := "UTC"
-	items := []models.ESPXScheduleItem{
+	items := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 08:00:00", "2026-10-28 09:00:00"),
 		makeScheduleItem("B", "2026-10-28 09:00:00", "2026-10-28 10:00:00"),
 		makeScheduleItem("C", "2026-10-28 10:00:00", "2026-10-28 11:00:00"),
@@ -35,13 +35,13 @@ func TestPadScheduleToCoverDayLeadInAndTail(t *testing.T) {
 	}
 
 	// The first padded item should start at or before now.
-	first, _ := utils.ParseESPXTime(padded[0].LocalDateStart, tz)
+	first, _ := utils.ParsePartnerTime(padded[0].LocalDateStart, tz)
 	if first.After(now) {
 		t.Errorf("expected first padded item to start at or before now, got %s", first)
 	}
 
 	// The last padded item should end at or after horizon.
-	last, _ := utils.ParseESPXTime(padded[len(padded)-1].LocalDateEnd, tz)
+	last, _ := utils.ParsePartnerTime(padded[len(padded)-1].LocalDateEnd, tz)
 	if last.Before(horizon) {
 		t.Errorf("expected last padded item to end at or after horizon, got %s", last)
 	}
@@ -54,7 +54,7 @@ func TestPadScheduleToCoverDayLeadInAndTail(t *testing.T) {
 
 func TestPadScheduleToCoverDayNoLeadInWhenNowAfterFirst(t *testing.T) {
 	tz := "UTC"
-	items := []models.ESPXScheduleItem{
+	items := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 08:00:00", "2026-10-28 09:00:00"),
 		makeScheduleItem("B", "2026-10-28 09:00:00", "2026-10-28 10:00:00"),
 	}

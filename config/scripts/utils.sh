@@ -10,7 +10,7 @@ fi
 PROJECT_PATH="${PROJECT_PATH:-/root/simlive-go}"
 SSH_USER="${SSH_USER:-root}"
 # NOTE: "$HOME" (not "~") so the path survives variable expansion.
-SSH_KEY="${SSH_KEY:-$HOME/.ssh/espx_vultr}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
 SSHCMD="ssh -i $SSH_KEY $SSH_USER@$SERVER"
 SCPCMD="scp -i $SSH_KEY"
 TS="${TS:-$(date +%Y%m%d-%H%M%S)}"

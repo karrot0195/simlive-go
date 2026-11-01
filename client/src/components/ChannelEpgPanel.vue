@@ -4,13 +4,13 @@ import { masterPlaylistUrl } from '@/libs/hls'
 import { useChannelsStores } from '@/stores/channels'
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import type { ESPXChannelListItem, PlayoutChannel, PlayoutChannelStatus } from '@/types/api'
+import type { PartnerChannelListItem, PlayoutChannel, PlayoutChannelStatus } from '@/types/api'
 
 type ChannelWithLive = PlayoutChannel & { isLive?: boolean }
 
 const channelStore = useChannelsStores()
 const playoutChannels = computed<PlayoutChannel[]>(() => channelStore.data)
-const channelAvaialbelAssigned = ref<ESPXChannelListItem[]>([])
+const channelAvaialbelAssigned = ref<PartnerChannelListItem[]>([])
 const loading = ref(false)
 
 const isLiveStatus = (status: PlayoutChannelStatus | undefined) =>
@@ -21,7 +21,7 @@ const fetchData = async () => {
   try {
     const [active, esp] = await Promise.all([
       api.listChannels({ page_size: 100 }),
-      api.listESpxChannels()
+      api.listPartnerChannels()
     ])
     channelStore.setValues(active.data)
 

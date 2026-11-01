@@ -25,7 +25,7 @@ type RetainedSchedule struct {
 	SourceDate   string                    `json:"source_date"`
 	FetchedAt    int64                     `json:"fetched_at"`
 	Timezone     string                    `json:"timezone"`
-	Items        []models.ESPXScheduleItem `json:"items"`
+	Items        []models.PartnerScheduleItem `json:"items"`
 }
 
 func retainedSchedulePath(cacheDir, channelID string) string {
@@ -118,7 +118,7 @@ func (p *Planner) loadRetainedSchedule(channel models.PlayoutChannel) (*Retained
 
 // saveProviderSchedule retains a non-empty provider response for channel.
 // Failures are logged and never abort the planning run.
-func (p *Planner) saveProviderSchedule(channel models.PlayoutChannel, dateStr string, items []models.ESPXScheduleItem) {
+func (p *Planner) saveProviderSchedule(channel models.PlayoutChannel, dateStr string, items []models.PartnerScheduleItem) {
 	if len(items) == 0 {
 		return
 	}

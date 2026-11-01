@@ -46,15 +46,15 @@ export interface ListChannelsParams {
   q?: string
 }
 
-export interface ESPXChannelListItem {
+export interface PartnerChannelListItem {
   id: string
   name: string
   base_name?: string
   content_timezone?: string
 }
 
-export interface ESpxChannelsListResp {
-  data: ESPXChannelListItem[]
+export interface PartnerChannelsListResp {
+  data: PartnerChannelListItem[]
   /** Keyed by ESPX channel id; value true if already registered locally. */
   registered: Record<string, boolean>
 }

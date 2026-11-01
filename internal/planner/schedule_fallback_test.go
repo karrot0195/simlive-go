@@ -18,14 +18,14 @@ func mustParse(t *testing.T, value string) time.Time {
 	return parsed
 }
 
-func assertContinuous(t *testing.T, items []models.ESPXScheduleItem, tz string) {
+func assertContinuous(t *testing.T, items []models.PartnerScheduleItem, tz string) {
 	t.Helper()
 	for i := 1; i < len(items); i++ {
-		prevEnd, err := utils.ParseESPXTime(items[i-1].LocalDateEnd, tz)
+		prevEnd, err := utils.ParsePartnerTime(items[i-1].LocalDateEnd, tz)
 		if err != nil {
 			t.Fatalf("parse prev end: %v", err)
 		}
-		nextStart, err := utils.ParseESPXTime(items[i].LocalDateStart, tz)
+		nextStart, err := utils.ParsePartnerTime(items[i].LocalDateStart, tz)
 		if err != nil {
 			t.Fatalf("parse next start: %v", err)
 		}
@@ -37,7 +37,7 @@ func assertContinuous(t *testing.T, items []models.ESPXScheduleItem, tz string) 
 
 func TestBuildFallbackScheduleCoversWholeTargetDay(t *testing.T) {
 	tz := "UTC"
-	source := []models.ESPXScheduleItem{
+	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 10:00:00", "2026-10-28 11:00:00"),
 		makeScheduleItem("B", "2026-10-28 11:00:00", "2026-10-28 12:00:00"),
 	}
@@ -50,12 +50,12 @@ func TestBuildFallbackScheduleCoversWholeTargetDay(t *testing.T) {
 		t.Fatalf("expected fallback coverage")
 	}
 
-	first, _ := utils.ParseESPXTime(got[0].LocalDateStart, tz)
+	first, _ := utils.ParsePartnerTime(got[0].LocalDateStart, tz)
 	if !first.Equal(targetDayStart) {
 		t.Errorf("first item starts at %s, want %s", first, targetDayStart)
 	}
 
-	last, _ := utils.ParseESPXTime(got[len(got)-1].LocalDateEnd, tz)
+	last, _ := utils.ParsePartnerTime(got[len(got)-1].LocalDateEnd, tz)
 	if last.Before(horizon) {
 		t.Errorf("last item ends at %s, want >= horizon %s", last, horizon)
 	}
@@ -65,7 +65,7 @@ func TestBuildFallbackScheduleCoversWholeTargetDay(t *testing.T) {
 
 func TestBuildFallbackScheduleRepeatsSourceAcrossCycles(t *testing.T) {
 	tz := "UTC"
-	source := []models.ESPXScheduleItem{
+	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 00:00:00", "2026-10-28 01:00:00"),
 		makeScheduleItem("B", "2026-10-28 01:00:00", "2026-10-28 02:00:00"),
 	}
@@ -85,7 +85,7 @@ func TestBuildFallbackScheduleRepeatsSourceAcrossCycles(t *testing.T) {
 
 func TestBuildFallbackScheduleSkipsNonPositiveDurations(t *testing.T) {
 	tz := "UTC"
-	source := []models.ESPXScheduleItem{
+	source := []models.PartnerScheduleItem{
 		makeScheduleItem("ZERO", "2026-10-28 00:00:00", "2026-10-28 00:00:00"),
 		makeScheduleItem("NEGATIVE", "2026-10-28 02:00:00", "2026-10-28 01:00:00"),
 		makeScheduleItem("VALID", "2026-10-28 03:00:00", "2026-10-28 04:00:00"),
@@ -108,7 +108,7 @@ func TestBuildFallbackScheduleSkipsNonPositiveDurations(t *testing.T) {
 
 func TestBuildFallbackScheduleStopsWithoutProgress(t *testing.T) {
 	tz := "UTC"
-	source := []models.ESPXScheduleItem{
+	source := []models.PartnerScheduleItem{
 		makeScheduleItem("ZERO", "2026-10-28 00:00:00", "2026-10-28 00:00:00"),
 	}
 
@@ -120,7 +120,7 @@ func TestBuildFallbackScheduleStopsWithoutProgress(t *testing.T) {
 
 func TestBuildFallbackScheduleShiftsAcrossMonthBoundary(t *testing.T) {
 	tz := "UTC"
-	source := []models.ESPXScheduleItem{
+	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-01-31 20:00:00", "2026-01-31 21:00:00"),
 	}
 

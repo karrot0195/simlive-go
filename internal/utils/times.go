@@ -41,7 +41,7 @@ func LocalTZOffset() string {
 	return fmt.Sprintf("%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 }
 
-func ParseESPXTime(timeStr, tzStr string) (time.Time, error) {
+func ParsePartnerTime(timeStr, tzStr string) (time.Time, error) {
 	loc, err := time.LoadLocation(tzStr)
 	if err != nil {
 		loc, err = time.LoadLocation(configs.TZ)

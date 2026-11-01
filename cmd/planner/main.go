@@ -45,9 +45,9 @@ func main() {
 
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
-	espxClient := api.NewESPXClient(settings.EspxURL)
+	partnerClient := api.NewPartnerClient(settings.PartnerURL)
 	rcloneSvc := storage.NewRcloneService()
-	plannerSvc := planner.NewPlanner(db, rdb, espxClient, rcloneSvc)
+	plannerSvc := planner.NewPlanner(db, rdb, partnerClient, rcloneSvc)
 
 	mainCtx := context.Background()
 
