@@ -1,4 +1,4 @@
-package engine
+package models
 
 import (
 	"fmt"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/Comcast/scte35-go/pkg/scte35"
 
-	"simlive/internal/models"
 )
 
 func buildSpliceInsert(eventID uint32, durSec float64, out bool) (string, error) {
@@ -98,7 +97,7 @@ func formatBreakDuration(durSec float64) string {
 	return s
 }
 
-func buildCueOutLine(seg models.SegmentItem) string {
+func buildCueOutLine(seg SegmentItem) string {
 	id := seg.AdBreakID
 	durSec := seg.AdBreakDuration
 	start := formatBreakStartDate(seg.AdBreakStart)
@@ -126,7 +125,7 @@ func buildCueOutLine(seg models.SegmentItem) string {
 //
 // CUE-IN does not carry CLASS or END-ON-NEXT -- the CUE-OUT's
 // END-ON-NEXT=YES tells the player where the break ends.
-func buildCueInLine(seg models.SegmentItem) string {
+func buildCueInLine(seg SegmentItem) string {
 	id := seg.AdBreakID
 	start := formatBreakStartDate(seg.AdBreakStart)
 	durSec := seg.AdBreakDuration
@@ -141,7 +140,7 @@ func buildCueInLine(seg models.SegmentItem) string {
 		id, start, b64, dur)
 }
 
-func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (string, error) {
+func BuildMediaPlaylistBody(segments []SegmentItem, targetDuration int) (string, error) {
 	if len(segments) == 0 {
 		return "", fmt.Errorf("buildMediaPlaylistBody: empty segments")
 	}
@@ -221,7 +220,7 @@ func buildMediaPlaylistBody(segments []models.SegmentItem, targetDuration int) (
 //
 // See docs/030926_0432-extend-scte35-spliceinserts-preroll-4-8-seconds.md
 // §3.2.1 for the design rationale.
-func buildSpliceInsertLine(seg models.SegmentItem, ev models.SpliceInsert) string {
+func buildSpliceInsertLine(seg SegmentItem, ev SpliceInsert) string {
 	id := seg.AdBreakID
 	out := ev.Type == "out"
 	b64, err := buildSpliceInsert(uint32(ev.EventID), ev.Duration, out)

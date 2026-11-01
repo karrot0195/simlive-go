@@ -663,7 +663,7 @@ func (e *Engine) generateRenditionPlaylist(ctx context.Context, logger *utils.Lo
 	}
 	targetDuration := int(math.Ceil(maxDuration))
 
-	playlist, err := buildMediaPlaylistBody(segments, targetDuration)
+	playlist, err := models.BuildMediaPlaylistBody(segments, targetDuration)
 	if err != nil {
 		logger.Error("buildMediaPlaylistBody failed", "channel", channelID, "rung", rendition, "error", err)
 		return

@@ -34,7 +34,7 @@ func main() {
 		log.Fatalf("Failed to connect DB: %v", err)
 	}
 
-	if err := db.AutoMigrate(&models.PlayoutChannel{}); err != nil {
+	if err := db.AutoMigrate(&models.PlayoutChannel{}, &models.MonitoredChannel{}); err != nil {
 		log.Fatalf("Failed to migrate DB: %v", err)
 	}
 
@@ -44,6 +44,7 @@ func main() {
 	// 3. Init Services
 	espxClient := api.NewESPXClient(settings.EspxURL)
 	channelHandler := api.NewChannelHandler(db, espxClient, rdb)
+	api.StartSegmentTrackRecorder(db, rdb)
 
 	// 4. HTTP REST API
 	r := gin.Default()
@@ -93,9 +94,16 @@ func main() {
 		apiGroup.GET("/channels/esp", channelHandler.ListESpxChannels)
 		// GET /api/channels/timeline/running — upcoming timelines for all enabled channels.
 		apiGroup.GET("/channels/timeline/running", channelHandler.GetRunningChannelsTimeline)
+		apiGroup.GET("/channels/monitored", channelHandler.ListMonitoredChannels)
+		// Monitor endpoints (SSE + watch/unwatch)
+		apiGroup.GET("/channels/timeline/stream", channelHandler.StreamTimeline)
+		apiGroup.POST("/channels/:id/watch", channelHandler.WatchChannel)
+		apiGroup.POST("/channels/:id/unwatch", channelHandler.UnwatchChannel)
 		// /channels/:id CRUD + start/stop.
 		apiGroup.GET("/channels/:id", channelHandler.GetChannel)
 		apiGroup.GET("/channels/:id/prepared", channelHandler.GetPreparedSegments)
+		apiGroup.GET("/channels/:id/segment-track", channelHandler.GetSegmentTrack)
+		apiGroup.DELETE("/channels/:id/segment-track", channelHandler.ClearSegmentTrack)
 		apiGroup.PUT("/channels/:id", channelHandler.UpdateChannel)
 		apiGroup.PATCH("/channels/:id", channelHandler.PatchChannel)
 		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)

@@ -86,3 +86,18 @@ export interface PreparedSegmentsResp {
   channel_id: string
   renditions: Record<string, string[]>
 }
+
+export interface SegmentTrackEntry {
+  channel_id: string
+  sequence: number
+  status: string
+  timestamp: number
+  is_ad: boolean
+  renditions?: string[]
+  message?: string
+}
+
+export interface SegmentTrackResp {
+  channel_id: string
+  entries: SegmentTrackEntry[]
+}

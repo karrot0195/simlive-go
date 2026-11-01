@@ -33,8 +33,14 @@ func PrepareEnv(ctx context.Context, rdb *redis.Client) {
 		return
 	}
 	tmpDir := utils.GetEnv("TMP_DIR", os.TempDir())
-	log.Printf("[Engine] startup: ENABLE_CLEAN_UP=true, removing %s", tmpDir)
-	_ = os.RemoveAll(tmpDir)
+	log.Printf("[Engine] startup: ENABLE_CLEAN_UP=true, cleaning %s (preserving logs/)", tmpDir)
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		if e.Name() == "logs" {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tmpDir, e.Name()))
+	}
 }
 
 func main() {
@@ -190,6 +196,10 @@ func cleanupOrphanedChannels(tmpDir string, activeMap map[string]models.PlayoutC
 			continue
 		}
 		chID := entry.Name()
+		// Skip shared non-channel directories (e.g. segment track logs).
+		if chID == "logs" {
+			continue
+		}
 		if _, isActive := activeMap[chID]; !isActive {
 			log.Printf("[Engine] Pruning orphaned directory on disk: %s", filepath.Join(tmpDir, chID))
 			_ = os.RemoveAll(filepath.Join(tmpDir, chID))

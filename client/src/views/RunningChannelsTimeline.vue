@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { api } from '@/libs/api'
 import { segmentUrl } from '@/libs/hls'
-import type { ChannelTimeline, TimelineEntry, PreparedSegmentsResp } from '@/types/api'
+import type { ChannelTimeline, TimelineEntry, PreparedSegmentsResp, SegmentTrackEntry } from '@/types/api'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -10,25 +10,7 @@ const channels = ref<ChannelTimeline[]>([])
 const prepared = ref<Record<string, PreparedSegmentsResp>>({})
 const generatedAt = ref<number>(0)
 const now = ref<number>(Date.now() / 1000)
-const intervalMs = ref<number>(Number(localStorage.getItem('timeline_interval_ms') || 2000))
-let timer: ReturnType<typeof setInterval> | null = null
-
-const restartTimer = () => {
-  if (timer) clearInterval(timer)
-  timer = setInterval(() => {
-    now.value = Date.now() / 1000
-    channels.value = channels.value.map((ch) => ({
-      ...ch,
-      entries: ch.entries.filter((e) => e.running_time + e.duration > now.value)
-    }))
-    fetchPrepared()
-  }, intervalMs.value)
-}
-
-watch(intervalMs, (v) => {
-  localStorage.setItem('timeline_interval_ms', String(v))
-  restartTimer()
-})
+let eventSource: EventSource | null = null
 
 const load = async () => {
   loading.value = true
@@ -37,12 +19,54 @@ const load = async () => {
     const resp = await api.getRunningChannelsTimeline()
     channels.value = resp.channels ?? []
     generatedAt.value = resp.generated_at
+    const monitoredResp = await api.listMonitoredChannels().catch(() => ({ channel_ids: [] }))
+    monitored.value = new Set(monitoredResp.channel_ids || [])
     await fetchPrepared()
   } catch (e: any) {
     error.value = e?.response?.data?.error ?? e?.message ?? 'Failed to load timeline'
   } finally {
     loading.value = false
   }
+}
+
+const connectSSE = () => {
+  if (eventSource) eventSource.close()
+  eventSource = new EventSource('/api/channels/timeline/stream')
+  eventSource.onmessage = async (ev) => {
+    try {
+      const data = JSON.parse(ev.data)
+      if (Array.isArray(data.channels)) {
+        const next = [...channels.value]
+        for (const ch of data.channels) {
+          const idx = next.findIndex((c) => c.channel_id === ch.channel_id)
+          if (idx >= 0) next[idx] = ch
+          else next.push(ch)
+        }
+        channels.value = next
+      }
+      if (data.generated_at) generatedAt.value = data.generated_at
+      now.value = Date.now() / 1000
+      await fetchPrepared()
+    } catch (e) {
+      // ignore parse errors
+    }
+  }
+  eventSource.onerror = () => {
+    // browser will auto-reconnect
+  }
+}
+
+const monitored = ref<Set<string>>(new Set())
+
+const toggleWatch = async (id: string) => {
+  if (monitored.value.has(id)) {
+    await api.unwatchChannel(id)
+    monitored.value.delete(id)
+  } else {
+    await api.watchChannel(id)
+    monitored.value.add(id)
+  }
+  monitored.value = new Set(monitored.value)
 }
 
 const preparedRenditions = (ch: ChannelTimeline, e: TimelineEntry) => {
@@ -84,6 +108,11 @@ const fmtTime = (ts: number) => {
 const selectedSegment = ref<TimelineEntry | null>(null)
 const selectedChannel = ref<string>('')
 const dialogOpen = ref(false)
+
+const trackDialogOpen = ref(false)
+const trackChannel = ref<string>('')
+const trackEntries = ref<SegmentTrackEntry[]>([])
+const trackLoading = ref(false)
 const videoSrc = computed(() => {
   if (!selectedSegment.value) return ''
   return segmentUrl(selectedChannel.value, '360p', `seg_${selectedSegment.value.sequence}.ts`)
@@ -98,6 +127,63 @@ const closePlayer = () => {
   selectedSegment.value = null
 }
 
+const viewTrack = async (ch: ChannelTimeline) => {
+  trackChannel.value = ch.channel_id
+  trackEntries.value = []
+  trackDialogOpen.value = true
+  trackLoading.value = true
+  try {
+    const resp = await api.getSegmentTrack(ch.channel_id, 100)
+    trackEntries.value = (resp.entries ?? []).slice().sort((a, b) => a.sequence - b.sequence)
+  } catch (e) {
+    trackEntries.value = []
+  } finally {
+    trackLoading.value = false
+  }
+}
+
+const reloadTrack = async () => {
+  if (!trackChannel.value) return
+  trackLoading.value = true
+  try {
+    const resp = await api.getSegmentTrack(trackChannel.value, 100)
+    trackEntries.value = (resp.entries ?? []).slice().sort((a, b) => a.sequence - b.sequence)
+  } catch (e) {
+    // ignore
+  } finally {
+    trackLoading.value = false
+  }
+}
+const closeTrack = () => {
+  trackDialogOpen.value = false
+  trackEntries.value = []
+}
+
+const clearTrack = async () => {
+  try {
+    await api.clearSegmentTrack(trackChannel.value)
+    trackEntries.value = []
+  } catch (e) {
+    // ignore
+  }
+}
+
+const trackSummary = computed(() => {
+  const entries = trackEntries.value
+  if (!entries.length) return 'No track entries.'
+  const seqs = entries.map((e) => e.sequence)
+  const from = seqs[0]
+  const to = seqs[seqs.length - 1]
+  const gaps: string[] = []
+  for (let i = 1; i < seqs.length; i++) {
+    if (seqs[i] - seqs[i - 1] > 1) {
+      gaps.push(`#${seqs[i - 1]}→#${seqs[i]} (missing ${seqs[i] - seqs[i - 1] - 1})`)
+    }
+  }
+  const base = `${entries.length} entries, seq #${from}–#${to}.`
+  if (!gaps.length) return base + ' No gaps.'
+  return base + ' Gaps: ' + gaps.join('; ') + '.'
+})
 // prune fully-passed segments reactively
 const visibleChannels = computed(() => {
   return channels.value.map((ch) => ({
@@ -129,11 +215,11 @@ const channelSummary = (ch: ChannelTimeline) => {
 
 onMounted(() => {
   load()
-  restartTimer()
+  connectSSE()
 })
 
 onUnmounted(() => {
-  if (timer) clearInterval(timer)
+  if (eventSource) eventSource.close()
 })
 </script>
 
@@ -144,14 +230,7 @@ onUnmounted(() => {
         <h2>Running Channels Timeline</h2>
       </v-col>
       <v-col cols="auto">
-        <v-text-field
-          v-model.number="intervalMs"
-          label="Interval (ms)"
-          type="number"
-          density="compact"
-          hide-details
-          style="width: 120px"
-        />
+        <span class="text-medium-emphasis">Updates via SSE</span>
       </v-col>
       <v-col cols="auto">
         <v-btn color="primary" :loading="loading" @click="load">Refresh</v-btn>
@@ -170,7 +249,13 @@ onUnmounted(() => {
     </div>
 
     <v-card v-for="ch in visibleChannels" :key="ch.channel_id" class="mb-4">
-      <v-card-title>{{ ch.channel_name }} ({{ ch.channel_id }})</v-card-title>
+      <v-card-title>
+  {{ ch.channel_name }} ({{ ch.channel_id }})
+  <v-btn size="small" class="ml-2" @click="toggleWatch(ch.channel_id)">
+    {{ monitored.has(ch.channel_id) ? 'Unwatch' : 'Watch' }}
+  </v-btn>
+  <v-btn size="small" class="ml-2" variant="outlined" @click="viewTrack(ch)">View track</v-btn>
+</v-card-title>
       <v-card-subtitle>{{ channelSummary(ch) }} • Loaded ahead: {{ loadedAhead(ch) }}</v-card-subtitle>
       <v-card-text>
         <div v-if="!ch.entries.length" class="text-medium-emphasis">No upcoming entries.</div>
@@ -214,9 +299,40 @@ onUnmounted(() => {
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <v-dialog v-model="trackDialogOpen" max-width="720" @update:model-value="v => { if (!v) closeTrack() }">
+      <v-card min-height="200">
+        <v-card-title>Segment track — {{ trackChannel }}</v-card-title>
+        <v-card-subtitle class="text-medium-emphasis">Audit of prepared segments; may differ from the current timeline window.</v-card-subtitle>
+        <v-card-text class="text-medium-emphasis pt-0">{{ trackSummary }}</v-card-text>
+        <v-card-text>
+          <div v-if="trackLoading" class="text-medium-emphasis">Loading...</div>
+          <div v-else-if="!trackEntries.length" class="text-medium-emphasis">No track entries.</div>
+          <v-table v-else density="compact">
+            <thead>
+              <tr><th>Seq</th><th>Type</th><th>Renditions</th><th>Time</th><th>Message</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="(e, i) in trackEntries" :key="i">
+                <td>#{{ e.sequence }}</td>
+                <td>{{ e.is_ad ? 'AD' : 'VOD' }}</td>
+                <td>{{ (e.renditions || []).join(', ') || '-' }}</td>
+                <td>{{ new Date(e.timestamp * 1000).toLocaleString() }}</td>
+                <td>{{ e.message || '-' }}</td>
+              </tr>
+            </tbody>
+          </v-table>
+        </v-card-text>
+        <v-card-actions>
+          <v-btn color="error" variant="text" @click="clearTrack">Clear</v-btn>
+          <v-btn variant="text" @click="reloadTrack" :loading="trackLoading">Reload</v-btn>
+          <v-spacer />
+          <v-btn @click="closeTrack">Close</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
-
 <style scoped>
 .timeline-scroll {
   overflow-x: auto;

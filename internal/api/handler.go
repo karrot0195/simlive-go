@@ -448,6 +448,8 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 	log.Printf("[api] channel=%s start: status=PREPARE, breaker cleared (planner will flip to LIVE once timeline data is in Redis, within PLANNER_INTERVAL=%s)",
 		id, plannerTickHint())
 
+	// Best-effort: reset segment track log + seen set for a fresh run.
+	clearSegmentTrackData(id)
 	// Best-effort: clear the breaker counter. Use a fresh context so a
 	// client-side cancellation on the HTTP request doesn't abort the
 	// Redis call.
@@ -494,6 +496,7 @@ func (h *ChannelHandler) GetRunningChannelsTimeline(c *gin.Context) {
 		}
 
 		entries := []TimelineEntry{}
+		seenSeq := map[int64]bool{}
 		for _, raw := range items {
 			var seg models.SegmentItem
 			if err := json.Unmarshal([]byte(raw), &seg); err != nil {
@@ -502,6 +505,10 @@ func (h *ChannelHandler) GetRunningChannelsTimeline(c *gin.Context) {
 			if seg.RunningTime < nowUnix {
 				continue
 			}
+			if seenSeq[seg.Sequence] {
+				continue
+			}
+			seenSeq[seg.Sequence] = true
 			entries = append(entries, TimelineEntry{
 				Sequence:        seg.Sequence,
 				RunningTime:     seg.RunningTime,
@@ -600,6 +607,7 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	}
 	log.Printf("[api] channel=%s stop: status=INACTIVE, Redis data purged (HLS + timeline + renditions + cursor), breaker preserved (engine will stop within 5s, planner within PLANNER_INTERVAL=%s)",
 		id, plannerTickHint())
+	clearSegmentTrackData(id)
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read stopped channel"})

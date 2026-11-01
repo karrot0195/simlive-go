@@ -16,7 +16,8 @@ import type {
   PlayoutChannel,
   UpdateChannelReq,
   TimelineResponse,
-  PreparedSegmentsResp
+  PreparedSegmentsResp,
+  SegmentTrackResp
 } from '@/types/api'
 
 const buildParams = (params: ListChannelsParams | undefined): Record<string, unknown> => {
@@ -115,5 +116,37 @@ export const api = {
   async getPreparedSegments(id: string, config?: AxiosRequestConfig) {
     const resp = await client.get<unknown>(`/channels/${encodeURIComponent(id)}/prepared`, config)
     return dataOf<PreparedSegmentsResp>(resp)
+  },
+
+  /** POST /api/channels/{id}/watch — add channel to monitor set. */
+  async watchChannel(id: string, config?: AxiosRequestConfig) {
+    const resp = await client.post<unknown>(`/channels/${encodeURIComponent(id)}/watch`, undefined, config)
+    return resp.data
+  },
+
+  /** POST /api/channels/{id}/unwatch — remove channel from monitor set. */
+  async unwatchChannel(id: string, config?: AxiosRequestConfig) {
+    const resp = await client.post<unknown>(`/channels/${encodeURIComponent(id)}/unwatch`, undefined, config)
+    return resp.data
+  },
+
+  /** GET /api/channels/monitored — list monitored channel ids. */
+  async listMonitoredChannels(config?: AxiosRequestConfig) {
+    const resp = await client.get<unknown>('/channels/monitored', config)
+    return resp.data as { channel_ids: string[] }
+  },
+
+  /** GET /api/channels/{id}/segment-track — fetch recent segment track entries. */
+  async getSegmentTrack(id: string, limit?: number, config?: AxiosRequestConfig) {
+    const resp = await client.get<unknown>(`/channels/${encodeURIComponent(id)}/segment-track`, {
+      ...config,
+      params: limit ? { limit } : {}
+    })
+    return dataOf<SegmentTrackResp>(resp)
+  },
+
+  /** DELETE /api/channels/{id}/segment-track — clear the track log. */
+  async clearSegmentTrack(id: string, config?: AxiosRequestConfig): Promise<void> {
+    await client.delete<unknown>(`/channels/${encodeURIComponent(id)}/segment-track`, config)
   }
 }
