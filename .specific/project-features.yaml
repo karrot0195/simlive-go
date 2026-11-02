@@ -1,0 +1,66 @@
+name: features
+features:
+  - name: api-service
+    description: Gin HTTP API for channels, assets, playlists, and HLS segment serving
+    sources:
+      - type: dir
+        path: cmd/api
+      - type: dir
+        path: internal/api
+  - name: planner
+    description: Schedules and plans simulated-live sessions with fallback state and segment processing
+    sources:
+      - type: dir
+        path: cmd/planner
+      - type: dir
+        path: internal/planner
+  - name: engines
+    description: Runs engine instances that produce HLS segments with SCTE-35 markers
+    sources:
+      - type: dir
+        path: cmd/engines
+      - type: dir
+        path: internal/engine
+  - name: data-models
+    description: GORM models, enums, and SCTE-35 field definitions
+    sources:
+      - type: dir
+        path: internal/models
+  - name: storage
+    description: rclone-based storage sync for segments and assets
+    sources:
+      - type: dir
+        path: internal/storage
+  - name: scte35-pmt-verify
+    description: PMT/SCTE-35 consistency verification tooling and HTTP verifier
+    sources:
+      - type: dir
+        path: internal/verify
+      - type: file
+        path: cmd/pmt-verify/main.go
+      - type: file
+        path: cmd/scte35-check/main.go
+  - name: admin-client
+    description: Vue 3 + Vite + Vuetify admin UI for channel and asset management
+    sources:
+      - type: dir
+        path: client/src
+  - name: hls-watch
+    description: HLS playlist monitor analyzing segments (PTS, SCTE-35, PMT)
+    sources:
+      - type: file
+        path: cmd/hls-watch/main.go
+  - name: timeline-monitor
+    description: Channel timeline and running-channel status tracking endpoints
+    sources:
+      - type: file
+        path: internal/api/monitor.go
+      - type: file
+        path: internal/api/segment_track.go
+  - name: configs
+    description: Environment, database, and service configuration loading
+    sources:
+      - type: dir
+        path: internal/configs
+      - type: dir
+        path: config

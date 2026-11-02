@@ -1,0 +1,19 @@
+steps:
+  - title: "Login"
+    fields:
+      - name: username
+        type: text
+        label: Username
+        required: true
+      - name: password
+        type: password
+        label: Password
+        required: true
+    api: "http://localhost:3030/api/v2/sso/auth/login"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    body:
+      username: "{{username}}"
+      password: "{{password}}"
+    response_field: "access_token"

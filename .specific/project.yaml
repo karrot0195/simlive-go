@@ -1,0 +1,29 @@
+apiVersion: agent-skills/v1
+kind: Project
+name: simlive
+summary: 'Simulated live streaming platform: turns VOD assets into HLS live streams
+  with SCTE-35 ad insertion, driven by a planner/engine pipeline and a Vue admin client.'
+architecture:
+  framework: Gin
+  language: Go
+  database: PostgreSQL (+ Redis cache)
+  unit_test_framework: Go test
+skills:
+- name: start api
+  description: make start-api
+- name: start planner
+  description: make start-planner
+- name: start engines
+  description: make start-engines
+- name: start all
+  description: make start-all
+- name: build
+  description: make build
+- name: build client
+  description: make build-client
+- name: test
+  description: make test
+- name: db query
+  description: docker exec simlive_postgres psql -U postgres -d simlive
+rules: []
+features_file: .specific/project-features.yaml

@@ -19,12 +19,12 @@ const retainedScheduleVersion = 1
 // channel, persisted so planning can continue while the provider is empty or
 // failing. See specs/010-epg-cache-fallback/data-model.md.
 type RetainedSchedule struct {
-	Version      int                       `json:"version"`
-	ChannelID    string                    `json:"channel_id"`
-	ChannelEpgID string                    `json:"channel_epg_id"`
-	SourceDate   string                    `json:"source_date"`
-	FetchedAt    int64                     `json:"fetched_at"`
-	Timezone     string                    `json:"timezone"`
+	Version      int                          `json:"version"`
+	ChannelID    string                       `json:"channel_id"`
+	ChannelEpgID string                       `json:"channel_epg_id"`
+	SourceDate   string                       `json:"source_date"`
+	FetchedAt    int64                        `json:"fetched_at"`
+	Timezone     string                       `json:"timezone"`
 	Items        []models.PartnerScheduleItem `json:"items"`
 }
 

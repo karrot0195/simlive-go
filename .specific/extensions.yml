@@ -1,0 +1,3 @@
+apiVersion: agent-skills/v1
+kind: Extensions
+hooks: {}

@@ -82,6 +82,9 @@ func main() {
 	// API routes
 	apiGroup := r.Group("/api")
 	{
+		// GET /api/auth/config — serve parsed auth config (JSON) to client.
+		apiGroup.GET("/auth/config", api.GetAuthConfig)
+
 		// POST /api/channels — create / upsert (validates against ESPX).
 		apiGroup.POST("/channels", channelHandler.CreateOrUpsertChannel)
 		// GET /api/channels — list local playout_channels rows (paginated).

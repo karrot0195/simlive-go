@@ -1,0 +1,52 @@
+{
+  "verify": {
+    "url": "https://api2.espx.cloud/api/v2/accounts/auth/verify-token",
+    "method": "POST",
+    "headers": {
+      "Authorization": "Bearer {{token}}"
+    },
+    "clear_on_error": true
+  },
+  "steps": [
+    {
+      "title": "Login",
+      "fields": [
+        { "name": "username", "type": "text", "label": "Username", "required": true },
+        { "name": "password", "type": "password", "label": "Password", "required": true }
+      ],
+      "api": "https://msvc.espx.cloud/sso/auth/login",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json" },
+      "body": { "username": "{{username}}", "password": "{{password}}" },
+      "response_field": "access_token"
+    },
+    {
+      "title": "Select Account",
+      "fields": [
+        {
+          "name": "accountId",
+          "type": "select",
+          "options": "${accounts}",
+          "label": "Account ID",
+          "required": true
+        }
+      ],
+      "preCalls": [
+        {
+          "url": "https://msvc.espx.cloud/sso/auth/accounts",
+          "method": "GET",
+          "headers": { "Authorization": "Bearer {{token}}" },
+          "response_mapping": { "accounts": "$.accounts" }
+        }
+      ],
+      "api": "https://msvc.espx.cloud/sso/auth/account-token",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer {{token}}"
+      },
+      "body": { "accountId": "{{accountId}}" },
+      "response_field": "access_token"
+    }
+  ]
+}

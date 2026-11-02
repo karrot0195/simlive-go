@@ -55,9 +55,9 @@ var allowedStatuses = map[string]bool{
 // ChannelHandler is the REST surface for /api/channels/* . It owns CRUD over the playout_channels table plus the manual start/stop operations.
 // The planner reads the same columns (is_active, status) so a manual flip takes effect on the next planner tick.
 type ChannelHandler struct {
-	db   *gorm.DB
+	db      *gorm.DB
 	partner *PartnerClient
-	rdb  *redis.Client
+	rdb     *redis.Client
 }
 
 // NewChannelHandler wires the dependencies. `rdb` may be nil — start/stop then log a warning and continue (a Redis blip should never 5xx the operator; the DB flip is the durable part of the operation).

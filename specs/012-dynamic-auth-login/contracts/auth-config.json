@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AuthConfig",
+  "type": "object",
+  "required": ["steps"],
+  "properties": {
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["title", "api", "method", "response_field"],
+        "properties": {
+          "title": { "type": "string" },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "label"],
+              "properties": {
+                "name": { "type": "string" },
+                "type": { "type": "string", "enum": ["text", "password", "email", "number", "select"] },
+                "label": { "type": "string" },
+                "required": { "type": "boolean", "default": false },
+                "default": { "type": "string" },
+                "options": {
+                  "description": "Static array or '${key}' reference resolved from preCall/context after preCalls run on step entry",
+                  "oneOf": [{ "type": "array" }, { "type": "string" }]
+                },
+                "optionValueField": { "type": "string" },
+                "optionLabelField": { "type": "string" }
+              }
+            }
+          },
+          "api": { "type": "string" },
+          "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+          "response_field": { "type": "string" },
+          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "body": {},
+          "preCalls": {
+            "description": "Executed on step entry (before options resolution) and again before the main call on submit/retry",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["url", "method"],
+              "properties": {
+                "url": { "type": "string" },
+                "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+                "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+                "body": {},
+                "response_mapping": { "type": "object", "additionalProperties": { "type": "string" } }
+              }
+            }
+          },
+          "validation": { "type": "object" },
+          "style": { "type": "object" }
+        }
+      }
+    },
+    "verify": {
+      "type": "object",
+      "required": ["url"],
+      "description": "Invoked after the final step and on session restore (boot with existing token)",
+      "properties": {
+        "url": { "type": "string" },
+        "method": { "type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": {},
+        "response_ok": { "type": "string", "description": "JSON path indicating success; default HTTP 2xx" },
+        "clear_on_error": { "type": "boolean", "default": true }
+      }
+    },
+    "style": { "type": "object" }
+  }
+}

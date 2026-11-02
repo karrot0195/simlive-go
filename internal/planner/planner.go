@@ -35,7 +35,7 @@ type LastSegmentState struct {
 type Planner struct {
 	db         *gorm.DB
 	rdb        *redis.Client
-	partner       *api.PartnerClient
+	partner    *api.PartnerClient
 	rclone     *storage.RcloneService
 	bucketName string
 	adsBucket  string
@@ -48,7 +48,7 @@ func NewPlanner(db *gorm.DB, rdb *redis.Client, partner *api.PartnerClient, rclo
 	return &Planner{
 		db:         db,
 		rdb:        rdb,
-		partner:       partner,
+		partner:    partner,
 		rclone:     rclone,
 		bucketName: utils.GetSettings().VideoBucket,
 		adsBucket:  fmt.Sprintf("%s/%s", utils.GetSettings().VideoBucket, utils.GetSettings().AdsStreamId),

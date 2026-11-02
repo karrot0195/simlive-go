@@ -155,8 +155,8 @@ type PartnerScheduleItem struct {
 }
 
 type PartnerSchedulesResponse struct {
-	Date       string             `json:"date"`
-	TotalItems int                `json:"total_items"`
+	Date       string                `json:"date"`
+	TotalItems int                   `json:"total_items"`
 	Data       []PartnerScheduleItem `json:"data"`
 }
 
@@ -193,7 +193,7 @@ type ListChannelsResp struct {
 // stays O(1) regardless of the fleet size.
 type PartnerChannelsListResp struct {
 	Data       []PartnerChannelListItem `json:"data"`
-	Registered map[string]bool       `json:"registered"`
+	Registered map[string]bool          `json:"registered"`
 }
 
 const ScheduleItemTypeAds = "ads"
