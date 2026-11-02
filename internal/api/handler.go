@@ -191,39 +191,6 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 
 // ----- GET /api/channels/esp (list ESPX channels) -----------------------
 
-// ListPartnerChannels proxies ESPX API 1 and annotates each item with a `registered` boolean (true if the channel is already in our local playout_channels table). Single SELECT id ... IN (...) keeps the round-trip count constant in the fleet size.
-func (h *ChannelHandler) ListPartnerChannels(c *gin.Context) {
-	items, err := h.partner.ListPartnerChannels()
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to fetch channels from ESPX: " + err.Error()})
-		return
-	}
-
-	registered := make(map[string]bool, len(items))
-	if len(items) > 0 {
-		ids := make([]string, 0, len(items))
-		for _, it := range items {
-			ids = append(ids, it.ID)
-		}
-		var existing []string
-		if err := h.db.Model(&models.PlayoutChannel{}).
-			Where("id IN ?", ids).
-			Pluck("id", &existing).Error; err != nil {
-			// Don't fail the whole response on a DB blip — return the ESPX list with all `registered` set to false.
-			log.Printf("[api] ListPartnerChannels: SELECT id IN (...) error: %v", err)
-		} else {
-			for _, id := range existing {
-				registered[id] = true
-			}
-		}
-	}
-
-	c.JSON(http.StatusOK, models.PartnerChannelsListResp{
-		Data:       items,
-		Registered: registered,
-	})
-}
-
 // ----- GET /api/channels/:id --------------------------------------------
 
 // GetChannel reads a single playout_channels row by primary key. 404 on

@@ -100,12 +100,6 @@ export const api = {
     return dataOf<PlayoutChannel>(resp)
   },
 
-  /** GET /api/channels/esp — ESPX upstream list + registered map. */
-  async listPartnerChannels(config?: AxiosRequestConfig) {
-    const resp = await client.get<unknown>('/channels/esp', config)
-    return dataOf<PartnerChannelsListResp>(resp)
-  },
-
   /** GET /api/channels/timeline/running — upcoming timelines for all enabled channels. */
   async getRunningChannelsTimeline(config?: AxiosRequestConfig) {
     const resp = await client.get<unknown>('/channels/timeline/running', config)

@@ -6,68 +6,63 @@ import (
 	"testing"
 )
 
-func TestLoadAuthConfigDefault(t *testing.T) {
-	os.Setenv("AUTH_CONFIG_PATH", "/nonexistent/auth.yaml")
-	defer os.Unsetenv("AUTH_CONFIG_PATH")
-	cfg, err := LoadAuthConfig()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+const partnerAuthYAML = `
+active: default
+partners:
+  default:
+    api:
+      base_url: "http://localhost:3030"
+    auth:
+      verify:
+        url: "https://verify.partner.example.com/verify-token"
+        method: POST
+        clear_on_error: true
+      steps:
+        - title: "Login"
+          api: "https://sso.partner.example.com/login"
+          method: POST
+          response_field: "access_token"
+        - title: "Select Account"
+          fields:
+            - name: accountId
+              type: select
+              options: "${accounts}"
+              required: true
+          preCalls:
+            - url: "https://sso.partner.example.com/accounts"
+              method: GET
+          api: "https://sso.partner.example.com/account-token"
+          method: POST
+          response_field: "access_token"
+`
+
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
 	}
-	steps, ok := cfg["steps"].([]map[string]any)
-	if !ok {
-		if s2, ok2 := cfg["steps"].([]interface{}); ok2 {
-			if len(s2) == 0 {
-				t.Fatalf("expected non-empty steps")
-			}
-			return
-		}
-		t.Fatalf("unexpected steps type: %T", cfg["steps"])
-	}
-	if len(steps) == 0 {
-		t.Fatalf("expected non-empty steps")
+	return path
+}
+
+// stepCount returns the number of login steps regardless of the concrete slice
+// type (YAML yields []any; the built-in default uses []map[string]any).
+func stepCount(v any) int {
+	switch s := v.(type) {
+	case []any:
+		return len(s)
+	case []map[string]any:
+		return len(s)
+	default:
+		return -1
 	}
 }
 
-func TestLoadAuthConfigVerifyAndSelect(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "auth.yaml")
-	content := []byte(`
-verify:
-  url: "https://verify.example.com/verify-token"
-  method: POST
-  headers:
-    Authorization: "Bearer {{token}}"
-  clear_on_error: true
-steps:
-  - title: "Login"
-    fields:
-      - name: username
-        type: text
-        label: Username
-        required: true
-    api: "https://sso.example.com/login"
-    method: POST
-    response_field: "access_token"
-  - title: "Select Account"
-    fields:
-      - name: accountId
-        type: select
-        options: "${accounts}"
-        label: Account ID
-        required: true
-    preCalls:
-      - url: "https://sso.example.com/accounts"
-        method: GET
-        response_mapping:
-          accounts: "$.accounts"
-    api: "https://sso.example.com/account-token"
-    method: POST
-    response_field: "access_token"
-`)
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		t.Fatalf("write temp auth.yaml: %v", err)
-	}
-	t.Setenv("AUTH_CONFIG_PATH", path)
+func TestAuthConfigFromPartnerYAML(t *testing.T) {
+	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", partnerAuthYAML))
+	t.Setenv("AUTH_CONFIG_PATH", "")
+
 	cfg, err := LoadAuthConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -76,35 +71,65 @@ steps:
 	if !ok {
 		t.Fatalf("expected verify block, got %T", cfg["verify"])
 	}
-	if verify["url"] != "https://verify.example.com/verify-token" {
+	if verify["url"] != "https://verify.partner.example.com/verify-token" {
 		t.Fatalf("unexpected verify url: %v", verify["url"])
 	}
-	if verify["clear_on_error"] != true {
-		t.Fatalf("expected clear_on_error true, got %v", verify["clear_on_error"])
+	if n := stepCount(cfg["steps"]); n != 2 {
+		t.Fatalf("expected 2 steps from partner.yaml, got %v", cfg["steps"])
 	}
-	steps, ok := cfg["steps"].([]any)
-	if !ok || len(steps) != 2 {
-		t.Fatalf("expected 2 steps, got %v", cfg["steps"])
+}
+
+func TestAuthConfigFallsBackToLegacyAuthYAML(t *testing.T) {
+	t.Setenv("PARTNER_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	legacy := writeFile(t, "auth.yaml", "steps:\n  - title: \"Legacy\"\n    api: \"https://legacy.example.com/login\"\n")
+	t.Setenv("AUTH_CONFIG_PATH", legacy)
+
+	cfg, err := LoadAuthConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	step2, ok := steps[1].(map[string]any)
-	if !ok {
-		t.Fatalf("step 2 wrong type: %T", steps[1])
+	if n := stepCount(cfg["steps"]); n != 1 {
+		t.Fatalf("expected legacy steps, got %v", cfg["steps"])
 	}
-	fields, ok := step2["fields"].([]any)
-	if !ok || len(fields) != 1 {
-		t.Fatalf("expected 1 field in step 2, got %v", step2["fields"])
+}
+
+func TestAuthConfigInvalidPartnerFallsBackToDefault(t *testing.T) {
+	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", "this: is: not: valid: yaml: ["))
+	t.Setenv("AUTH_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-auth.yaml"))
+
+	cfg, err := LoadAuthConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	f0, ok := fields[0].(map[string]any)
-	if !ok {
-		t.Fatalf("field wrong type: %T", fields[0])
+	if n := stepCount(cfg["steps"]); n == 0 || n == -1 {
+		t.Fatalf("expected built-in default steps, got %v", cfg["steps"])
 	}
-	if f0["type"] != "select" {
-		t.Fatalf("expected select field, got %v", f0["type"])
+}
+
+func TestAuthConfigUnusableAuthBlockFallsBack(t *testing.T) {
+	// partner.yaml with an auth block that has no steps.
+	content := "active: default\npartners:\n  default:\n    auth:\n      verify:\n        url: \"https://x/verify\"\n"
+	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", content))
+	t.Setenv("AUTH_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-auth.yaml"))
+
+	cfg, err := LoadAuthConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if f0["options"] != "${accounts}" {
-		t.Fatalf("expected options ${accounts}, got %v", f0["options"])
+	if n := stepCount(cfg["steps"]); n == 0 || n == -1 {
+		t.Fatalf("expected built-in default steps, got %v", cfg["steps"])
 	}
-	if _, ok := step2["preCalls"]; !ok {
-		t.Fatalf("expected preCalls on step 2")
+}
+
+func TestAuthConfigMissingPartnerFallsBackToDefault(t *testing.T) {
+	t.Setenv("PARTNER_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("AUTH_CONFIG_PATH", "/nonexistent/auth.yaml")
+
+	cfg, err := LoadAuthConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n := stepCount(cfg["steps"]); n == 0 || n == -1 {
+		t.Fatalf("expected built-in default steps, got %v", cfg["steps"])
 	}
 }

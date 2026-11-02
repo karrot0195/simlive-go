@@ -11,21 +11,21 @@ import (
 
 func mustParse(t *testing.T, value string) time.Time {
 	t.Helper()
-	parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS, value, time.UTC)
+	parsed, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS, value, utils.LocalLocation())
 	if err != nil {
 		t.Fatalf("parse %q: %v", value, err)
 	}
 	return parsed
 }
 
-func assertContinuous(t *testing.T, items []models.PartnerScheduleItem, tz string) {
+func assertContinuous(t *testing.T, items []models.PartnerScheduleItem) {
 	t.Helper()
 	for i := 1; i < len(items); i++ {
-		prevEnd, err := utils.ParsePartnerTime(items[i-1].LocalDateEnd, tz)
+		prevEnd, err := utils.ParseLocalTime(items[i-1].LocalDateEnd)
 		if err != nil {
 			t.Fatalf("parse prev end: %v", err)
 		}
-		nextStart, err := utils.ParsePartnerTime(items[i].LocalDateStart, tz)
+		nextStart, err := utils.ParseLocalTime(items[i].LocalDateStart)
 		if err != nil {
 			t.Fatalf("parse next start: %v", err)
 		}
@@ -36,7 +36,6 @@ func assertContinuous(t *testing.T, items []models.PartnerScheduleItem, tz strin
 }
 
 func TestBuildFallbackScheduleCoversWholeTargetDay(t *testing.T) {
-	tz := "UTC"
 	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 10:00:00", "2026-10-28 11:00:00"),
 		makeScheduleItem("B", "2026-10-28 11:00:00", "2026-10-28 12:00:00"),
@@ -45,26 +44,25 @@ func TestBuildFallbackScheduleCoversWholeTargetDay(t *testing.T) {
 	targetDayStart := mustParse(t, "2026-10-30 00:00:00")
 	horizon := utils.EndOfDay(targetDayStart)
 
-	got := buildFallbackSchedule(source, targetDayStart, horizon, tz)
+	got := buildFallbackSchedule(source, targetDayStart, horizon)
 	if len(got) == 0 {
 		t.Fatalf("expected fallback coverage")
 	}
 
-	first, _ := utils.ParsePartnerTime(got[0].LocalDateStart, tz)
+	first, _ := utils.ParseLocalTime(got[0].LocalDateStart)
 	if !first.Equal(targetDayStart) {
 		t.Errorf("first item starts at %s, want %s", first, targetDayStart)
 	}
 
-	last, _ := utils.ParsePartnerTime(got[len(got)-1].LocalDateEnd, tz)
+	last, _ := utils.ParseLocalTime(got[len(got)-1].LocalDateEnd)
 	if last.Before(horizon) {
 		t.Errorf("last item ends at %s, want >= horizon %s", last, horizon)
 	}
 
-	assertContinuous(t, got, tz)
+	assertContinuous(t, got)
 }
 
 func TestBuildFallbackScheduleRepeatsSourceAcrossCycles(t *testing.T) {
-	tz := "UTC"
 	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-10-28 00:00:00", "2026-10-28 01:00:00"),
 		makeScheduleItem("B", "2026-10-28 01:00:00", "2026-10-28 02:00:00"),
@@ -73,18 +71,17 @@ func TestBuildFallbackScheduleRepeatsSourceAcrossCycles(t *testing.T) {
 	targetDayStart := mustParse(t, "2026-10-30 00:00:00")
 	horizon := utils.EndOfDay(targetDayStart)
 
-	got := buildFallbackSchedule(source, targetDayStart, horizon, tz)
+	got := buildFallbackSchedule(source, targetDayStart, horizon)
 	if len(got) < 12 {
 		t.Fatalf("expected repeated cycles to fill the day, got %d items", len(got))
 	}
 	if got[0].ID != "A" || got[1].ID != "B" || got[2].ID != "A" {
 		t.Errorf("expected repeating A,B order, got %s,%s,%s", got[0].ID, got[1].ID, got[2].ID)
 	}
-	assertContinuous(t, got, tz)
+	assertContinuous(t, got)
 }
 
 func TestBuildFallbackScheduleSkipsNonPositiveDurations(t *testing.T) {
-	tz := "UTC"
 	source := []models.PartnerScheduleItem{
 		makeScheduleItem("ZERO", "2026-10-28 00:00:00", "2026-10-28 00:00:00"),
 		makeScheduleItem("NEGATIVE", "2026-10-28 02:00:00", "2026-10-28 01:00:00"),
@@ -94,7 +91,7 @@ func TestBuildFallbackScheduleSkipsNonPositiveDurations(t *testing.T) {
 	targetDayStart := mustParse(t, "2026-10-30 00:00:00")
 	horizon := targetDayStart.Add(4 * time.Hour)
 
-	got := buildFallbackSchedule(source, targetDayStart, horizon, tz)
+	got := buildFallbackSchedule(source, targetDayStart, horizon)
 	if len(got) == 0 {
 		t.Fatalf("expected fallback coverage")
 	}
@@ -103,23 +100,21 @@ func TestBuildFallbackScheduleSkipsNonPositiveDurations(t *testing.T) {
 			t.Errorf("unexpected item %q in fallback output", item.ID)
 		}
 	}
-	assertContinuous(t, got, tz)
+	assertContinuous(t, got)
 }
 
 func TestBuildFallbackScheduleStopsWithoutProgress(t *testing.T) {
-	tz := "UTC"
 	source := []models.PartnerScheduleItem{
 		makeScheduleItem("ZERO", "2026-10-28 00:00:00", "2026-10-28 00:00:00"),
 	}
 
 	targetDayStart := mustParse(t, "2026-10-30 00:00:00")
-	if got := buildFallbackSchedule(source, targetDayStart, utils.EndOfDay(targetDayStart), tz); len(got) != 0 {
+	if got := buildFallbackSchedule(source, targetDayStart, utils.EndOfDay(targetDayStart)); len(got) != 0 {
 		t.Fatalf("expected no coverage when every source item has no duration, got %d", len(got))
 	}
 }
 
 func TestBuildFallbackScheduleShiftsAcrossMonthBoundary(t *testing.T) {
-	tz := "UTC"
 	source := []models.PartnerScheduleItem{
 		makeScheduleItem("A", "2026-01-31 20:00:00", "2026-01-31 21:00:00"),
 	}
@@ -127,7 +122,7 @@ func TestBuildFallbackScheduleShiftsAcrossMonthBoundary(t *testing.T) {
 	targetDayStart := mustParse(t, "2026-02-01 00:00:00")
 	horizon := targetDayStart.Add(2 * time.Hour)
 
-	got := buildFallbackSchedule(source, targetDayStart, horizon, tz)
+	got := buildFallbackSchedule(source, targetDayStart, horizon)
 	if len(got) < 2 {
 		t.Fatalf("expected repeated coverage across the month boundary, got %d", len(got))
 	}
@@ -137,7 +132,7 @@ func TestBuildFallbackScheduleShiftsAcrossMonthBoundary(t *testing.T) {
 	if got[1].LocalDateStart != "2026-02-01 01:00:00" {
 		t.Errorf("second shift = %q, want 2026-02-01 01:00:00", got[1].LocalDateStart)
 	}
-	assertContinuous(t, got, tz)
+	assertContinuous(t, got)
 }
 
 func TestDecideFallback(t *testing.T) {

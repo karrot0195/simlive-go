@@ -19,34 +19,34 @@ const enableTemporaryScheduleGapFill = true
 // item, so the timeline covers from now until the end of the day.
 // Time fields are rewritten so the existing processor can handle the duplicated
 // items without any other changes.
-func padScheduleToCoverDay(items []models.PartnerScheduleItem, now, horizon time.Time, tzStr string) []models.PartnerScheduleItem {
+func padScheduleToCoverDay(items []models.PartnerScheduleItem, now, horizon time.Time) []models.PartnerScheduleItem {
 	if !enableTemporaryScheduleGapFill || len(items) == 0 {
 		return items
 	}
 
-	firstStart, err := utils.ParsePartnerTime(items[0].LocalDateStart, tzStr)
+	firstStart, err := utils.ParseLocalTime(items[0].LocalDateStart)
 	if err != nil {
 		return items
 	}
-	lastEnd, err := utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
+	lastEnd, err := utils.ParseLocalTime(items[len(items)-1].LocalDateEnd)
 	if err != nil {
 		return items
 	}
 
 	// (1) now < first item start -> take tail items and place them before the first item.
 	if now.Before(firstStart) {
-		items = prependLeadIn(items, now, firstStart, tzStr)
+		items = prependLeadIn(items, now, firstStart)
 	}
 
 	// Recalculate after prepending.
-	lastEnd, err = utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
+	lastEnd, err = utils.ParseLocalTime(items[len(items)-1].LocalDateEnd)
 	if err != nil {
 		return items
 	}
 
 	// (2) last item end < end of day -> take head items and place them after the last item.
 	if lastEnd.Before(horizon) {
-		items = appendTail(items, horizon, tzStr)
+		items = appendTail(items, horizon)
 	}
 
 	return items
@@ -55,7 +55,7 @@ func padScheduleToCoverDay(items []models.PartnerScheduleItem, now, horizon time
 // prependLeadIn duplicates a slice of tail schedule items and prepends them so
 // the block ends at firstStart. Items are walked from the end until the total
 // duration covers the gap.
-func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time, tzStr string) []models.PartnerScheduleItem {
+func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time) []models.PartnerScheduleItem {
 	gap := firstStart.Sub(now)
 	if gap <= 0 {
 		return items
@@ -67,8 +67,8 @@ func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time
 
 	for i := n - 1; i >= 0; i-- {
 		item := items[i]
-		start, _ := utils.ParsePartnerTime(item.LocalDateStart, tzStr)
-		end, _ := utils.ParsePartnerTime(item.LocalDateEnd, tzStr)
+		start, _ := utils.ParseLocalTime(item.LocalDateStart)
+		end, _ := utils.ParseLocalTime(item.LocalDateEnd)
 		dur := end.Sub(start)
 		if dur <= 0 {
 			continue
@@ -91,8 +91,8 @@ func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time
 	currentEnd := firstStart
 	for i := len(selected) - 1; i >= 0; i-- {
 		original := selected[i]
-		start, _ := utils.ParsePartnerTime(original.LocalDateStart, tzStr)
-		end, _ := utils.ParsePartnerTime(original.LocalDateEnd, tzStr)
+		start, _ := utils.ParseLocalTime(original.LocalDateStart)
+		end, _ := utils.ParseLocalTime(original.LocalDateEnd)
 		dur := end.Sub(start)
 
 		newEnd := currentEnd
@@ -111,8 +111,8 @@ func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time
 // appendTail duplicates a slice of head schedule items and appends them so the
 // block starts at the current lastEnd and continues until the gap to the
 // horizon is covered.
-func appendTail(items []models.PartnerScheduleItem, horizon time.Time, tzStr string) []models.PartnerScheduleItem {
-	lastEnd, err := utils.ParsePartnerTime(items[len(items)-1].LocalDateEnd, tzStr)
+func appendTail(items []models.PartnerScheduleItem, horizon time.Time) []models.PartnerScheduleItem {
+	lastEnd, err := utils.ParseLocalTime(items[len(items)-1].LocalDateEnd)
 	if err != nil {
 		return items
 	}
@@ -129,8 +129,8 @@ func appendTail(items []models.PartnerScheduleItem, horizon time.Time, tzStr str
 		advanced := false
 		for i := 0; i < n; i++ {
 			item := items[i]
-			start, _ := utils.ParsePartnerTime(item.LocalDateStart, tzStr)
-			end, _ := utils.ParsePartnerTime(item.LocalDateEnd, tzStr)
+			start, _ := utils.ParseLocalTime(item.LocalDateStart)
+			end, _ := utils.ParseLocalTime(item.LocalDateEnd)
 			dur := end.Sub(start)
 			if dur <= 0 {
 				continue
@@ -155,8 +155,8 @@ func appendTail(items []models.PartnerScheduleItem, horizon time.Time, tzStr str
 	shifted := make([]models.PartnerScheduleItem, len(selected))
 	currentStart := lastEnd
 	for i, original := range selected {
-		start, _ := utils.ParsePartnerTime(original.LocalDateStart, tzStr)
-		end, _ := utils.ParsePartnerTime(original.LocalDateEnd, tzStr)
+		start, _ := utils.ParseLocalTime(original.LocalDateStart)
+		end, _ := utils.ParseLocalTime(original.LocalDateEnd)
 		dur := end.Sub(start)
 
 		newStart := currentStart

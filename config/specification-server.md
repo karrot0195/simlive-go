@@ -21,6 +21,10 @@ All units under `config/system/`, installed to `/etc/systemd/system/`.
 
 - `config/docker-compose.yml` → postgres (5432) + redis (6371)
 - `config/.env` → DB, Redis, ESPX, TMP_DIR, renditions, workers
+- `API_ADDR` → API bind address (default `:8080`; e.g. `API_ADDR=:3030` to expose the
+  `/common` XML endpoints on the partner example port without a code change)
+- `config/partner.yaml` → single partner configuration (active profile, partner API
+  connection, auth flow, XML customisation); `config/partner.example.yaml` documents the schema
 - nginx config: proxy `/` and `/live` to `127.0.0.1:8080`, SSL cert configured
 - `config/rclone` → `/root/.config/rclone`
 - `EPG_CACHE_DIR` (default `{TMP_DIR}/epg-cache`) → retained EPG schedule per channel, used when the provider returns empty. Preserved across `ENABLE_CLEAN_UP=true` restarts; delete the directory to reset the fallback.

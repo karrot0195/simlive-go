@@ -2,4 +2,4 @@ bin/*
 .env*
 *conf
 ssl
-auth.yaml
+partner.yaml

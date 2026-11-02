@@ -27,8 +27,10 @@
           "name": "accountId",
           "type": "select",
           "options": "${accounts}",
-          "label": "Account ID",
-          "required": true
+          "label": "Account",
+          "required": true,
+          "optionValueField": "id",
+          "optionLabelField": "name"
         }
       ],
       "preCalls": [
@@ -36,7 +38,7 @@
           "url": "https://msvc.espx.cloud/sso/auth/accounts",
           "method": "GET",
           "headers": { "Authorization": "Bearer {{token}}" },
-          "response_mapping": { "accounts": "$.accounts" }
+          "response_mapping": { "accounts": "$" }
         }
       ],
       "api": "https://msvc.espx.cloud/sso/auth/account-token",

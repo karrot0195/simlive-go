@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -93,7 +91,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	// Convert local timezone to +HH:MM for ESPX
 	tzNum := utils.LocalTZOffset()
-	schedules, fetchErr := p.partner.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
+	schedules, fetchErr := p.partner.GetEPGScheduleItemsFromXML(channel.ID, dateStr, tzNum)
 
 	var (
 		items        []models.PartnerScheduleItem
@@ -111,7 +109,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 		// covers from now until the end of the day. Time fields are reset so the
 		// existing processor can handle them. Remove with schedule_pad.go once the
 		// real schedule-gap strategy is ready.
-		items = padScheduleToCoverDay(items, callStartedAt, horizon, channel.ContentTimezone)
+		items = padScheduleToCoverDay(items, callStartedAt, horizon)
 	} else {
 		if fetchErr != nil {
 			logger.VWarning("provider schedule error for channel=%s date=%s, trying retained schedule: %v", channel.ID, dateStr, fetchErr)
@@ -136,7 +134,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 			return ErrNoScheduleData
 		}
 
-		items = buildFallbackSchedule(cached.Items, processDate, horizon, channel.ContentTimezone)
+		items = buildFallbackSchedule(cached.Items, processDate, horizon)
 		if len(items) == 0 {
 			logger.Error("no schedule data (provider empty, cache usable items empty)", "channel", channel.ID, "date", dateStr, "source_date", cached.SourceDate)
 			return ErrNoScheduleData
@@ -189,12 +187,6 @@ func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutC
 
 	nowLocal := time.Now().In(utils.LocalLocation())
 
-	var adSegments []models.SegmentItem
-
-	if !channel.UseAdEpgAds {
-		adSegments, _ = p.loadAdSegments()
-	}
-
 	lastState := p.getLastSegmentState(ctx, channel.ID)
 
 	processor := &SegmentProcessor{
@@ -204,11 +196,9 @@ func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutC
 		nowUnix:         float64(nowLocal.Unix()),
 		sequenceCounter: lastState.Sequence,
 		runningTime:     lastState.RunningTime,
-		adSegments:      adSegments,
 		channelID:       channel.ID,
 		horizon:         horizon,
 		logger:          utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID)),
-		useEpgAds:       channel.UseAdEpgAds,
 	}
 
 	for _, item := range items {
@@ -250,7 +240,7 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	}
 
 	dateStr := dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD)
-	schedules, err := p.partner.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
+	schedules, err := p.partner.GetEPGScheduleItemsFromXML(channel.ID, dateStr, utils.LocalTZOffset())
 	if err != nil {
 		return false, err
 	}
@@ -266,7 +256,7 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	}
 
 	horizon := utils.EndOfDay(dayStart)
-	items := padScheduleToCoverDay(schedules.Data, time.Now(), horizon, channel.ContentTimezone)
+	items := padScheduleToCoverDay(schedules.Data, time.Now(), horizon)
 
 	if err := p.planScheduleItems(ctx, channel, dayStart, horizon, items, false); err != nil {
 		return false, err
@@ -278,62 +268,6 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	p.logger.Info("fallback recovered with real data",
 		"channel", channel.ID, "date", dateStr, "source_date", state.SourceDate, "cutoff", cutoff, "items", len(schedules.Data))
 	return true, nil
-}
-
-func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
-	adsMasterM3u8Path := fmt.Sprintf("%s/vod.m3u8", p.adsBucket)
-
-	renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
-	if len(renditions) == 0 {
-		return nil, fmt.Errorf("no renditions found for ads master: %s", adsMasterM3u8Path)
-	}
-
-	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, renditions[0])
-	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch ads m3u8: %w", err)
-	}
-
-	lines := strings.Split(m3u8Content, "\n")
-	adSegments := make([]models.SegmentItem, 0)
-	var currentDuration float64
-	var ptsStart, ptsEnd int64
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "#EXTINF:"):
-			durStr := strings.TrimPrefix(line, "#EXTINF:")
-			durStr = strings.Split(durStr, ",")[0]
-			if dur, err := strconv.ParseFloat(durStr, 64); err == nil {
-				currentDuration = dur
-			}
-		case strings.HasPrefix(line, "#EXT-X-PTS-RANGE:"):
-			ptsRange := strings.TrimPrefix(line, "#EXT-X-PTS-RANGE:")
-			parts := strings.Split(ptsRange, "-")
-			if len(parts) == 2 {
-				ptsStart, _ = strconv.ParseInt(parts[0], 10, 64)
-				ptsEnd, _ = strconv.ParseInt(parts[1], 10, 64)
-			}
-		case strings.HasSuffix(line, ".ts"):
-			mStart := float64(ptsStart) / 90000.0
-			mEnd := float64(ptsEnd) / 90000.0
-			if currentDuration == 0 {
-				currentDuration = mEnd - mStart
-			}
-			adSegments = append(adSegments, models.SegmentItem{
-				Duration:    currentDuration,
-				StoragePath: fmt.Sprintf("%s/%s/%s", p.adsBucket, "{rendition}", line),
-				PtsStart:    ptsStart,
-				PtsEnd:      ptsEnd,
-				MediaStart:  mStart,
-				MediaEnd:    mEnd,
-				Renditions:  renditions,
-			})
-			currentDuration = 0
-		}
-	}
-	return adSegments, nil
 }
 
 func (p *Planner) getLastSegmentState(ctx context.Context, channelID string) LastSegmentState {

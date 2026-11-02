@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { api } from '@/libs/api'
+import { API } from '@/constants'
 import { masterPlaylistUrl } from '@/libs/hls'
 import { useChannelsStores } from '@/stores/channels'
 import { computed, onMounted, ref } from 'vue'
@@ -16,21 +17,31 @@ const loading = ref(false)
 const isLiveStatus = (status: PlayoutChannelStatus | undefined) =>
   status === 'LIVE' || status === 'PREPARE'
 
+const fetchAvailableChannels = async () => {
+  try {
+      const base = API.replace(/\/api\/?$/, '')
+      const res = await fetch(`${base}/common/channel-playouts-xml`)
+    if (!res.ok) return []
+    const text = await res.text()
+    const doc = new DOMParser().parseFromString(text, 'application/xml')
+    return Array.from(doc.querySelectorAll('channel')).map((el) => ({
+      id: el.querySelector('id')?.textContent?.trim() || '',
+      name: el.querySelector('name')?.textContent?.trim() || ''
+    }))
+  } catch {
+    return []
+  }
+}
+
 const fetchData = async () => {
   loading.value = true
   try {
-    const [active, esp] = await Promise.all([
-      api.listChannels({ page_size: 100 }),
-      api.listPartnerChannels()
-    ])
+    const active = await api.listChannels({ page_size: 100 })
     channelStore.setValues(active.data)
 
-    const registeredSet = new Set(
-      Object.entries(esp.registered)
-        .filter(([, v]) => v)
-        .map(([id]) => id)
-    )
-    channelAvaialbelAssigned.value = esp.data.filter((c) => !registeredSet.has(c.id))
+    const registeredSet = new Set(active.data.map((c: any) => c.id))
+    const upstream = await fetchAvailableChannels()
+    channelAvaialbelAssigned.value = upstream.filter((c) => c.id && !registeredSet.has(c.id))
   } finally {
     loading.value = false
   }

@@ -31,7 +31,10 @@ type PlayoutChannel struct {
 	Label           string        `gorm:"type:varchar(255)" json:"label"`
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
-	UseAdEpgAds     bool          `json:"use_ad_epg_ads"`
+	// UseAdEpgAds is deprecated: EPG-declared ads are now the only mode and the
+	// planner ignores this flag. Kept in the column/schema for compatibility with
+	// existing rows and API clients.
+	UseAdEpgAds bool `json:"use_ad_epg_ads"`
 }
 
 // PartnerChannelListItem is a single entry in the ESPX API 1 response
@@ -139,6 +142,13 @@ type PartnerProgrammeStream struct {
 	Name          string `json:"name"`
 }
 
+// PartnerAdBreak is an inline ad marker parsed from the EPG XML (<ads .../>).
+type PartnerAdBreak struct {
+	Path     string `json:"path"`
+	Duration int    `json:"duration"`
+	Start    string `json:"start"`
+}
+
 type PartnerScheduleItem struct {
 	ID             string `json:"id"`
 	Type           string `json:"type"`
@@ -149,8 +159,9 @@ type PartnerScheduleItem struct {
 		ID               string `json:"id"`
 		Name             string `json:"name"`
 		ShortURL         string `json:"short_url"` // PROGRAMME ID, DO NOT USE THIS AS THE PATH
-		ProgrammeStreams []PartnerProgrammeStream
+		ProgrammeStreams []PartnerProgrammeStream `json:"programmeStreams"`
 		IsAds            bool `json:"is_ads"`
+		Ads              []PartnerAdBreak `json:"ads"`
 	} `json:"programme"`
 }
 

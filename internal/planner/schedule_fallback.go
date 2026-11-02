@@ -11,14 +11,14 @@ import (
 // buildFallbackSchedule repeats the retained schedule from targetDayStart until
 // horizon, time-shifting each occurrence so the produced items cover the whole
 // target day. Durations come from the retained items; timestamps are formatted
-// in tz (the channel content timezone) so the processor's
-// ParsePartnerTime(..., channel.ContentTimezone) yields the intended instants.
-func buildFallbackSchedule(items []models.PartnerScheduleItem, targetDayStart, horizon time.Time, tz string) []models.PartnerScheduleItem {
+// on the server's local clock so the processor's ParseLocalTime yields the
+// intended instants.
+func buildFallbackSchedule(items []models.PartnerScheduleItem, targetDayStart, horizon time.Time) []models.PartnerScheduleItem {
 	if len(items) == 0 || !targetDayStart.Before(horizon) {
 		return nil
 	}
 
-	loc := fallbackFormatLocation(tz)
+	loc := utils.LocalLocation()
 
 	type sequencedItem struct {
 		item     models.PartnerScheduleItem
@@ -27,11 +27,11 @@ func buildFallbackSchedule(items []models.PartnerScheduleItem, targetDayStart, h
 
 	sequence := make([]sequencedItem, 0, len(items))
 	for _, item := range items {
-		start, err := utils.ParsePartnerTime(item.LocalDateStart, tz)
+		start, err := utils.ParseLocalTime(item.LocalDateStart)
 		if err != nil {
 			continue
 		}
-		end, err := utils.ParsePartnerTime(item.LocalDateEnd, tz)
+		end, err := utils.ParseLocalTime(item.LocalDateEnd)
 		if err != nil {
 			continue
 		}
@@ -95,16 +95,4 @@ func decideFallback(dayHasCoverage, hasRetained bool) fallbackDecision {
 	default:
 		return fallbackGenerate
 	}
-}
-
-// fallbackFormatLocation mirrors utils.ParsePartnerTime's location resolution so
-// formatting and parsing round-trip to the same instants.
-func fallbackFormatLocation(tz string) *time.Location {
-	if loc, err := time.LoadLocation(tz); err == nil {
-		return loc
-	}
-	if loc, err := time.LoadLocation(configs.TZ); err == nil {
-		return loc
-	}
-	return time.UTC
 }

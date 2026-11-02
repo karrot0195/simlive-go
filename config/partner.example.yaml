@@ -1,0 +1,92 @@
+# config/partner.example.yaml
+#
+# Single source of partner configuration. Copy to `config/partner.yaml`
+# (gitignored) and set `active` to the profile this deployment serves.
+# Full schema + field reference: specs/013-partner-common-xml/contracts/partner-config.md
+# The file is read per request, so edits take effect without a restart.
+# `PARTNER_CONFIG_PATH` may point at an alternate file.
+
+active: default
+
+partners:
+  default:
+    api:
+      base_url: "http://localhost:3030"
+      timeout: "10s"
+      headers:
+        Accept: "application/json"
+      channel_list_query:
+        "$limit": "500"
+        "is_playout_assigned": "true"
+      schedule_query:
+        "$eager": "[programme.[programmeStreams]]"
+        "$skip": "0"
+        "$limit": "30000"
+
+    auth:
+      verify:
+        url: "https://sso.example.com/api/v2/accounts/auth/verify-token"
+        method: POST
+        headers:
+          Authorization: "{{token}}"
+        clear_on_error: true
+      steps:
+        - title: "Login"
+          fields:
+            - name: username
+              type: text
+              label: Username
+              required: true
+            - name: password
+              type: password
+              label: Password
+              required: true
+          api: "https://sso.example.com/sso/auth/login"
+          method: POST
+          headers:
+            Content-Type: "application/json"
+          body:
+            username: "{{username}}"
+            password: "{{password}}"
+          response_field: "access_token"
+        - title: "Select Account"
+          fields:
+            - name: accountId
+              type: select
+              label: Account
+              required: true
+              options: "${accounts}"
+              optionValueField: id
+              optionLabelField: name
+          preCalls:
+            - url: "https://sso.example.com/sso/auth/accounts"
+              method: GET
+              headers:
+                Authorization: "Bearer {{token}}"
+              response_mapping:
+                accounts: "$"
+          api: "https://sso.example.com/sso/auth/account-token"
+          method: POST
+          headers:
+            Content-Type: "application/json"
+            Authorization: "Bearer {{token}}"
+          body:
+            accountId: "{{accountId}}"
+          response_field: "access_token"
+
+    xml:
+      channel:
+        custom_fields:
+          - name: "base_name"
+            source: "base_name"
+          - name: "provider"
+            value: "partner-a"
+      epg:
+        custom_fields:
+          - name: "title"
+            source: "programme.name"
+            when: "metadata"
+          - name: "episode"
+            source: "programme.episode"
+            when: "metadata"
+            default: ""

@@ -44,6 +44,7 @@ func main() {
 	// 3. Init Services
 	partnerClient := api.NewPartnerClient(settings.PartnerURL)
 	channelHandler := api.NewChannelHandler(db, partnerClient, rdb)
+	partnerXMLHandler := api.NewPartnerXMLHandler(db)
 	api.StartSegmentTrackRecorder(db, rdb)
 
 	// 4. HTTP REST API
@@ -89,12 +90,8 @@ func main() {
 		apiGroup.POST("/channels", channelHandler.CreateOrUpsertChannel)
 		// GET /api/channels — list local playout_channels rows (paginated).
 		apiGroup.GET("/channels", channelHandler.ListChannels)
-		// GET /api/channels/esp — list ESPX upstream channels + registered
-		// map. Must be registered BEFORE the /channels/:id routes so Gin's
-		// radix tree treats `esp` as a static prefix (mirrors the
-		// playlist_:rendition ordering rule from the M1.5 plan,
-		// docs/300826-multi-rendition-abr-ladder.md §3 cmd/api/main.go).
-		apiGroup.GET("/channels/esp", channelHandler.ListPartnerChannels)
+		// Channel list for partners is served via /common/channel-playouts-xml
+		// (sourced from config/partner.yaml API settings); no /api/channels/esp.
 		// GET /api/channels/timeline/running — upcoming timelines for all enabled channels.
 		apiGroup.GET("/channels/timeline/running", channelHandler.GetRunningChannelsTimeline)
 		apiGroup.GET("/channels/monitored", channelHandler.ListMonitoredChannels)
@@ -112,6 +109,15 @@ func main() {
 		apiGroup.DELETE("/channels/:id", channelHandler.DeleteChannel)
 		apiGroup.POST("/channels/:id/start", channelHandler.StartChannel)
 		apiGroup.POST("/channels/:id/stop", channelHandler.StopChannel)
+	}
+
+	// Partner-facing common XML source (config-driven; see config/partner.yaml).
+	commonGroup := r.Group("/common")
+	{
+		// GET /common/channel-playouts-xml — channel list XML.
+		commonGroup.GET("/channel-playouts-xml", partnerXMLHandler.GetChannelListXML)
+		// GET /common/channel/epg/:channelId — one day of EPG XML.
+		commonGroup.GET("/channel/epg/:channelId", partnerXMLHandler.GetEPGXML)
 	}
 
 	// HLS Live Streaming routes (M1.5: shared segment cache, 3 rung playlists)
@@ -248,9 +254,9 @@ func main() {
 		c.File(filepath.Join(clientDistDir, "index.html"))
 	})
 
-	log.Println("🚀 SimLive Engine Server running on http://localhost:8080")
+	log.Println("🚀 SimLive Engine Server running on http://localhost" + settings.APIAddr)
 
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run(settings.APIAddr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

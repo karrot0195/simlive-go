@@ -79,7 +79,7 @@ func formatBreakStartDate(breakStart float64) string {
 // TagParser gotcha.
 func formatBreakDuration(durSec float64) string {
 	// Fast path for special values: NaN / Inf shouldn't reach here
-	// in practice (loadAdSegments sums finite Duration floats), but
+	// in practice (ad-break durations are finite programme spans), but
 	// the CUE-OUT/IN path already logs and degrades on bad input,
 	// so we just round-trip the Go default to avoid panics.
 	if math.IsNaN(durSec) || math.IsInf(durSec, 0) {
@@ -210,7 +210,8 @@ func BuildMediaPlaylistBody(segments []SegmentItem, targetDuration int) (string,
 // byte-for-byte on the same break. Falls back to
 // "adbreak-<int64(SpliceTimeSeconds)>" only if the segment carries
 // no AdBreakID (defensive -- shouldn't happen in practice because
-// the planner stamps both fields together in insertAdsIfNeeded).
+// the planner stamps both fields together when it marks an EPG ad
+// programme).
 //
 // On buildSpliceInsert error the CUE= attribute is dropped and the
 // line is emitted with only TYPE+ID, so the rest of the playlist

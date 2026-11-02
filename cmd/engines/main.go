@@ -173,9 +173,6 @@ func isChannelChanged(oldCh, newCh models.PlayoutChannel) bool {
 	if oldCh.ChannelEpgID != newCh.ChannelEpgID {
 		return true
 	}
-	if oldCh.UseAdEpgAds != newCh.UseAdEpgAds {
-		return true
-	}
 	return false
 }
 

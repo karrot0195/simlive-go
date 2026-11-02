@@ -41,6 +41,16 @@ func LocalTZOffset() string {
 	return fmt.Sprintf("%s%02d:%02d", sign, offset/3600, (offset%3600)/60)
 }
 
+// ParseLocalTime parses a partner wall-clock timestamp ("YYYY-MM-DD HH:MM:SS.mmm")
+// in the server's local timezone. This is the frame every EPG programme and ad
+// timestamp is normalized to, so start/stop/ads always stay on one clock.
+func ParseLocalTime(timeStr string) (time.Time, error) {
+	if t, err := time.ParseInLocation(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS, timeStr, LocalLocation()); err == nil {
+		return t, nil
+	}
+	return time.Time{}, fmt.Errorf("unable to parse local time: %s", timeStr)
+}
+
 func ParsePartnerTime(timeStr, tzStr string) (time.Time, error) {
 	loc, err := time.LoadLocation(tzStr)
 	if err != nil {

@@ -24,6 +24,8 @@ type Settings struct {
 	// channel. It lives under TMP_DIR by default and is preserved when
 	// ENABLE_CLEAN_UP=true wipes TMP_DIR.
 	EpgCacheDir string
+	// APIAddr is the bind address for the HTTP API (cmd/api). Env: API_ADDR.
+	APIAddr string
 }
 
 // PlannerSettings holds the planner's tunables. Some fields are sourced from
@@ -59,9 +61,6 @@ type PlannerSettings struct {
 	// in-memory segment batch into Redis while walking the EPG.
 	// Default 50.
 	WindowItemSize int
-	// AdInsertionInterval is the minimum gap (in seconds) between
-	// successive ad-breaks inserted into the timeline. Default 300.
-	AdInsertionInterval int
 	// RedisExpiryHours sets the TTL on the timeline ZSET so an
 	// inactive channel's data ages out automatically. Default 26.
 	RedisExpiryHours int
@@ -85,7 +84,6 @@ func GetPlannerSettings() *PlannerSettings {
 		FailureInactivateThreshold: 5,
 		FailureCounterKey:          "planner:failures:%s",
 		WindowItemSize:             50,
-		AdInsertionInterval:        GetEnvInt("AD_INSERTION_INTERVAL", 300),
 		RedisExpiryHours:           26,
 		WindowBufferSeconds:        120,
 	}
@@ -135,6 +133,7 @@ func GetSettings() *Settings {
 		AdsStreamId: adsStreamId,
 		TMPDir:      tmpDir,
 		EpgCacheDir: GetEnv("EPG_CACHE_DIR", filepath.Join(tmpDir, "epg-cache")),
+		APIAddr:     GetEnv("API_ADDR", ":8080"),
 	}
 
 }
