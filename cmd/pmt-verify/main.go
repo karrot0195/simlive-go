@@ -16,6 +16,9 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/joho/godotenv"
+
+	"simlive/internal/utils"
 	"simlive/internal/verify"
 )
 
@@ -125,6 +128,7 @@ type VerifyOptions struct {
 	ShowPmt    bool
 	ShowTspPsi bool
 	TspTimeout time.Duration
+	ExpectLang string
 }
 
 func verifySegment(filePath string, baseline *verify.PmtBaseline, opts VerifyOptions) bool {
@@ -153,8 +157,32 @@ func verifySegment(filePath string, baseline *verify.PmtBaseline, opts VerifyOpt
 		if s.IsSCTE35 {
 			tag = "  ← SCTE-35"
 		}
-		fmt.Printf("        • PID 0x%04X  stream_type 0x%02X  codec=%-8s%s\n",
-			s.PID, s.StreamType, s.CodecName, tag)
+		lang := s.Language
+		if lang == "" {
+			lang = "<none>"
+		}
+		fmt.Printf("        • PID 0x%04X  stream_type 0x%02X  codec=%-8s  language=%s%s\n",
+			s.PID, s.StreamType, s.CodecName, lang, tag)
+	}
+
+	// Language verdict.
+	expectLang := opts.ExpectLang
+	if expectLang == "" {
+		expectLang = utils.GetPmtAudioLanguage()
+	}
+	audioCount := 0
+	allLangOK := true
+	for _, s := range pmt.Streams {
+		if isAudioCodec(s.CodecName) {
+			audioCount++
+			if s.Language != expectLang {
+				allLangOK = false
+				fmt.Printf("   └─ ⚠️ audio language %s on PID 0x%04X (expected %s)\n", langOrNone(s.Language), s.PID, expectLang)
+			}
+		}
+	}
+	if audioCount > 0 && allLangOK {
+		fmt.Printf("   └─ ✅ audio language %s on all %d audio stream(s)\n", expectLang, audioCount)
 	}
 
 	scte := pmt.FindSCTE35()
@@ -176,13 +204,16 @@ func verifySegment(filePath string, baseline *verify.PmtBaseline, opts VerifyOpt
 	}
 
 	// 3) Cross-segment consistency.
-	base, consistent, first := baseline.Check(pmt.Fingerprint)
+	base, consistent, first := baseline.Check(pmt)
 	if first {
 		fmt.Printf("   └─ 📌 PMT baseline set (first segment)\n")
 	} else if !consistent {
-		fmt.Printf("   └─ ❌ PMT DIFFERS from baseline %s — PMT content is NOT identical across segments!\n", base)
+		fmt.Printf("   └─ ❌ PMT DIFFERS from baseline %s — PMT content is NOT identical across segments!\n", base.Fingerprint)
+		for _, d := range verify.DiffPmt(base, pmt) {
+			fmt.Printf("      └─ %s\n", d)
+		}
 	} else {
-		fmt.Printf("   └─ ✅ PMT matches baseline %s\n", base)
+		fmt.Printf("   └─ ✅ PMT matches baseline %s\n", base.Fingerprint)
 	}
 
 	// 4) Optional raw PSI dump (tsduck).
@@ -316,6 +347,21 @@ func atoiSafe(s string) int {
 	return n
 }
 
+func isAudioCodec(codec string) bool {
+	switch codec {
+	case "aac", "ac3", "mp2", "mp3", "eac3", "opus", "vorbis":
+		return true
+	}
+	return false
+}
+
+func langOrNone(lang string) string {
+	if lang == "" {
+		return "<none>"
+	}
+	return lang
+}
+
 // ---------- main ----------
 
 func main() {
@@ -323,7 +369,12 @@ func main() {
 	flagRes := flag.String("res", DefaultRes, "resolution (default: 360p)")
 	flagPmt := flag.Bool("pmt", true, "inspect PMT (SCTE-35 presence, fingerprint, consistency)")
 	flagTsp := flag.Bool("tsp", false, "also run `tsp -P psi` (tsduck) to show raw PMT + CUEI registration")
+	flagExpectLang := flag.String("expect-lang", "", "expected audio language (default from PMT_AUDIO_LANGUAGE)")
 	flag.Parse()
+
+	if err := godotenv.Load(); err != nil {
+		fmt.Println("⚠️  .env not loaded:", err)
+	}
 
 	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
 
@@ -379,6 +430,7 @@ func main() {
 		ShowPmt:    *flagPmt,
 		ShowTspPsi: *flagTsp,
 		TspTimeout: 5 * time.Second,
+		ExpectLang: *flagExpectLang,
 	}
 
 	fmt.Printf("👀 Verifier watcher started. Monitoring %s...\n", TMP)

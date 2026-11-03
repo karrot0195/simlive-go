@@ -593,7 +593,7 @@ func (m *HLSMonitor) displayResults(seg *SegmentInfo) {
 				fmt.Printf("   Segmentation UPID: %s\n", seg.SCTE35Info.SegmentationUpid)
 			}
 		} else {
-			fmt.Println("   ❌ MISSING Segmentation Descriptor")
+			fmt.Println("   ⚠️  MISSING Segmentation Descriptor (warning - expected for segments without splice events)")
 		}
 
 		if seg.SCTE35Info.HasSpliceInsert {
@@ -677,8 +677,7 @@ func (m *HLSMonitor) displayResults(seg *SegmentInfo) {
 	issuesFound := false
 
 	if seg.SCTE35Info.HasSCTE35 && !seg.SCTE35Info.HasSegmentationDesc {
-		fmt.Println("   ❌ Missing segmentation_descriptor for ad events")
-		issuesFound = true
+		fmt.Println("   ⚠️  Missing segmentation_descriptor for ad events (warning)")
 	}
 
 	if !seg.PMTInfo.HasPMT && seg.SCTE35Info.HasSCTE35 {

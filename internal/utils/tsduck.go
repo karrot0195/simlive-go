@@ -38,6 +38,12 @@ const SCTE35_PID = "0x1F00" // Normalized PID for SCTE-35 stream.
 // content is identical across all segments and version_number stays consistent.
 // If future changes require PMT content to differ between segments, add
 // --increment-version to the tsp command to ensure ISO/IEC 13818-1 §2.4.4.9 compliance.
+//
+// --audio-language semantics (added by specs/012-pmt-audio-language):
+// - Idempotent: re-running on an already-normalized segment is byte-identical.
+// - Does not change version_number (no --increment-version/--new-version).
+// - Non-fatal "audio stream 1 not found" on audio-less input (exit 0, PMT unchanged).
+// - Uppercase codes must never be passed; GetPmtAudioLanguage lowercases first.
 
 const PTS_MASK int64 = 0x1FFFFFFFF
 
@@ -146,10 +152,7 @@ func InjectSpliceEvent(parentCtx context.Context, inputFile string, outputFile s
 	// 1. PMT plugin adds stream type 0x86 (SCTE-35) and registration descriptor "CUEI" (0x43554549).
 	// 2. Spliceinject plugin reads XML and injects SCTE-35 sections into the specified PID.
 	//    --service auto-resolves the video PID (used as the PTS reference) from the PMT.
-	command := fmt.Sprintf(
-		`%s --add-input-stuffing 1/10 -I file "%s" -P pmt --add-pid %s/0x86 --add-registration 0x43554549 -P spliceinject --service 1 --pid %s --files "%s" --wait-first-batch -O file "%s"`,
-		TSP_BINARY, inputFile, SCTE35_PID, SCTE35_PID, xmlFile.Name(), outputFile,
-	)
+	command := buildSpliceInjectCommand(inputFile, outputFile, xmlFile.Name())
 
 	var out bytes.Buffer
 
@@ -200,10 +203,7 @@ func ConfigurePmtForAdsTs(parentCtx context.Context, seg models.SegmentItem, inp
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
 	defer cancel()
 
-	command := fmt.Sprintf(
-		"%s -a 1/10 -I file \"%s\" -P pmt --add-pid 0x1F00/0x86 --add-registration 0x43554549 -O file \"%s\"",
-		TSP_BINARY, inputFile, outputFile,
-	)
+	command := buildPmtConfigCommand(inputFile, outputFile)
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -225,10 +225,7 @@ func ConfigurePmtForVodTs(parentCtx context.Context, seg models.SegmentItem, inp
 	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Second)
 	defer cancel()
 
-	command := fmt.Sprintf(
-		"%s -a 1/10 -I file \"%s\" -P pmt --add-pid 0x1F00/0x86 --add-registration 0x43554549 -O file \"%s\"",
-		TSP_BINARY, inputFile, outputFile,
-	)
+	command := buildPmtConfigCommand(inputFile, outputFile)
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -237,6 +234,30 @@ func ConfigurePmtForVodTs(parentCtx context.Context, seg models.SegmentItem, inp
 		return Error("[SCTE35] event=pmt_config_failed file=%s error=%v", inputFile, err)
 	}
 	return nil
+}
+
+// buildPmtConfigCommand builds the shared tsp PMT command used by both VOD and
+// ad segments. It normalizes the audio language descriptor to the configured
+// value and registers the SCTE-35 ES/CUEI descriptor.
+func buildPmtConfigCommand(inputFile, outputFile string) string {
+	return fmt.Sprintf(
+		"%s -a 1/10 -I file \"%s\" -P pmt --add-pid 0x1F00/0x86 --add-registration 0x43554549 %s -O file \"%s\"",
+		TSP_BINARY, inputFile, pmtAudioLanguageArg(), outputFile,
+	)
+}
+
+// buildSpliceInjectCommand builds the tsp PMT + spliceinject command, including
+// audio-language normalization.
+func buildSpliceInjectCommand(inputFile, outputFile, xmlFile string) string {
+	return fmt.Sprintf(
+		"%s --add-input-stuffing 1/10 -I file \"%s\" -P pmt --add-pid %s/0x86 --add-registration 0x43554549 %s -P spliceinject --service 1 --pid %s --files \"%s\" --wait-first-batch -O file \"%s\"",
+		TSP_BINARY, inputFile, SCTE35_PID, pmtAudioLanguageArg(), SCTE35_PID, xmlFile, outputFile,
+	)
+}
+
+// pmtAudioLanguageArg returns the validated --audio-language flag for tsp.
+func pmtAudioLanguageArg() string {
+	return "--audio-language " + GetPmtAudioLanguage()
 }
 
 func IsDev() bool {

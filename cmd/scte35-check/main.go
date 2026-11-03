@@ -133,7 +133,7 @@ func computePmtFingerprint(psiOutput string) string {
 	for _, line := range strings.Split(psiOutput, "\n") {
 		l := strings.TrimSpace(line)
 		// Only include elementary stream lines and registration descriptor lines
-		if strings.Contains(l, "stream_type") || strings.Contains(l, "Registration") || strings.Contains(l, "Format identifier") {
+		if strings.Contains(l, "stream_type") || strings.Contains(l, "Registration") || strings.Contains(l, "Format identifier") || strings.Contains(l, "ISO-639") || strings.Contains(l, "Language:") {
 			fmt.Fprintf(&sb, "%s;", l)
 		}
 	}
@@ -267,11 +267,31 @@ func (v *verifier) fetchPlaylist(url string) {
 			// PMT consistency check
 			fp := computePmtFingerprint(psiOutput)
 			if fp != "" {
-				_, consistent, first := v.pmtBaseline.Check(fp)
+				base, consistent, first := v.pmtBaseline.Check(fp)
 				if first {
 					fmt.Printf("   📌 PMT baseline set\n")
 				} else if !consistent {
 					fmt.Printf("   ❌ PMT DIFFERS from baseline — content changed!\n")
+					baseLines := strings.Split(base, ";")
+					curLines := strings.Split(fp, ";")
+					baseSet := make(map[string]bool)
+					for _, l := range baseLines {
+						baseSet[l] = true
+					}
+					curSet := make(map[string]bool)
+					for _, l := range curLines {
+						curSet[l] = true
+					}
+					for _, l := range curLines {
+						if l != "" && !baseSet[l] {
+							fmt.Printf("      + %s\n", l)
+						}
+					}
+					for _, l := range baseLines {
+						if l != "" && !curSet[l] {
+							fmt.Printf("      - %s\n", l)
+						}
+					}
 				} else {
 					fmt.Printf("   ✅ PMT matches baseline\n")
 				}

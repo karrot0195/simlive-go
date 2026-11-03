@@ -107,6 +107,8 @@ func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 		}
 	}
 
+	e.ensurePreparationVersion(ctx, logger, channelID)
+
 	var currSeg models.SegmentItem
 
 	for {

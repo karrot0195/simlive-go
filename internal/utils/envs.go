@@ -3,7 +3,9 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 )
 
 type Settings struct {
@@ -107,6 +109,26 @@ func GetEnvInt(key string, defaultVal int) int {
 		}
 	}
 	return defaultVal
+}
+
+// DefaultPmtAudioLanguage is the platform-wide fallback ISO 639 language code.
+const DefaultPmtAudioLanguage = "eng"
+
+// GetPmtAudioLanguage resolves the platform-wide PMT audio language from the
+// PMT_AUDIO_LANGUAGE environment variable. The value is trimmed and lowercased
+// and must match ^[a-z]{3}$. Empty or invalid values fall back to "eng" with a
+// warning.
+func GetPmtAudioLanguage() string {
+	raw := os.Getenv("PMT_AUDIO_LANGUAGE")
+	value := strings.ToLower(strings.TrimSpace(raw))
+	if value == "" {
+		value = DefaultPmtAudioLanguage
+	}
+	if !regexp.MustCompile(`^[a-z]{3}$`).MatchString(value) {
+		GetLogger("CONFIG").Warn("invalid PMT_AUDIO_LANGUAGE, falling back to default", "value", raw, "default", DefaultPmtAudioLanguage)
+		return DefaultPmtAudioLanguage
+	}
+	return value
 }
 
 func GetSettings() *Settings {

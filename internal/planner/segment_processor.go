@@ -408,7 +408,7 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 	}
 
 	processCount := len(itemsToProcess)
-	sp.logger.Info("synched data", "from", itemsToProcess[0].TimeText, "to", itemsToProcess[processCount-1].TimeText, "total", processCount)
+	sp.logger.Info("synched data", "channelId", sp.channelID, "from", itemsToProcess[0].TimeText, "to", itemsToProcess[processCount-1].TimeText, "total", processCount)
 
 	if _, err := sp.pipe.Exec(ctx); err != nil {
 		sp.logger.Error("[Planner] synchSegmentIntoRedis Exec error", "error", err)
