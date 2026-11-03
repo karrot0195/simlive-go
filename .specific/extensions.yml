@@ -2,16 +2,16 @@ apiVersion: agent-skills/v1
 kind: Extensions
 hooks:
   before_specify:
-    - extension: sync
-      command: speckit-log
-      description: Record current branch before specifying
-      optional: true
-      enabled: true
-      condition: ""
+  - extension: sync
+    command: speckit-log
+    description: Record current branch before specifying
+    optional: true
+    enabled: true
+    condition: ''
   after_specify:
-    - extension: sync
-      command: speckit-log
-      description: Remember last generated spec/branch
-      optional: true
-      enabled: true
-      condition: ""
+  - extension: sync
+    command: speckit-log
+    description: Remember last generated spec/branch
+    optional: true
+    enabled: true
+    condition: ''

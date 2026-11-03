@@ -1,54 +1,126 @@
-# Seeds TARGET/.specific/workflow.yaml.
-# setup-workflow deep-merges this file over its built-in defaults, then the
-# target's .specific/workflow.yaml over that. Lists replace, maps merge.
-# Every key is optional; empty values mean "use the default / derive it".
 apiVersion: agent-skills/v1
 kind: Workflow
 name: workflow
-
 speckit:
   enabled: true
-  version: "1.2.2.dev0"
+  version: 1.2.2.dev0
   integration: command-code
-  script: py                       # py | sh
-  feature_numbering: sequential    # sequential | timestamp
+  script: py
+  feature_numbering: sequential
   allow_symlinks: false
-
 constitution:
-  # Non-empty body wins verbatim; the structured fields below are ignored.
-  body: ""
+  body: '# simlive Constitution
+
+
+    ## Core Principles
+
+
+    ### I. Library-First
+
+    Every feature starts as a standalone, testable Go package under `internal/`; binaries
+    in `cmd/` are thin entry points. No organizational-only packages.
+
+
+    ### II. CLI Interface
+
+    Every binary exposes functionality via CLI (stdin/args → stdout, errors → stderr);
+    support text and JSON output where useful.
+
+
+    ### III. Test-First (NON-NEGOTIABLE)
+
+    TDD mandatory: tests written → user approved → tests fail → then implement; Red-Green-Refactor
+    strictly enforced (`go test ./...`).
+
+
+    ### IV. Integration Testing
+
+    Focus areas requiring integration tests: new package contract tests, GORM model/schema
+    changes, HLS segment/SCTE-35 verification paths, Redis/PostgreSQL interaction.
+
+
+    ### V. Observability & Simplicity
+
+    Structured logging via lumberjack; start simple, YAGNI; version with MAJOR.MINOR.PATCH.
+
+
+    ## Additional Constraints
+
+
+    Technology stack: Go 1.26+, Gin, GORM/PostgreSQL, Redis, Vue 3 + Vite + Vuetify
+    (client). External tools: tsduck, ffmpeg/ffprobe, rclone. Environment via `.env`.
+
+
+    ## Development Workflow
+
+
+    Code review required; `make fmt`/`make vet`/`make test` must pass before merge;
+    spec-kit flow for feature work.
+
+
+    ## Governance
+
+
+    Constitution supersedes all other practices. Amendments require documentation,
+    approval, and migration plan. All PRs must verify compliance.
+
+
+    **Version**: 1.0.0 | **Ratified**: 2026-11-01 | **Last Amended**: 2026-11-01
+
+    <!-- Sync Impact Report: initial constitution generated during init-flow -->'
   project_name: simlive
-  version: "1.0.0"
-  ratified: 2026-11-01
-  last_amended: 2026-11-01
-  principles: []
-  # - name: Library-First
-  #   description: Every feature starts as a standalone, testable library.
-  sections: []
-  # - name: Additional Constraints
-  #   content: Technology stack, compliance, deployment rules.
-  governance: []
-  # - Constitution supersedes all other practices.
-
+  version: 1.0.0
+  ratified: '2026-11-01'
+  last_amended: '2026-11-01'
+  principles:
+  - name: I. Library-First
+    description: Every feature starts as a standalone, testable Go package under internal/;
+      binaries in cmd/ are thin entry points. No organizational-only packages.
+  - name: II. CLI Interface
+    description: Every binary exposes functionality via CLI (stdin/args -> stdout,
+      errors -> stderr); support text and JSON output where useful.
+  - name: III. Test-First (NON-NEGOTIABLE)
+    description: 'TDD mandatory: tests written -> user approved -> tests fail -> then
+      implement; Red-Green-Refactor strictly enforced (go test ./...).'
+  - name: IV. Integration Testing
+    description: 'Focus areas requiring integration tests: new package contract tests,
+      GORM model/schema changes, HLS segment/SCTE-35 verification paths, Redis/PostgreSQL
+      interaction.'
+  - name: V. Observability & Simplicity
+    description: Structured logging via lumberjack; start simple, YAGNI; version with
+      MAJOR.MINOR.PATCH.
+  sections:
+  - name: Additional Constraints
+    content: 'Technology stack: Go 1.26+, Gin, GORM/PostgreSQL, Redis, Vue 3 + Vite
+      + Vuetify (client). External tools: tsduck, ffmpeg/ffprobe, rclone. Environment
+      via .env.'
+  - name: Development Workflow
+    content: Code review required; make fmt/make vet/make test must pass before merge;
+      spec-kit flow for feature work.
+  governance:
+  - Constitution supersedes all other practices.
+  - Amendments require documentation, approval, and migration plan.
+  - All PRs must verify compliance.
 extensions:
-  # Keys must match what the speckit skills read, e.g. before_plan,
-  # after_implement, before_tasks, after_specify. Values are hook lists.
-  hooks: {}
-  # hooks:
-  #   before_plan:
-  #     - extension: guard
-  #       command: speckit.git.commit
-  #       description: Ensure a clean tree before planning
-  #       optional: true
-  #       enabled: true
-  #       condition: ""
-
+  hooks:
+    before_specify:
+    - extension: sync
+      command: speckit-log
+      description: Record current branch before specifying
+      optional: true
+      enabled: true
+      condition: ''
+    after_specify:
+    - extension: sync
+      command: speckit-log
+      description: Remember last generated spec/branch
+      optional: true
+      enabled: true
+      condition: ''
 workflows:
   speckit:
     enabled: true
-
 skills:
-  link: []                         # empty = every workflow-skills/*/
-
+  link: []
 sync:
-  on_conflict: prompt              # prompt | keep | overwrite
+  on_conflict: prompt
