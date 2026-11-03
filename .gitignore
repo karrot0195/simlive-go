@@ -12,4 +12,4 @@ bin/
 .env
 config/deploy-targets.json
 config/DEPLOY.md
-__pycache__/*
+**/__pycache__/*
