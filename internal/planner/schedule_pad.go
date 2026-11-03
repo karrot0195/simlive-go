@@ -101,6 +101,8 @@ func prependLeadIn(items []models.PartnerScheduleItem, now, firstStart time.Time
 		shifted[i] = cloneScheduleItem(original)
 		shifted[i].LocalDateStart = newStart.Format(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS)
 		shifted[i].LocalDateEnd = newEnd.Format(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS)
+		delta := newStart.Sub(start)
+		shifted[i].Programme.Ads = shiftAdMarkerStarts(shifted[i].Programme.Ads, delta, utils.LocalLocation())
 
 		currentEnd = newStart
 	}
@@ -165,6 +167,8 @@ func appendTail(items []models.PartnerScheduleItem, horizon time.Time) []models.
 		shifted[i] = cloneScheduleItem(original)
 		shifted[i].LocalDateStart = newStart.Format(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS)
 		shifted[i].LocalDateEnd = newEnd.Format(configs.DATE_FORMAT_YYYY_MM_DD_HHMMSS)
+		delta := newStart.Sub(start)
+		shifted[i].Programme.Ads = shiftAdMarkerStarts(shifted[i].Programme.Ads, delta, utils.LocalLocation())
 
 		currentStart = newEnd
 	}
@@ -176,5 +180,22 @@ func cloneScheduleItem(item models.PartnerScheduleItem) models.PartnerScheduleIt
 	clone := item
 	clone.Programme.ProgrammeStreams = make([]models.PartnerProgrammeStream, len(item.Programme.ProgrammeStreams))
 	copy(clone.Programme.ProgrammeStreams, item.Programme.ProgrammeStreams)
+	clone.Programme.Ads = make([]models.PartnerAdBreak, len(item.Programme.Ads))
+	copy(clone.Programme.Ads, item.Programme.Ads)
 	return clone
+}
+
+// shiftAdMarkerStarts shifts each inline ad marker's Start by delta, dropping
+// markers whose timestamps cannot be parsed after the shift.
+func shiftAdMarkerStarts(ads []models.PartnerAdBreak, delta time.Duration, loc *time.Location) []models.PartnerAdBreak {
+	out := make([]models.PartnerAdBreak, 0, len(ads))
+	for _, ad := range ads {
+		t, err := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, ad.Start)
+		if err != nil {
+			continue
+		}
+		ad.Start = t.Add(delta).In(loc).Format(configs.PARTNER_XML_TIME_LAYOUT)
+		out = append(out, ad)
+	}
+	return out
 }

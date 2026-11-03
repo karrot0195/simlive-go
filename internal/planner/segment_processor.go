@@ -108,6 +108,7 @@ type SegmentProcessor struct {
 	pipe               redis.Pipeliner
 	ctx                context.Context
 	sequenceCounter    int64
+	breakCounter       uint32
 	nowUnix            float64
 	processingSegments []models.SegmentItem
 
@@ -117,6 +118,8 @@ type SegmentProcessor struct {
 	horizon            time.Time
 
 	currentPtsOffset float64
+
+	pendingCueIn *adBreakContext
 
 	logger *utils.Logger
 }

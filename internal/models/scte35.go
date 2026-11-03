@@ -159,10 +159,9 @@ func BuildMediaPlaylistBody(segments []SegmentItem, targetDuration int) (string,
 		case seg.IsAd && seg.AdType == "out":
 			body.WriteString(buildCueOutLine(seg))
 			body.WriteString("\n")
-		case seg.IsAd && seg.AdType == "in":
-			// CUE-IN carries the *previous* (last ad) break's
-			// metadata, since the CUE-IN is the end of THAT
-			// break, not the start of the next VOD segment.
+		case seg.AdType == "in" && seg.AdBreakID != 0:
+			// CUE-IN is stamped on the first content segment after the
+			// break (is_ad=false) carrying the break metadata.
 			body.WriteString(buildCueInLine(seg))
 			body.WriteString("\n")
 		}

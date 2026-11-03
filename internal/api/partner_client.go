@@ -160,6 +160,7 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 		Path     string `xml:"path,attr"`
 		Duration string `xml:"duration,attr"`
 		Start    string `xml:"start,attr"`
+		Value    string `xml:",chardata"`
 	}
 	type xmlStream struct {
 		StreamID string `xml:"stream_id,attr"`
@@ -167,6 +168,7 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 	type xmlProgramme struct {
 		Start   string      `xml:"start,attr"`
 		Stop    string      `xml:"stop,attr"`
+		IsAds   string      `xml:"is_ads,attr"`
 		Ads     []xmlAd     `xml:"ads"`
 		Streams []xmlStream `xml:"stream"`
 	}
@@ -185,8 +187,14 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 
 	resp2 := &models.PartnerSchedulesResponse{Date: date, TotalItems: len(tv.Programmes)}
 	for _, p := range tv.Programmes {
-		start, _ := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, p.Start)
-		stop, _ := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, p.Stop)
+		start, err := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, p.Start)
+		if err != nil {
+			continue
+		}
+		stop, err := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, p.Stop)
+		if err != nil {
+			continue
+		}
 		startL := start.In(loc)
 		stopL := stop.In(loc)
 
@@ -204,13 +212,22 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 		}
 
 		var ads []models.PartnerAdBreak
+		isAds := p.IsAds == "true" || p.IsAds == "1"
 		for _, a := range p.Ads {
+			// Text-only <ads>true</ads> designates the whole programme as an ad.
+			if strings.TrimSpace(a.Value) == "true" {
+				isAds = true
+				continue
+			}
 			dur, _ := strconv.Atoi(a.Duration)
 			start := a.Start
 			// Re-stamp the ad marker on the same clock as the programme window;
 			// the upstream offset is only meaningful next to its own frame.
 			if adStart, err := time.Parse(configs.PARTNER_XML_TIME_LAYOUT, a.Start); err == nil {
 				start = adStart.In(loc).Format(configs.PARTNER_XML_TIME_LAYOUT)
+			} else if a.Start == "" {
+				// no start provided; skip malformed marker
+				continue
 			}
 			ads = append(ads, models.PartnerAdBreak{Path: a.Path, Duration: dur, Start: start})
 		}
@@ -223,6 +240,7 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 		item.Programme.Name = ""
 		item.Programme.ProgrammeStreams = streams
 		item.Programme.Ads = ads
+		item.Programme.IsAds = isAds
 		if len(ads) > 0 {
 			log.Printf("[partner] ads=%d", len(ads))
 		}
