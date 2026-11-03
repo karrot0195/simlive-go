@@ -15,6 +15,7 @@ import (
 	"simlive/internal/api"
 	"simlive/internal/configs"
 	customerrors "simlive/internal/custom-errors"
+	"simlive/internal/lifecycle"
 	"simlive/internal/models"
 	"simlive/internal/planner"
 	"simlive/internal/storage"
@@ -60,7 +61,7 @@ func main() {
 		defer wg.Done()
 		interval := plannerInterval()
 		workers := plannerWorkerCount()
-		const pollInterval = 1 * time.Second
+		pollInterval := utils.GetChannelSyncInterval()
 		logger.VInfo("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval)
 
 		var inFlightMu sync.Mutex
@@ -161,10 +162,7 @@ func main() {
 
 		nextInterval := time.Now().Add(interval)
 		for {
-			var activeChannels []models.PlayoutChannel
-			statuses := []models.PlayoutStatus{models.PlayoutInactiveStatus, models.PlayoutFailureStatus}
-
-			db.Where("status NOT IN ?", statuses).Find(&activeChannels)
+			activeChannels, _ := lifecycle.ActiveChannels(db)
 
 			activeSet := make(map[string]struct{}, len(activeChannels))
 			for _, ch := range activeChannels {

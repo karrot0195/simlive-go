@@ -5,6 +5,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -104,6 +105,7 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		ContentTimezone: detail.ContentTimezone,
 		ChannelEpgID:    detail.ChannelEpg.ID,
 		Status:          models.PlayoutPrepareStatus,
+		IsActive:        true,
 		UpdatedAt:       time.Now(),
 	}
 
@@ -140,10 +142,16 @@ func (h *ChannelHandler) ListChannels(c *gin.Context) {
 	page, pageSize := parsePagination(c)
 	status := c.Query("status")
 	q := strings.TrimSpace(c.Query("q"))
+	isActiveRaw := c.Query("is_active")
 
 	tx := h.db.Model(&models.PlayoutChannel{})
 	if status != "" {
 		tx = tx.Where("status = ?", status)
+	}
+	if isActiveRaw != "" {
+		if b, err := strconv.ParseBool(isActiveRaw); err == nil {
+			tx = tx.Where("is_active = ?", b)
+		}
 	}
 	if q != "" {
 		tx = tx.Where("LOWER(name) LIKE ?", "%"+strings.ToLower(q)+"%")
@@ -251,6 +259,10 @@ func (h *ChannelHandler) GetChannel(c *gin.Context) {
 // UpdateChannel does a full replace of the mutable fields on the identified row.
 // Setting `status=INACTIVE` is a stop: force is_active=false so the planner and engine drop the channel on their next poll.
 func (h *ChannelHandler) applyChannelUpdate(c *gin.Context, id string, req *models.UpdateChannelReq, verb string) {
+	if err := models.ValidateLifecycleContradiction(req.Status, req.IsActive); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	cols, vals := updateColumnsAndValues(req)
 	if len(cols) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "No updatable fields provided"})
@@ -344,12 +356,27 @@ func updateColumnsAndValues(req *models.UpdateChannelReq) (cols []string, vals [
 		cols = append(cols, "channel_epg_id")
 		vals = append(vals, *req.ChannelEpgID)
 	}
-	if req.Status != nil {
-		cols = append(cols, "status")
-		vals = append(vals, *req.Status)
+
+	// Resolve status/is_active per the contract transition table.
+	status := req.Status
+	isActive := req.IsActive
+
+	// Contradiction validation is handled by caller; here we normalize.
+	if status != nil || isActive != nil {
+		// determine normalized status + is_active
+		s, ia, _ := models.NormalizeLifecycle(statusStrPtr(status), isActive)
+		// write status if provided or derived from is_active
+		if status != nil || isActive != nil {
+			cols = append(cols, "status")
+			vals = append(vals, s)
+			cols = append(cols, "is_active")
+			vals = append(vals, ia)
+		}
 	}
 	return
 }
+
+func statusStrPtr(s *string) *string { return s }
 
 // assignmentMap zips parallel (col, val) slices into a map[string]any
 // suitable for gorm's Updates(map). GORM does not preserve column order
@@ -373,6 +400,25 @@ func (h *ChannelHandler) DeleteChannel(c *gin.Context) {
 	if !channelIDGuard(c, id) {
 		return
 	}
+	// Best-effort purge (same as stop) before hard delete.
+	clearSegmentTrackData(id)
+	if h.rdb != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		for _, k := range []string{"simlive:hls:" + id, "simlive:renditions:" + id, "simlive:timeline:" + id, "planner:cursor:" + id} {
+			_ = h.rdb.Del(ctx, k).Err()
+		}
+		iter := h.rdb.Scan(ctx, 0, "simlive:hls:"+id+":rendition:*", 100).Iterator()
+		for iter.Next(ctx) {
+			_ = h.rdb.Del(ctx, iter.Val()).Err()
+		}
+		cancel()
+	}
+	tmpDir := os.Getenv("TMP_DIR")
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+	_ = os.RemoveAll(filepath.Join(tmpDir, id))
+
 	res := h.db.Model(&models.PlayoutChannel{}).
 		Where("id = ?", id).
 		Delete(&models.PlayoutChannel{})
@@ -450,16 +496,11 @@ func (h *ChannelHandler) StartChannel(c *gin.Context) {
 
 	// Best-effort: reset segment track log + seen set for a fresh run.
 	clearSegmentTrackData(id)
-	// Best-effort: clear the breaker counter. Use a fresh context so a
-	// client-side cancellation on the HTTP request doesn't abort the
-	// Redis call.
-	// if h.rdb != nil {
-	// 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	// 	if err := h.rdb.Del(ctx, breakerKeyPrefix+id).Err(); err != nil {
-	// 		log.Printf("[api] StartChannel: DEL %s%s error: %v", breakerKeyPrefix, id, err)
-	// 	}
-	// 	cancel()
-	// }
+	if h.rdb != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = h.rdb.Del(ctx, "planner:failures:"+id).Err()
+		cancel()
+	}
 
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
@@ -576,7 +617,8 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	res := h.db.Model(&models.PlayoutChannel{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":     "INACTIVE",
+			"status":     models.PlayoutInactiveStatus,
+			"is_active":  false,
 			"updated_at": time.Now(),
 		})
 	if res.Error != nil {
@@ -608,6 +650,30 @@ func (h *ChannelHandler) StopChannel(c *gin.Context) {
 	log.Printf("[api] channel=%s stop: status=INACTIVE, Redis data purged (HLS + timeline + renditions + cursor), breaker preserved (engine will stop within 5s, planner within PLANNER_INTERVAL=%s)",
 		id, plannerTickHint())
 	clearSegmentTrackData(id)
+	// Best-effort purge of Redis + disk.
+	if h.rdb != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		keys := []string{
+			"simlive:hls:" + id,
+			"simlive:renditions:" + id,
+			"simlive:timeline:" + id,
+			"planner:cursor:" + id,
+		}
+		for _, k := range keys {
+			_ = h.rdb.Del(ctx, k).Err()
+		}
+		// rendition metadata keys
+		iter := h.rdb.Scan(ctx, 0, "simlive:hls:"+id+":rendition:*", 100).Iterator()
+		for iter.Next(ctx) {
+			_ = h.rdb.Del(ctx, iter.Val()).Err()
+		}
+		cancel()
+	}
+	tmpDir := os.Getenv("TMP_DIR")
+	if tmpDir == "" {
+		tmpDir = os.TempDir()
+	}
+	_ = os.RemoveAll(filepath.Join(tmpDir, id))
 	var row models.PlayoutChannel
 	if err := h.db.First(&row, "id = ?", id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read stopped channel"})

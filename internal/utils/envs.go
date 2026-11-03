@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Settings struct {
@@ -129,6 +130,26 @@ func GetPmtAudioLanguage() string {
 		return DefaultPmtAudioLanguage
 	}
 	return value
+}
+
+// DefaultChannelSyncInterval is the default roster-poll cadence for planner
+// and engines: 2 seconds.
+const DefaultChannelSyncInterval = 2 * time.Second
+
+// GetChannelSyncInterval resolves the CHANNEL_SYNC_INTERVAL environment
+// variable into a duration. Invalid or non-positive values fall back to
+// DefaultChannelSyncInterval.
+func GetChannelSyncInterval() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("CHANNEL_SYNC_INTERVAL"))
+	if raw == "" {
+		return DefaultChannelSyncInterval
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		GetLogger("CONFIG").Warn("invalid CHANNEL_SYNC_INTERVAL, falling back to default", "value", raw, "default", DefaultChannelSyncInterval)
+		return DefaultChannelSyncInterval
+	}
+	return d
 }
 
 func GetSettings() *Settings {

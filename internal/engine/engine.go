@@ -88,6 +88,22 @@ func (e *Engine) ClearChannelCache(channelID string) {
 	e.rendMetaMu.Unlock()
 }
 
+// PurgeChannel clears in-memory caches, Redis HLS/rendition/metadata keys, and
+// the channel disk directory.
+func (e *Engine) PurgeChannel(ctx context.Context, channelID string) {
+	e.ClearChannelCache(channelID)
+	if e.rdb != nil {
+		_ = e.rdb.Del(ctx, masterRedisKey(channelID)).Err()
+		_ = e.rdb.Del(ctx, renditionMetadataRedisKey(channelID)).Err()
+		iter := e.rdb.Scan(ctx, 0, fmt.Sprintf("simlive:hls:%s:rendition:*", channelID), 100).Iterator()
+		for iter.Next(ctx) {
+			_ = e.rdb.Del(ctx, iter.Val()).Err()
+		}
+	}
+	chDir := filepath.Join(e.tmpDir, channelID)
+	_ = os.RemoveAll(chDir)
+}
+
 func (e *Engine) StartPlayoutLoop(ctx context.Context, channelID string) {
 	// 500ms ticker for fast sliding window updates
 	ticker := time.NewTicker(500 * time.Millisecond)
