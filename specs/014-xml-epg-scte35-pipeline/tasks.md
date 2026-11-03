@@ -29,8 +29,8 @@
 
 **Purpose**: Establish a clean baseline and the test seams required by every planner test.
 
-- [ ] T001 Run baseline `make fmt`, `make vet`, `make test`, and `make build` from `makefile`; record any pre-existing failures before changing code
-- [ ] T002 [P] Add an asset-reader seam so planner tests can serve manifests without rclone: introduce a `Cat` interface and `GetRenditionsFromMasterText` helper in `internal/utils/m3u8.go`, then store the reader on `SegmentProcessor` in `internal/planner/segment_processor.go`
+- [x] T001 Run baseline `make fmt`, `make vet`, `make test`, and `make build` from `makefile`; record any pre-existing failures before changing code
+- [x] T002 [P] Add an asset-reader seam so planner tests can serve manifests without rclone: introduce a `Cat` interface and `GetRenditionsFromMasterText` helper in `internal/utils/m3u8.go`, then store the reader on `SegmentProcessor` in `internal/planner/segment_processor.go`
 - [ ] T003 [P] Add shared test builders for content/ad manifests and timeline assertions in `internal/planner/segment_processor_test.go`
 
 ---
@@ -42,17 +42,17 @@
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
 - [ ] T004 [P] Add failing parser tests for attribute-bearing `<ads path duration start/>`, text-only `<ads>true</ads>`, `programme@is_ads`, missing streams, and malformed timestamps in `internal/api/partner_client_test.go`
-- [ ] T005 Extend `GetEPGScheduleItemsFromXML` in `internal/api/partner_client.go` to parse inline markers and set `Programme.IsAds` for text-only or attribute-based programme ad designations; keep time normalization to the server clock
+- [x] T005 Extend `GetEPGScheduleItemsFromXML` in `internal/api/partner_client.go` to parse inline markers and set `Programme.IsAds` for text-only or attribute-based programme ad designations; keep time normalization to the server clock
 - [ ] T006 [P] Add failing model tests asserting a content segment with `is_ad=false`, `ad_type="in"`, and break metadata emits a CUE-IN date-range in `internal/models/scte35_fields_test.go`
-- [ ] T007 Update `buildMediaPlaylistBody` in `internal/models/scte35.go` to emit the CUE-IN date-range when `AdType=="in"` and `AdBreakID!=0`, independent of `IsAd`
+- [x] T007 Update `buildMediaPlaylistBody` in `internal/models/scte35.go` to emit the CUE-IN date-range when `AdType=="in"` and `AdBreakID!=0`, independent of `IsAd`
 - [ ] T008 [P] Add failing tests for a per-plan break counter and a marker-derived break context in `internal/planner/segment_processor_test.go`
-- [ ] T009 Replace timestamp-derived break identity with a per-plan counter and an XML-marker-backed break context in `internal/planner/segment_processor.go`; use the full counter for `EventID` and `counter & 0xFFFF` for `UniqueProgramID`
+- [x] T009 Replace timestamp-derived break identity with a per-plan counter and an XML-marker-backed break context in `internal/planner/segment_processor.go`; use the full counter for `EventID` and `counter & 0xFFFF` for `UniqueProgramID`
 - [ ] T010 [P] Add failing tests for shifting inline ad marker starts when padding shifts a programme in `internal/planner/schedule_pad_test.go`
-- [ ] T011 Shift each inline ad marker start by the same delta applied to its programme window in `internal/planner/schedule_pad.go`; drop markers whose timestamps cannot be parsed after the shift
+- [x] T011 Shift each inline ad marker start by the same delta applied to its programme window in `internal/planner/schedule_pad.go`; drop markers whose timestamps cannot be parsed after the shift
 - [ ] T012 Add failing tests for ad asset loading from a master playlist, primary rendition selection, `#EXT-X-PTS-RANGE` durations, `#EXTINF` fallback, and the no-rendition skip path in `internal/planner/segment_processor_test.go`
 - [ ] T013 Implement `loadAdSegments` in `internal/planner/segment_processor.go`: read `<path>/vod.m3u8`, resolve renditions, read the primary rendition's `vod.m3u8`, and return segment specs with the marker path as the bucket-inclusive storage base
 - [ ] T014 Add failing tests for boundary position selection and relative PTS computation in `internal/planner/segment_processor_test.go`
-- [ ] T015 Implement placement marker helpers in `internal/planner/segment_processor.go`: `0x30` at break start − 8 s and − 4 s, `0x36` at break end − 4 s, with `SpliceTimePTS=(currentPtsOffset-delay)*TICKS` and `SpliceTimeSeconds` set to the absolute channel position
+- [x] T015 Implement placement marker helpers in `internal/planner/segment_processor.go`: `0x30` at break start − 8 s and − 4 s, `0x36` at break end − 4 s, with `SpliceTimePTS=(currentPtsOffset-delay)*TICKS` and `SpliceTimeSeconds` set to the absolute channel position
 
 **Checkpoint**: Parsing, break identity, padding, asset loading, and marker helpers are ready.
 
@@ -92,9 +92,9 @@
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Implement `insertAdBreak` in `internal/planner/segment_processor.go`: load the asset, compute the played duration from its segments, append ad segments with continuous `PtsOffset`, stamp the first ad as `ad_type="out"` with the `0x34` marker, and stamp the `0x36` placement-end marker in the ad segment containing break end − 4 s
-- [ ] T024 [US2] Implement proactive pre-roll stamping in `processSegment` in `internal/planner/segment_processor.go` so a marker is attached before `addSegment` flushes the segment; track emitted positions per break to prevent duplicates
-- [ ] T025 [US2] Carry a pending cue-in on `SegmentProcessor` across schedule-item boundaries in `internal/planner/segment_processor.go`; stamp the first following content segment with `ad_type="in"`, `AdBreakID`, `AdBreakStart`, and `AdBreakDuration`, without setting `IsAd`
+- [x] T023 [US2] Implement `insertAdBreak` in `internal/planner/segment_processor.go`: load the asset, compute the played duration from its segments, append ad segments with continuous `PtsOffset`, stamp the first ad as `ad_type="out"` with the `0x34` marker, and stamp the `0x36` placement-end marker in the ad segment containing break end − 4 s
+- [x] T024 [US2] Implement proactive pre-roll stamping in `processSegment` in `internal/planner/segment_processor.go` so a marker is attached before `addSegment` flushes the segment; track emitted positions per break to prevent duplicates
+- [x] T025 [US2] Carry a pending cue-in on `SegmentProcessor` across schedule-item boundaries in `internal/planner/segment_processor.go`; stamp the first following content segment with `ad_type="in"`, `AdBreakID`, `AdBreakStart`, and `AdBreakDuration`, without setting `IsAd`
 - [ ] T026 [US2] Verify HLS boundary output via skill `start all` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: run `make start-all`, then `curl -s http://localhost:8080/live/<channel>/360p/playlist.m3u8`; expect CUE-OUT with `END-ON-NEXT=YES` before the first ad, CUE-IN before resumed content, `TYPE=48` twice before the break, `TYPE=52` on the first ad, `TYPE=54` before break end, and `TYPE=53` on the first content segment after
 
 **Checkpoint**: US2 boundaries are visible in both the timeline and the playlist.
@@ -113,8 +113,8 @@
 
 ### Implementation for User Story 3
 
-- [ ] T028 [US3] Ensure ad segments inherit `currentPtsOffset` and advance it by their own durations in `internal/planner/segment_processor.go`; never derive output offsets from the ad asset's original PTS
-- [ ] T029 [US3] Audit all marker and segment PTS computations in `internal/planner/segment_processor.go` and `internal/utils/tsduck.go`; keep immediate splices free of `pts_time`, keep placement markers in the rewritten PTS space, and preserve the 33-bit mask at emission
+- [x] T028 [US3] Ensure ad segments inherit `currentPtsOffset` and advance it by their own durations in `internal/planner/segment_processor.go`; never derive output offsets from the ad asset's original PTS
+- [x] T029 [US3] Audit all marker and segment PTS computations in `internal/planner/segment_processor.go` and `internal/utils/tsduck.go`; keep immediate splices free of `pts_time`, keep placement markers in the rewritten PTS space, and preserve the 33-bit mask at emission
 - [ ] T030 [US3] Verify PTS continuity via skill `test`: run `make test` and confirm the new PTS tests pass together with existing `internal/models/scte35_fields_test.go` round-trip tests
 
 **Checkpoint**: US3 has no discontinuities or rewind in the produced timeline.

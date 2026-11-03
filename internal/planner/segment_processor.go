@@ -105,6 +105,7 @@ func applyAdMarker(seg *models.SegmentItem, ctx *adBreakContext, isFirst, isLast
 
 type SegmentProcessor struct {
 	planner            *Planner
+	reader             utils.Cat
 	pipe               redis.Pipeliner
 	ctx                context.Context
 	sequenceCounter    int64
@@ -204,13 +205,13 @@ func (sp *SegmentProcessor) processAdBreak(ad models.PartnerAdBreak, adCtx *adBr
 	}
 
 	masterPath := path.Join(ad.Path, "vod.m3u8")
-	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
+	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.reader)
 	primaryRung := "L0"
 	if len(upstreamRends) > 0 {
 		primaryRung = upstreamRends[0]
 	}
 	m3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", ad.Path, primaryRung)
-	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
+	m3u8Content, err := sp.reader.Cat(m3u8Path)
 	if err != nil {
 		// no restore
 		return fmt.Errorf("failed to fetch ad m3u8: %w", err)
@@ -277,6 +278,21 @@ func (sp *SegmentProcessor) processAdBreak(ad models.PartnerAdBreak, adCtx *adBr
 		segment.Sequence = sp.sequenceCounter
 		applyAdMarker(&segment, adCtx, isFirst, isLast)
 
+		// Placement-end marker (0x36) at break end - 4s.
+		breakEnd := adCtx.start + adCtx.duration
+		placementEndSec := breakEnd - 4
+		if placementEndSec >= mediaStart && placementEndSec < mediaEnd {
+			appendSpliceInsertUnique(&segment, models.SpliceInsert{
+				Type:               "out",
+				EventID:            adCtx.id,
+				SpliceTimePTS:      int64((sp.currentPtsOffset + (placementEndSec - mediaStart)) * configs.TICKS),
+				SpliceTimeSeconds:  placementEndSec,
+				Duration:           adCtx.duration,
+				UniqueProgramID:    adCtx.id & 0xFFFF,
+				SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_END,
+			})
+		}
+
 		if mediaStart >= (sp.nowUnix - float64(utils.GetPlannerSettings().WindowBufferSeconds)) {
 			if err := sp.addSegment(sp.ctx, mediaStart, segment); err != nil {
 				// no restore
@@ -298,7 +314,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 	streamID := streamStorageBase(stream)
 	masterPath := path.Join(streamID, "vod.m3u8")
 
-	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
+	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.reader)
 
 	primaryRung := "L_0"
 	if len(upstreamRends) > 0 {
@@ -311,7 +327,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamID)
 	}
 
-	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
+	m3u8Content, err := sp.reader.Cat(m3u8Path)
 	if err != nil {
 		return fmt.Errorf("failed to fetch m3u8: %w", err)
 	}
@@ -405,13 +421,17 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 				// forward to their wall-clock start and leaving a hole.
 				adStart = sp.runningTime
 			}
+			sp.breakCounter++
 			adCtx2 := &adBreakContext{
-				id:       uint32(adList[adIdx].start),
+				id:       sp.breakCounter,
 				start:    adStart,
 				duration: float64(ad.Duration),
 			}
+			sp.stampPreRollCues(adCtx2)
 			if err := sp.processAdBreak(ad, adCtx2); err != nil {
 				sp.logger.Warn("ad break failed", "path", ad.Path, "error", err)
+			} else {
+				sp.pendingCueIn = adCtx2
 			}
 			adIdx++
 			continue
@@ -452,6 +472,26 @@ func (sp *SegmentProcessor) processSegment(streamID string, renditions []string,
 		Renditions:  renditions,
 	}
 
+	if sp.pendingCueIn != nil {
+		ctx := sp.pendingCueIn
+		segment.IsAd = false
+		segment.AdType = "in"
+		segment.AdBreakID = ctx.id
+		segment.AdBreakStart = ctx.start
+		segment.AdBreakDuration = ctx.duration
+		breakEnd := ctx.start + ctx.duration
+		appendSpliceInsertUnique(&segment, models.SpliceInsert{
+			Type:               "in",
+			EventID:            ctx.id,
+			SpliceTimePTS:      int64(breakEnd * configs.TICKS),
+			SpliceTimeSeconds:  breakEnd,
+			Duration:           ctx.duration,
+			UniqueProgramID:    ctx.id & 0xFFFF,
+			SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_END,
+		})
+		sp.pendingCueIn = nil
+	}
+
 	applyAdMarker(&segment, adCtx, isFirst, isLast)
 
 	if mediaStart >= (sp.nowUnix - float64(utils.GetPlannerSettings().WindowBufferSeconds)) {
@@ -479,7 +519,7 @@ func (sp *SegmentProcessor) stampPreRollCues(adCtx *adBreakContext) {
 		ev := models.SpliceInsert{
 			Type:               "out",
 			EventID:            adCtx.id,
-			SpliceTimePTS:      int64(preRollPts * configs.TICKS),
+			SpliceTimePTS:      int64((sp.currentPtsOffset - delay) * configs.TICKS),
 			SpliceTimeSeconds:  preRollPts,
 			Duration:           adCtx.duration,
 			UniqueProgramID:    adCtx.id & 0xFFFF,

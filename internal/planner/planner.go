@@ -187,6 +187,7 @@ func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutC
 
 	processor := &SegmentProcessor{
 		planner:         p,
+		reader:          p.rclone,
 		pipe:            p.rdb.Pipeline(),
 		ctx:             ctx,
 		nowUnix:         float64(nowLocal.Unix()),
