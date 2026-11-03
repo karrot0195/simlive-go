@@ -24,7 +24,7 @@ Expose a reusable partner-facing XML source on the SimLive API: a channel list (
 
 **Performance Goals**: Channel list and one-day EPG responses complete in under 5 s under normal upstream conditions (SC-007); XML generation is linear in returned items and adds no new round trips beyond the existing upstream calls.
 
-**Constraints**: No new dependencies; base XML fields (`id`, `name`, `img`; `start`, `stop`, `streamId`, `ads`) are fixed and partner extensions may only add fields; partner selection is one active profile per deployment; all day/time anchoring follows the host-local timezone with `configs.TZ` only as a fallback; interval-based ad insertion is removed globally.
+**Constraints**: No new dependencies; base XML fields (`id`, `name`, `img`; `start`, `stop`, `streamId`, `ads`) are fixed and partner extensions may only add fields; partner selection is one active profile per deployment; all day/time anchoring follows the host-local timezone with `configs.TZ` only as a fallback; interval-based ad insertion is removed globally; EPG `streamId` values are bucket-inclusive storage paths (rclone `remote:bucket/...`) used verbatim by the planner/engine, so `STORAGE_BUCKET`/`ADS_STREAM_ID` are not needed.
 
 **Scale/Scope**: One active partner profile per deployment; channel lists bounded by the upstream `is_playout_assigned=true` query; EPG bounded to one day per request; two new HTTP routes; no client UI changes.
 
@@ -79,13 +79,13 @@ internal/
 │   ├── auth_config.go            # MOD: serve auth section from partner.yaml, legacy fallback
 │   └── auth_config_test.go       # MOD: partner.yaml cases + legacy fallback
 ├── planner/
-│   ├── planner.go                # MOD: remove loadAdSegments / UseAdEpgAds gating
-│   ├── segment_processor.go      # MOD: remove interval ads; mark EPG ad programmes
-│   └── segment_processor_test.go # NEW/MOD: EPG ad marking, no interval ads
+│   ├── planner.go                # MOD: remove loadAdSegments / UseAdEpgAds gating; drop bucketName/adsBucket (stream ids carry the bucket)
+│   ├── segment_processor.go      # MOD: remove interval ads; mark EPG ad programmes; build storage paths from bucket-inclusive stream id
+│   └── segment_processor_test.go # NEW/MOD: EPG ad marking, no interval ads, bucket-inclusive storage paths
 ├── models/
 │   └── models.go                 # MOD: deprecate UseAdEpgAds; keep fields for schema compatibility
 └── utils/
-    └── envs.go                   # MOD: remove AdInsertionInterval; keep PARTNER_API_URL fallback
+    └── envs.go                   # MOD: remove AdInsertionInterval, VideoBucket, AdsStreamId; keep PARTNER_API_URL fallback
 
 cmd/api/
 └── main.go                       # MOD: wire partner config; mount /common routes; API_ADDR env
@@ -112,7 +112,8 @@ client/
 4. **XML builder** — fixed base structure plus ordered custom fields; `encoding/xml` encoder; XML content type; error XML; deterministic element order.
 5. **HTTP handlers/routes** — `/common` group, path guard, channel list sourced from the upstream partner API via `partner.yaml` settings (no `/api/channels` or local `playout_channels` lookup for the list), channel → EPG resolution via `playout_channels`/upstream detail only for the EPG endpoint, 404 vs empty guide, `$include_metadata`, optional date.
 6. **Ads removal** — delete interval insertion path and setting; mark EPG ad programmes on timeline segments with stable break identity and SCTE-35 boundaries; keep HLS/PMT behavior consistent; update tests and `.env.example`.
-7. **Validation** — `make fmt`, `make vet`, `make test`, `make build`; manual curl checks from `quickstart.md`.
+7. **Bucket-inclusive stream ids** — the XML EPG `stream_id` (and ad `path`) carry the storage bucket; the partner client stops stripping the `STORAGE_BUCKET` prefix and the planner uses the ids verbatim, so `STORAGE_BUCKET`/`ADS_STREAM_ID` are removed from settings and env files.
+8. **Validation** — `make fmt`, `make vet`, `make test`, `make build`; manual curl checks from `quickstart.md`.
 
 ## Complexity Tracking
 

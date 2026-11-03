@@ -70,7 +70,7 @@ Normalized programme passed to the XML builder.
 |-------|------|--------|-------|
 | `start` | string | parsed `local_date_start` formatted RFC3339 | In channel `ContentTimezone`, host-local fallback. Must be before `stop`. |
 | `stop` | string | parsed `local_date_end` formatted RFC3339 | Same location as `start`. |
-| `streamId` | string | primary stream selection over `programme.programmeStreams` | Item omitted when no stream matches (edge case). |
+| `streamId` | string | primary stream selection over `programme.programmeStreams` | Bucket-inclusive full storage path (rclone `remote:bucket/...` form), used verbatim by the planner/engine. Item omitted when no stream matches (edge case). |
 | `ads` | bool | `programme.is_ads` | Rendered as lowercase `true`/`false`. |
 | `channelId` | string | request's playout channel id | Emitted once as a root child. |
 | `raw` | map[string]any | schedule item plus `channel`, `programme` | Addressable by custom field sources. |
@@ -132,6 +132,7 @@ Same rule as the planner: first stream where `is_vod == true && is_trailer == fa
 
 | Field | Change |
 |-------|--------|
+| `storage_path` | Built as `<streamId>/{rendition}/<file>` where `streamId` is already bucket-inclusive; the planner no longer prepends `STORAGE_BUCKET`. Ad segments keep using the bucket-inclusive ad `path` verbatim. |
 | `is_ad` | Now set from `programme.is_ads` instead of interval injection. |
 | `ad_type` | `out` on the first segment of an EPG ad programme, `in` on the last. |
 | `ad_break_id` | Stable id derived from the ad programme's start time. |

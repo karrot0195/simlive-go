@@ -116,3 +116,26 @@ func TestAnchorTimelineStart(t *testing.T) {
 		}
 	})
 }
+
+// The XML EPG's stream_id carries the storage bucket (rclone
+// remote:bucket/... form), so the storage base is the stream id itself.
+func TestStreamStorageBaseUsesBucketInclusiveStreamID(t *testing.T) {
+	const id = "espx-video-lib:espx-video-lib/vod/ch-1/prog-1"
+	stream := models.PartnerProgrammeStream{StreamID: id}
+	if got := streamStorageBase(stream); got != id {
+		t.Fatalf("streamStorageBase = %q, want %q", got, id)
+	}
+
+	withPath := models.PartnerProgrammeStream{StreamID: id, StreamPath: "sub/dir"}
+	if got := streamStorageBase(withPath); got != "sub/dir/"+id {
+		t.Fatalf("streamStorageBase with StreamPath = %q, want %q", got, "sub/dir/"+id)
+	}
+}
+
+func TestSegmentStoragePathFromBucketInclusiveStreamID(t *testing.T) {
+	const id = "espx-video-lib:espx-video-lib/vod/ch-1/prog-1"
+	want := id + "/{rendition}/seg_00001.ts"
+	if got := segmentStoragePath(id, "seg_00001.ts"); got != want {
+		t.Fatalf("segmentStoragePath = %q, want %q", got, want)
+	}
+}

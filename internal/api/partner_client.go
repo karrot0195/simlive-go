@@ -182,7 +182,6 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 	// Every timestamp (programme start/stop and ad markers) is normalized to the
 	// server's local clock so the planner walks one timeline frame.
 	loc := utils.LocalLocation()
-	bucket := utils.GetSettings().VideoBucket
 
 	resp2 := &models.PartnerSchedulesResponse{Date: date, TotalItems: len(tv.Programmes)}
 	for _, p := range tv.Programmes {
@@ -193,12 +192,10 @@ func (c *PartnerClient) GetEPGScheduleItemsFromXML(channelID, date, tz string) (
 
 		var streams []models.PartnerProgrammeStream
 		for _, s := range p.Streams {
-			sid := s.StreamID
-			if bucket != "" && strings.HasPrefix(sid, bucket+"/") {
-				sid = strings.TrimPrefix(sid, bucket+"/")
-			}
+			// stream_id is the bucket-inclusive storage path (rclone
+			// remote:bucket/...); the planner uses it verbatim.
 			streams = append(streams, models.PartnerProgrammeStream{
-				StreamID:      sid,
+				StreamID:      s.StreamID,
 				StreamPath:    "",
 				SchemaVersion: 3,
 				IsVod:         true,

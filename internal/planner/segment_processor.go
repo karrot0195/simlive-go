@@ -21,6 +21,23 @@ var PreRollCUEINDelaysSec = []float64{4}
 
 const DefaulStreamName = "Default Stream"
 
+// streamStorageBase returns the bucket-inclusive storage base path for a
+// stream. The XML EPG's stream_id already carries the storage bucket (rclone
+// remote:bucket/... form); StreamPath is prepended only for legacy
+// JSON-sourced streams.
+func streamStorageBase(stream models.PartnerProgrammeStream) string {
+	if stream.StreamPath != "" {
+		return path.Join(stream.StreamPath, stream.StreamID)
+	}
+	return stream.StreamID
+}
+
+// segmentStoragePath renders the engine storage path template for one content
+// segment; streamID already includes the storage bucket.
+func segmentStoragePath(streamID, line string) string {
+	return fmt.Sprintf("%s/{rendition}/%s", streamID, line)
+}
+
 // adBreakContext describes one EPG-declared ad programme as a break on the
 // timeline. The id is derived from the programme start so it is stable across
 // planner replans.
@@ -67,7 +84,7 @@ func applyAdMarker(seg *models.SegmentItem, ctx *adBreakContext, isFirst, isLast
 			SpliceTimePTS:      int64(ctx.start * configs.TICKS),
 			SpliceTimeSeconds:  ctx.start,
 			Duration:           ctx.duration,
-			UniqueProgramID:    ctx.id,
+			UniqueProgramID:    ctx.id & 0xFFFF,
 			SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_START,
 		})
 	}
@@ -80,7 +97,7 @@ func applyAdMarker(seg *models.SegmentItem, ctx *adBreakContext, isFirst, isLast
 			SpliceTimePTS:      int64(breakEnd * configs.TICKS),
 			SpliceTimeSeconds:  breakEnd,
 			Duration:           ctx.duration,
-			UniqueProgramID:    ctx.id,
+			UniqueProgramID:    ctx.id & 0xFFFF,
 			SegmentationTypeID: configs.SEG_TYPE_ADVERTISEMENT_END,
 		})
 	}
@@ -272,14 +289,11 @@ func (sp *SegmentProcessor) processAdBreak(ad models.PartnerAdBreak, adCtx *adBr
 }
 
 func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgrammeStream, adCtx *adBreakContext, ads []models.PartnerAdBreak, itemEnd float64) error {
-	streamRelativePath := stream.StreamPath
-	streamAbsolutePath := path.Join(sp.planner.bucketName, streamRelativePath, stream.StreamID)
-	masterPath := path.Join(streamAbsolutePath, "vod.m3u8")
-	StreamID := stream.StreamID
-
-	if streamRelativePath != "" {
-		StreamID = path.Join(streamRelativePath, StreamID)
-	}
+	// stream.StreamID is the bucket-inclusive storage path from the XML EPG
+	// (rclone remote:bucket/...); StreamPath only applies to legacy
+	// JSON-sourced streams.
+	streamID := streamStorageBase(stream)
+	masterPath := path.Join(streamID, "vod.m3u8")
 
 	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 
@@ -288,10 +302,10 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 		primaryRung = upstreamRends[0]
 	}
 
-	m3u8Path := fmt.Sprintf("%s/%s.m3u8", streamAbsolutePath, primaryRung)
+	m3u8Path := fmt.Sprintf("%s/%s.m3u8", streamID, primaryRung)
 
 	if stream.SchemaVersion == 3 {
-		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamAbsolutePath)
+		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamID)
 	}
 
 	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
@@ -408,7 +422,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 		isFirst := (i == 0 && adIdx == 0)
 		isLast := (i == len(specs)-1 && adIdx >= len(adList))
 
-		if err := sp.processSegment(StreamID, upstreamRends, s.line, segmentPtsOffset, s.duration, s.ptsStart, s.ptsEnd, mediaStart, mediaEnd, adCtx, isFirst, isLast); err != nil {
+		if err := sp.processSegment(streamID, upstreamRends, s.line, segmentPtsOffset, s.duration, s.ptsStart, s.ptsEnd, mediaStart, mediaEnd, adCtx, isFirst, isLast); err != nil {
 			return err
 		}
 
@@ -421,7 +435,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 
 func (sp *SegmentProcessor) processSegment(streamID string, renditions []string, line string, ptsOffset float64, duration float64, ptsStart, ptsEnd int64, mediaStart, mediaEnd float64, adCtx *adBreakContext, isFirst, isLast bool) error {
 	sp.sequenceCounter++
-	segmentPath := fmt.Sprintf("%s/%s/%s/%s", sp.planner.bucketName, streamID, "{rendition}", line)
+	segmentPath := segmentStoragePath(streamID, line)
 	segment := models.SegmentItem{
 		Sequence:    sp.sequenceCounter,
 		StoragePath: segmentPath,
@@ -465,7 +479,7 @@ func (sp *SegmentProcessor) stampPreRollCues(adCtx *adBreakContext) {
 			SpliceTimePTS:      int64(preRollPts * configs.TICKS),
 			SpliceTimeSeconds:  preRollPts,
 			Duration:           adCtx.duration,
-			UniqueProgramID:    adCtx.id,
+			UniqueProgramID:    adCtx.id & 0xFFFF,
 			SegmentationTypeID: configs.SEG_TYPE_PLACE_OPPORTUNITY_START,
 		}
 		sp.processingSegments[idx].AdBreakID = adCtx.id

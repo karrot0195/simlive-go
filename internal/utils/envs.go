@@ -16,9 +16,6 @@ type Settings struct {
 	RedisPass  string
 	PartnerURL string
 
-	VideoBucket string
-	AdsStreamId string
-
 	TMPDir string
 	// EpgCacheDir holds the retained (last known-good) EPG schedule per
 	// channel. It lives under TMP_DIR by default and is preserved when
@@ -117,9 +114,6 @@ func GetSettings() *Settings {
 	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
 	partnerURL := GetEnv("PARTNER_API_URL", "http://localhost:3030")
 
-	videoBucket := GetEnv("STORAGE_BUCKET", "")
-
-	adsStreamId := GetEnv("ADS_STREAM_ID", "ads")
 	tmpDir := GetEnv("TMP_DIR", os.TempDir())
 	return &Settings{
 		DBHost:      dbHost,
@@ -129,8 +123,6 @@ func GetSettings() *Settings {
 		DBPassword:  dbPass,
 		RedisAddr:   redisAddr,
 		PartnerURL:  partnerURL,
-		VideoBucket: videoBucket,
-		AdsStreamId: adsStreamId,
 		TMPDir:      tmpDir,
 		EpgCacheDir: GetEnv("EPG_CACHE_DIR", filepath.Join(tmpDir, "epg-cache")),
 		APIAddr:     GetEnv("API_ADDR", ":8080"),

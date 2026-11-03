@@ -57,7 +57,8 @@ func generateSpliceInsertXml(event models.SpliceInsert) string {
 
 	// Use splice_immediate="false" so that pts_time is honored.
 	// pts_time is a 33-bit field; mask epoch-based PTS down to fit.
-	var ptsTime string
+	// unique_program_id is 16-bit per SCTE-35.
+	var ptsTimeAttr string
 	breakDuration := ""
 	if includeDuration {
 		breakDuration = fmt.Sprintf("\n      <break_duration auto_return=\"true\" duration=\"%d\"/>", int64(event.Duration*90000))
@@ -68,7 +69,8 @@ func generateSpliceInsertXml(event models.SpliceInsert) string {
 	if event.SegmentationTypeID == configs.SEG_TYPE_ADVERTISEMENT_START || event.SegmentationTypeID == configs.SEG_TYPE_ADVERTISEMENT_END {
 		sliceImmediate = "true"
 	} else {
-		ptsTime = fmt.Sprintf(`pts_time="%d"`, event.SpliceTimePTS&PTS_MASK)
+		ptsTimeAttr = fmt.Sprintf(`        pts_time="%d"
+`, event.SpliceTimePTS&PTS_MASK)
 	}
 
 	xml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
@@ -78,12 +80,11 @@ func generateSpliceInsertXml(event models.SpliceInsert) string {
         splice_event_id="%d"
         unique_program_id="%d"
         out_of_network="%t"
-        %s
-        splice_immediate="%s">%s
+%s        splice_immediate="%s">%s
     </splice_insert>
 	%s
   </splice_information_table>
-</tsduck>`, event.EventID, event.UniqueProgramID, outOfNetwork, ptsTime, sliceImmediate, breakDuration, segmentationDescriptor)
+</tsduck>`, event.EventID, event.UniqueProgramID&0xFFFF, outOfNetwork, ptsTimeAttr, sliceImmediate, breakDuration, segmentationDescriptor)
 
 	return xml
 }

@@ -110,3 +110,13 @@ All spec clarifications are resolved. This document records the technical decisi
 
 **Alternatives considered**:
 - Golden-file-only XML tests — kept as a supplement, not the sole mechanism, so failures point at a field/source.
+
+## D12. Bucket-inclusive stream identifiers
+
+**Decision**: The XML source's `stream_id` values (and inline ad `path` values) include the storage bucket in rclone `remote:bucket/...` form. The partner client keeps them verbatim (the `STORAGE_BUCKET` prefix strip is removed), and the planner/engine build storage paths directly from them (`<streamId>/{rendition}/<file>`). `STORAGE_BUCKET` and `ADS_STREAM_ID` environment variables and the `Settings.VideoBucket`/`AdsStreamId` fields are removed.
+
+**Rationale**: The XML API is the authoritative source of the full storage path; a separate bucket env var duplicates that knowledge and can drift from what the EPG declares. Ad breaks already worked this way (`ad.Path` used verbatim), so this extends the same rule to content streams.
+
+**Alternatives considered**:
+- Keep `STORAGE_BUCKET` and keep stripping/re-adding — rejected: two sources of truth for the same path prefix.
+- Derive the bucket from the stream id at runtime — rejected: the id already is the path; parsing it back out adds failure modes for no gain.

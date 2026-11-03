@@ -180,6 +180,19 @@
 
 ---
 
+## Phase 9: Extension - Bucket-inclusive `streamId` (STORAGE_BUCKET removal)
+
+**Purpose**: The XML EPG source returns `stream_id` values that already include the storage bucket (rclone `remote:bucket/...` form, same as inline ad `path` values). Use them verbatim so `STORAGE_BUCKET`/`ADS_STREAM_ID` configuration is no longer needed (FR-019, research D12).
+
+- [X] T053 [P] Write failing tests: partner client XML parsing keeps the bucket prefix in `stream_id` even when `STORAGE_BUCKET` is set; planner builds `StoragePath` as `<streamId>/{rendition}/<file>` without prepending a bucket
+- [X] T054 Remove the `STORAGE_BUCKET` prefix strip from `GetEPGScheduleItemsFromXML` in `internal/api/partner_client.go`
+- [X] T055 Use the bucket-inclusive stream id directly in `internal/planner/segment_processor.go`; drop `bucketName`/`adsBucket` from `Planner` in `internal/planner/planner.go`
+- [X] T056 Remove `VideoBucket`/`AdsStreamId` from `internal/utils/envs.go`; remove `STORAGE_BUCKET`/`ADS_STREAM_ID` from `.env.example` and `config/.env`
+- [X] T057 Extend `specs/013-partner-common-xml/` docs (spec, data-model, contracts, research, plan) with the bucket-inclusive `streamId` contract
+- [X] T058 Verify `make fmt`, `make vet`, `make test`, `make build`; record the change in `LOGS.md`
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase Dependencies

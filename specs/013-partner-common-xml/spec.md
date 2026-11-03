@@ -16,6 +16,10 @@
 - Q: What is the authoritative source of the channel `img` value? → A: The image/logo field provided by the partner API channel source.
 - Q: How far should removal of interval-based default ads go? → A: Remove globally; all outputs (timeline, HLS, and partner XML) use only EPG-declared ad programmes.
 
+### Session 2026-11-03
+
+- Q: Does the EPG `streamId` carry the storage bucket? → A: Yes. The XML source returns bucket-inclusive stream identifiers (rclone `remote:bucket/...` form, e.g. `espx-video-lib:espx-video-lib/vod/...`). The planner and engine use `streamId` verbatim as the storage path base, so no separate `STORAGE_BUCKET` configuration is needed; the env var and the strip/re-add bucket logic are removed. Ad `path` values were already bucket-inclusive and are used verbatim.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Fetch the channel list as partner-facing XML (Priority: P1)
@@ -134,6 +138,7 @@ An operator expects the ad markers partners receive to match the ad programmes a
 - **FR-016**: Configuration errors or missing customisation MUST degrade to the base XML format while being reported to operators.
 - **FR-017**: Each deployment MUST apply exactly one active partner profile from `partner.yaml` to all requests on the common endpoints.
 - **FR-018**: The `img` value MUST come from the image/logo field exposed by the partner API channel source, and MUST be empty when that source has no image.
+- **FR-019**: The EPG XML `streamId` MUST be the complete storage path including the bucket (rclone `remote:bucket/...` form), so consumers (planner/engine) resolve segments directly from `streamId` without a separate `STORAGE_BUCKET` setting.
 
 ### Key Entities *(include if data involved)*
 
@@ -161,7 +166,8 @@ An operator expects the ad markers partners receive to match the ad programmes a
 - `partner.yaml` may describe several partners, but each deployment activates one profile; the active profile supplies the XML customisations for every request.
 - `$include_metadata` defaults to not requested; any value other than true excludes optional metadata.
 - `:channelId` is the playout channel identifier returned by the channel list; the system resolves the partner guide identifier internally.
-- `streamId` uses the same primary-stream selection rule as the playout planner.
+- `streamId` uses the same primary-stream selection rule as the playout planner, and is emitted and consumed as the full storage path including the bucket (rclone `remote:bucket/...` form).
+- `STORAGE_BUCKET` and `ADS_STREAM_ID` environment variables are not needed: storage paths derive from the bucket-inclusive `streamId` and the bucket-inclusive ad `path` values, both used verbatim by the planner and engine.
 - The `img` reference is the image/logo field from the partner API channel source; channels without a source image return an empty `img`.
 - Interval-based ad insertion is removed globally. Timeline, HLS, and partner XML all use only the ad programmes declared in the EPG.
 - The existing admin JSON endpoints remain unchanged and are out of scope.

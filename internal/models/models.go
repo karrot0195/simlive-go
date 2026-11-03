@@ -156,12 +156,12 @@ type PartnerScheduleItem struct {
 	LocalDateStart string `json:"local_date_start"` // "2026-08-23 00:00:00.000"
 	LocalDateEnd   string `json:"local_date_end"`
 	Programme      struct {
-		ID               string `json:"id"`
-		Name             string `json:"name"`
-		ShortURL         string `json:"short_url"` // PROGRAMME ID, DO NOT USE THIS AS THE PATH
+		ID               string                   `json:"id"`
+		Name             string                   `json:"name"`
+		ShortURL         string                   `json:"short_url"` // PROGRAMME ID, DO NOT USE THIS AS THE PATH
 		ProgrammeStreams []PartnerProgrammeStream `json:"programmeStreams"`
-		IsAds            bool `json:"is_ads"`
-		Ads              []PartnerAdBreak `json:"ads"`
+		IsAds            bool                     `json:"is_ads"`
+		Ads              []PartnerAdBreak         `json:"ads"`
 	} `json:"programme"`
 }
 

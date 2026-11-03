@@ -39,3 +39,6 @@ Removed AD_INSERTION_INTERVAL / loadAdSegments / interval ad injection; planner 
 
 2026-11-02 11:09: chore: fix upstream paths, image field and error mapping
 Fixed upstream paths are no longer configurable (removed partner.yaml api.endpoints), img now reads the real img_url field, and upstream 404/422 map to a 404 channel_not_found instead of 502.
+
+2026-11-03 10:36: feat: bucket-inclusive streamId, STORAGE_BUCKET removed
+EPG streamId is the complete storage path (rclone remote:bucket/...) consumed verbatim by planner/engine; STORAGE_BUCKET/ADS_STREAM_ID env config and the strip/re-add bucket logic removed (specs/013 FR-019, research D12).
