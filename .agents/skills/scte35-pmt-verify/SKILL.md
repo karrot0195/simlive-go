@@ -155,6 +155,7 @@ Monitors `tmp/simlive-go/<channel>/<resolution>/` for new `.ts` segments.
 | `--res` | `360p` | Resolution |
 | `--pmt` | `true` | Inspect PMT (SCTE-35 presence, fingerprint, consistency) |
 | `--tsp` | `false` | Also run `tsp -P psi` for raw PMT + CUEI registration check |
+| `--expect-lang` | `PMT_AUDIO_LANGUAGE`/`eng` | Expected audio language; warns on mismatch |
 
 ### `cmd/scte35-check` (HTTP watcher)
 

@@ -105,7 +105,6 @@ func applyAdMarker(seg *models.SegmentItem, ctx *adBreakContext, isFirst, isLast
 
 type SegmentProcessor struct {
 	planner            *Planner
-	reader             utils.Cat
 	pipe               redis.Pipeliner
 	ctx                context.Context
 	sequenceCounter    int64
@@ -205,13 +204,13 @@ func (sp *SegmentProcessor) processAdBreak(ad models.PartnerAdBreak, adCtx *adBr
 	}
 
 	masterPath := path.Join(ad.Path, "vod.m3u8")
-	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.reader)
+	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 	primaryRung := "L0"
 	if len(upstreamRends) > 0 {
 		primaryRung = upstreamRends[0]
 	}
 	m3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", ad.Path, primaryRung)
-	m3u8Content, err := sp.reader.Cat(m3u8Path)
+	m3u8Content, err := sp.planner.rclone.Cat(sp.ctx, m3u8Path)
 	if err != nil {
 		// no restore
 		return fmt.Errorf("failed to fetch ad m3u8: %w", err)
@@ -314,7 +313,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 	streamID := streamStorageBase(stream)
 	masterPath := path.Join(streamID, "vod.m3u8")
 
-	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.reader)
+	upstreamRends := utils.GetRenditionsByMaster(masterPath, sp.planner.rclone)
 
 	primaryRung := "L_0"
 	if len(upstreamRends) > 0 {
@@ -327,7 +326,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.PartnerProgramme
 		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamID)
 	}
 
-	m3u8Content, err := sp.reader.Cat(m3u8Path)
+	m3u8Content, err := sp.planner.rclone.Cat(sp.ctx, m3u8Path)
 	if err != nil {
 		return fmt.Errorf("failed to fetch m3u8: %w", err)
 	}
@@ -596,7 +595,7 @@ func (sp *SegmentProcessor) synchSegmentIntoRedis(ctx context.Context, synchAllI
 	}
 
 	processCount := len(itemsToProcess)
-	sp.logger.Info("synched data", "from", itemsToProcess[0].TimeText, "to", itemsToProcess[processCount-1].TimeText, "total", processCount)
+	sp.logger.Info("synched data", "channelId", sp.channelID, "from", itemsToProcess[0].TimeText, "to", itemsToProcess[processCount-1].TimeText, "total", processCount)
 
 	if _, err := sp.pipe.Exec(ctx); err != nil {
 		sp.logger.Error("[Planner] synchSegmentIntoRedis Exec error", "error", err)

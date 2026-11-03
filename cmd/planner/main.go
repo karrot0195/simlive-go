@@ -15,6 +15,7 @@ import (
 	"simlive/internal/api"
 	"simlive/internal/configs"
 	customerrors "simlive/internal/custom-errors"
+	"simlive/internal/lifecycle"
 	"simlive/internal/models"
 	"simlive/internal/planner"
 	"simlive/internal/storage"
@@ -24,6 +25,16 @@ import (
 const DIFF_TIME_AHEAD = 3
 
 var logger = utils.GetLogger("PLANNER")
+
+type supervisor struct {
+	ch         models.PlayoutChannel
+	ctx        context.Context
+	cancel     context.CancelFunc
+	done       chan struct{}
+	state      string // "running" | "stopping"
+	restartCh  models.PlayoutChannel
+	hasRestart bool
+}
 
 func main() {
 	if err := godotenv.Load(); err != nil {
@@ -53,194 +64,179 @@ func main() {
 
 	prepareEnv(logger, mainCtx, db, rdb)
 
-	var wg sync.WaitGroup
+	interval := plannerInterval()
+	workers := plannerWorkerCount()
+	pollInterval := utils.GetChannelSyncInterval()
+	logger.VInfo("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval)
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		interval := plannerInterval()
-		workers := plannerWorkerCount()
-		const pollInterval = 1 * time.Second
-		logger.VInfo("cron started, interval=%s workers=%d poll=%s", interval, workers, pollInterval)
+	sem := make(chan struct{}, workers)
 
-		var inFlightMu sync.Mutex
-		inFlight := make(map[string]struct{})
+	processRunner := func(chCtx context.Context, ch models.PlayoutChannel) {
+		location := utils.LocalLocation()
+		nowInCh := time.Now().In(location)
+		today := utils.StartOfDay(nowInCh)
+		tomorrow := today.Add(24 * time.Hour)
 
-		var cancelMu sync.Mutex
-		cancelMap := make(map[string]context.CancelFunc)
+		isOverToday := nowInCh.After(tomorrow.Add(-DIFF_TIME_AHEAD * time.Hour))
 
-		processRunner := func(chCtx context.Context, ch models.PlayoutChannel) {
-			location := utils.LocalLocation()
-			nowInCh := time.Now().In(location)
-			today := utils.StartOfDay(nowInCh)
-			tomorrow := today.Add(24 * time.Hour)
+		logger.VInfo("Processing active channel: %s (%s), today=%s tomorrow=%s",
+			ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD))
 
-			isOverToday := nowInCh.After(tomorrow.Add(-DIFF_TIME_AHEAD * time.Hour))
+		// 1. Check if today has data (skips if present, plans if missing)
+		prepareDateWithRetry(chCtx, plannerSvc, ch, today)
+		if chCtx.Err() != nil {
+			logger.Info(fmt.Sprintf("[Planner] channel=%s cancelled during today prepare", ch.ID))
+			plannerSvc.CleanChannelData(mainCtx, ch.ID)
+			return
+		}
 
-			logger.VInfo("Processing active channel: %s (%s), today=%s tomorrow=%s",
-				ch.Name, ch.ID, today.Format(configs.DATE_FORMAT_YYYY_MM_DD), tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD))
-
-			// 1. Check if today has data (skips if present, plans if missing)
-			prepareDateWithRetry(chCtx, plannerSvc, ch, today)
+		if isOverToday {
+			logger.Info(fmt.Sprintf("process for tomorrow %s", tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
+			prepareDateWithRetry(chCtx, plannerSvc, ch, tomorrow)
 			if chCtx.Err() != nil {
-				logger.Info(fmt.Sprintf("[Planner] channel=%s cancelled during today prepare", ch.ID))
+				logger.Info(fmt.Sprintf("[Planner] channel=%s cancelled during tomorrow prepare", ch.ID))
 				plannerSvc.CleanChannelData(mainCtx, ch.ID)
 				return
 			}
+		}
 
-			if isOverToday {
-				logger.Info(fmt.Sprintf("process for tomorrow %s", tomorrow.Format(configs.DATE_FORMAT_YYYY_MM_DD)))
-				prepareDateWithRetry(chCtx, plannerSvc, ch, tomorrow)
-				if chCtx.Err() != nil {
-					logger.Info(fmt.Sprintf("[Planner] channel=%s cancelled during tomorrow prepare", ch.ID))
-					plannerSvc.CleanChannelData(mainCtx, ch.ID)
+		if err := plannerSvc.ProcessWindow(chCtx, ch); err != nil {
+			logger.Error("[Planner] ProcessWindow(%s) error: %v", ch.ID, err)
+		}
+
+		logger.Info("[PLANER] processed", "channelId", ch.ID)
+
+		// 3. Clean up expired data AFTER tick processing completes
+		plannerSvc.CleanupOldSegments(chCtx, ch.ID)
+	}
+
+	startSupervisor := func(ch models.PlayoutChannel) *supervisor {
+		supCtx, cancel := context.WithCancel(mainCtx)
+		sup := &supervisor{
+			ch:     ch,
+			ctx:    supCtx,
+			cancel: cancel,
+			done:   make(chan struct{}),
+			state:  "running",
+		}
+		go func(s *supervisor) {
+			defer close(s.done)
+			for {
+				// acquire worker slot (never blocks discovery)
+				select {
+				case sem <- struct{}{}:
+				case <-s.ctx.Done():
+					return
+				}
+				processRunner(s.ctx, s.ch)
+				<-sem
+
+				if s.ctx.Err() != nil {
+					return
+				}
+
+				// wait for next plan interval or cancellation
+				select {
+				case <-time.After(interval):
+				case <-s.ctx.Done():
+					return
+				}
+
+				if s.ctx.Err() != nil {
 					return
 				}
 			}
-
-			if err := plannerSvc.ProcessWindow(chCtx, ch); err != nil {
-				logger.Error("[Planner] ProcessWindow(%s) error: %v", ch.ID, err)
-			}
-
-			logger.Info("[PLANER] processed", "channelId", ch.ID)
-
-			// 3. Clean up expired data AFTER tick processing completes
-			plannerSvc.CleanupOldSegments(chCtx, ch.ID)
-		}
-
-		// Watcher thread to cancel and wipe Redis data instantly on is_active = false
-		go func() {
-			pollTicker := time.NewTicker(pollInterval)
-			defer pollTicker.Stop()
-
-			for range pollTicker.C {
-				var inactiveIDs []string
-				db.Model(&models.PlayoutChannel{}).
-					Where("is_active = ?", false).
-					Pluck("id", &inactiveIDs)
-
-				cancelMu.Lock()
-				for _, chID := range inactiveIDs {
-					if cancelFunc, exists := cancelMap[chID]; exists {
-						logger.Info(fmt.Sprintf("[Planner] Immediate DB deactivation! channel=%s, cancelling & cleaning up Redis...", chID))
-						cancelFunc()
-						delete(cancelMap, chID)
-						plannerSvc.CleanChannelData(mainCtx, chID)
-					}
-				}
-				cancelMu.Unlock()
-			}
-		}()
-
-		lastActive := map[string]struct{}{}
-		ticker := time.NewTicker(pollInterval)
-		defer ticker.Stop()
-
-		channelsEqual := func(a, b map[string]struct{}) bool {
-			if len(a) != len(b) {
-				return false
-			}
-			for k := range a {
-				if _, ok := b[k]; !ok {
-					return false
-				}
-			}
-			return true
-		}
-
-		runTick := func(activeChannels []models.PlayoutChannel, activeSet map[string]struct{}) {
-			lastActive = activeSet
-			if len(activeChannels) == 0 {
-				return
-			}
-			logger.VInfo("tick: %d active channel(s)", len(activeChannels))
-			logMetrics(logger, mainCtx, plannerSvc, activeChannels)
-
-			runPlannerTick(mainCtx, activeChannels, workers, &inFlightMu, inFlight, &cancelMu, cancelMap, processRunner)
-		}
-
-		nextInterval := time.Now().Add(interval)
-		for {
-			var activeChannels []models.PlayoutChannel
-			statuses := []models.PlayoutStatus{models.PlayoutInactiveStatus, models.PlayoutFailureStatus}
-
-			db.Where("status NOT IN ?", statuses).Find(&activeChannels)
-
-			activeSet := make(map[string]struct{}, len(activeChannels))
-			for _, ch := range activeChannels {
-				activeSet[ch.ID] = struct{}{}
-			}
-
-			intervalDue := time.Now().After(nextInterval)
-			changed := !channelsEqual(activeSet, lastActive)
-
-			if changed {
-				logger.Info("[Planner] active set change detected")
-				runTick(activeChannels, activeSet)
-			} else if intervalDue {
-				runTick(activeChannels, activeSet)
-				nextInterval = time.Now().Add(interval)
-			} else {
-				lastActive = activeSet
-			}
-
-			<-ticker.C
-		}
-	}()
-
-	wg.Wait()
-}
-
-func runPlannerTick(
-	parentCtx context.Context,
-	activeChannels []models.PlayoutChannel,
-	workers int,
-	inFlightMu *sync.Mutex,
-	inFlight map[string]struct{},
-	cancelMu *sync.Mutex,
-	cancelMap map[string]context.CancelFunc,
-	process func(ctx context.Context, ch models.PlayoutChannel),
-) {
-	sem := make(chan struct{}, workers)
-	var tickWG sync.WaitGroup
-	for _, ch := range activeChannels {
-		tickWG.Add(1)
-		sem <- struct{}{}
-		go func(ch models.PlayoutChannel) {
-			defer tickWG.Done()
-			defer func() { <-sem }()
-
-			inFlightMu.Lock()
-			if _, busy := inFlight[ch.ID]; busy {
-				inFlightMu.Unlock()
-				logger.Info(fmt.Sprintf("[Planner] channel=%s still in flight, skipping", ch.ID))
-				return
-			}
-			inFlight[ch.ID] = struct{}{}
-			inFlightMu.Unlock()
-
-			defer func() {
-				inFlightMu.Lock()
-				delete(inFlight, ch.ID)
-				inFlightMu.Unlock()
-			}()
-
-			chCtx, cancel := context.WithCancel(parentCtx)
-			cancelMu.Lock()
-			cancelMap[ch.ID] = cancel
-			cancelMu.Unlock()
-
-			defer func() {
-				cancelMu.Lock()
-				delete(cancelMap, ch.ID)
-				cancelMu.Unlock()
-				cancel()
-			}()
-
-			process(chCtx, ch)
-		}(ch)
+		}(sup)
+		return sup
 	}
-	tickWG.Wait()
+
+	supervisors := make(map[string]*supervisor)
+	var mu sync.Mutex
+
+	// boot: immediate reconcile
+	logger.VInfo("boot reconcile")
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	reconcile := func() {
+		mu.Lock()
+		defer mu.Unlock()
+
+		activeChannels, err := lifecycle.ActiveChannels(db)
+		if err != nil {
+			logger.Error("[Planner] ActiveChannels error", "error", err)
+			return
+		}
+		activeByID := make(map[string]models.PlayoutChannel, len(activeChannels))
+		for _, ch := range activeChannels {
+			activeByID[ch.ID] = ch
+		}
+
+		// 1. Handle stopping supervisors that have exited.
+		for id, sup := range supervisors {
+			if sup.state != "stopping" {
+				continue
+			}
+			select {
+			case <-sup.done:
+				if sup.hasRestart {
+					ch := sup.restartCh
+					newSup := startSupervisor(ch)
+					supervisors[id] = newSup
+					logger.Info("[Planner] restarted supervisor after exit", "channel", id)
+				} else if _, ok := activeByID[id]; ok {
+					newSup := startSupervisor(activeByID[id])
+					supervisors[id] = newSup
+					logger.Info("[Planner] restarted supervisor (still active)", "channel", id)
+				} else {
+					plannerSvc.CleanChannelData(mainCtx, id)
+					delete(supervisors, id)
+					logger.Info("[Planner] cleaned up stopped channel", "channel", id)
+				}
+			default:
+				// still stopping
+			}
+		}
+
+		// 2. Mark running supervisors for stop / restart.
+		for id, sup := range supervisors {
+			if sup.state != "running" {
+				continue
+			}
+			ch, ok := activeByID[id]
+			if !ok {
+				// removed
+				sup.state = "stopping"
+				sup.cancel()
+				logger.Info("[Planner] channel removed/deactivated, cancelling", "channel", id)
+				continue
+			}
+			if !models.ChannelDefinitionsEqual(sup.ch, ch) {
+				// definition changed -> restart
+				sup.state = "stopping"
+				sup.cancel()
+				sup.restartCh = ch
+				sup.hasRestart = true
+				logger.Info("[Planner] channel definition changed, restarting", "channel", id)
+			}
+		}
+
+		// 3. Start supervisors for newly active channels.
+		for _, ch := range activeChannels {
+			if _, ok := supervisors[ch.ID]; !ok {
+				supervisors[ch.ID] = startSupervisor(ch)
+				logger.Info("[Planner] started supervisor for new active channel", "channel", ch.ID)
+			}
+		}
+	}
+
+	// immediate first pass
+	reconcile()
+
+	for range ticker.C {
+		reconcile()
+	}
 }
 
 func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.PlayoutChannel, date time.Time) {
@@ -257,8 +253,6 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	if err != nil {
 		logger.Error(fmt.Sprintf("[Planner] HasDateInTimeline(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), err))
 	} else if has {
-		// The day is already covered. If it was covered by fallback content,
-		// probe the provider and switch back to real data when it recovers.
 		recovered, recErr := p.RecoverFallbackDay(ctx, ch, dayStart)
 		if recErr != nil {
 			logger.VError("[Planner] RecoverFallbackDay(%s, %s) error: %v", ch.ID, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD), recErr)
@@ -275,7 +269,7 @@ func prepareDateWithRetry(ctx context.Context, p *planner.Planner, ch models.Pla
 	prepErr := p.ProcessEPGToTimelineWithRetry(ctx, ch, dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD))
 	if prepErr != nil && ctx.Err() == nil {
 		if errors.Is(prepErr, customerrors.UnspportStreamSchema) {
-			p.MarkChannelFailed(ch.ID, "Unsupported stream schema")
+			p.MarkChannelFailed(ctx, ch.ID, "Unsupported stream schema")
 			return
 		}
 

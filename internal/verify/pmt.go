@@ -1,11 +1,11 @@
 package verify
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -24,20 +24,29 @@ const (
 // ---------- PMT consistency tracker ----------
 
 type PmtBaseline struct {
-	mu          sync.Mutex
-	fingerprint string
-	set         bool
+	mu   sync.Mutex
+	info *PmtInfo
+	set  bool
 }
 
-func (p *PmtBaseline) Check(fp string) (baseline string, consistent bool, first bool) {
+func (p *PmtBaseline) Check(info *PmtInfo) (baseline *PmtInfo, consistent bool, first bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if !p.set {
-		p.fingerprint = fp
+		p.info = clonePmtInfo(info)
 		p.set = true
-		return fp, true, true
+		return p.info, true, true
 	}
-	return p.fingerprint, fp == p.fingerprint, false
+	return p.info, info.Fingerprint == p.info.Fingerprint, false
+}
+
+func clonePmtInfo(info *PmtInfo) *PmtInfo {
+	if info == nil {
+		return nil
+	}
+	cp := &PmtInfo{Fingerprint: info.Fingerprint, Raw: info.Raw}
+	cp.Streams = append([]StreamInfo(nil), info.Streams...)
+	return cp
 }
 
 // ---------- PMT inspection ----------
@@ -47,6 +56,7 @@ type StreamInfo struct {
 	StreamType int
 	CodecName  string
 	IsSCTE35   bool
+	Language   string
 }
 
 type PmtInfo struct {
@@ -55,15 +65,28 @@ type PmtInfo struct {
 	Raw         string
 }
 
+type ffprobeStream struct {
+	Index     int    `json:"index"`
+	CodecName string `json:"codec_name"`
+	CodecType string `json:"codec_type"`
+	ID        string `json:"id"`
+	Tags      struct {
+		Language string `json:"language"`
+	} `json:"tags"`
+}
+
+type ffprobeOutput struct {
+	Streams []ffprobeStream `json:"streams"`
+}
+
 func InspectPmt(filePath string) (*PmtInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ProbeLimit)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "ffprobe",
 		"-v", "error",
-		"-show_entries",
-		"stream=index,codec_name,codec_type,id,codec_tag_string:stream_tags",
-		"-of", "default=noprint_wrappers=1",
+		"-print_format", "json",
+		"-show_entries", "stream=index,codec_name,codec_type,id:stream_tags=language",
 		filePath,
 	)
 	var out, errBuf bytes.Buffer
@@ -77,14 +100,12 @@ func InspectPmt(filePath string) (*PmtInfo, error) {
 		return nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(errBuf.String()))
 	}
 
-	info := &PmtInfo{Raw: out.String()}
-	var cur *StreamInfo
-	flush := func() {
-		if cur != nil {
-			info.Streams = append(info.Streams, *cur)
-			cur = nil
-		}
+	var parsed ffprobeOutput
+	if err := json.Unmarshal(out.Bytes(), &parsed); err != nil {
+		return nil, fmt.Errorf("ffprobe json parse: %w", err)
 	}
+
+	info := &PmtInfo{Raw: out.String()}
 
 	streamTypeFromCodec := func(codec, codecType string) int {
 		switch codec {
@@ -112,40 +133,31 @@ func InspectPmt(filePath string) (*PmtInfo, error) {
 		return -1
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(out.String()))
-	for scanner.Scan() {
-		line := scanner.Text()
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
+	for _, s := range parsed.Streams {
+		si := StreamInfo{
+			CodecName: s.CodecName,
+			Language:  s.Tags.Language,
 		}
-		switch k {
-		case "index":
-			flush()
-			cur = &StreamInfo{PID: -1, StreamType: -1}
-		case "codec_name":
-			if cur != nil {
-				cur.CodecName = v
-				if v == "scte_35" {
-					cur.IsSCTE35 = true
-				}
-			}
-		case "codec_type":
-			if cur != nil {
-				cur.StreamType = streamTypeFromCodec(cur.CodecName, v)
-			}
-		case "id":
-			if cur != nil {
-				var pid int
-				if _, err := fmt.Sscanf(v, "%x", &pid); err == nil {
-					cur.PID = pid
-				} else if _, err := fmt.Sscanf(v, "%d", &pid); err == nil {
-					cur.PID = pid
-				}
+		if s.CodecName == "scte_35" {
+			si.IsSCTE35 = true
+		}
+		si.StreamType = streamTypeFromCodec(s.CodecName, s.CodecType)
+		// parse id
+		id := strings.TrimSpace(s.ID)
+		var pid int
+		if strings.HasPrefix(strings.ToLower(id), "0x") {
+			fmt.Sscanf(id, "%x", &pid)
+		} else {
+			fmt.Sscanf(id, "%d", &pid)
+			if pid == 0 && id != "" && id != "0" {
+				// try hex fallback
+				fmt.Sscanf(id, "%x", &pid)
 			}
 		}
+		si.PID = pid
+
+		info.Streams = append(info.Streams, si)
 	}
-	flush()
 
 	if len(info.Streams) == 0 {
 		return nil, fmt.Errorf("no streams reported")
@@ -153,12 +165,49 @@ func InspectPmt(filePath string) (*PmtInfo, error) {
 
 	var sb strings.Builder
 	for _, s := range info.Streams {
-		fmt.Fprintf(&sb, "%04x:%02x;", s.PID, s.StreamType)
+		lang := s.Language
+		if lang == "" {
+			lang = "-"
+		}
+		fmt.Fprintf(&sb, "%04x:%02x:%s;", s.PID, s.StreamType, lang)
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
 	info.Fingerprint = hex.EncodeToString(sum[:6])
 
 	return info, nil
+}
+
+func DiffPmt(baseline, current *PmtInfo) []string {
+	var out []string
+	if baseline == nil || current == nil {
+		return out
+	}
+	// index baseline by PID
+	baseByPID := make(map[int]StreamInfo)
+	for _, s := range baseline.Streams {
+		baseByPID[s.PID] = s
+	}
+	curByPID := make(map[int]StreamInfo)
+	for _, s := range current.Streams {
+		curByPID[s.PID] = s
+	}
+
+	for _, bs := range baseline.Streams {
+		cs, ok := curByPID[bs.PID]
+		if !ok {
+			out = append(out, fmt.Sprintf("PID 0x%04X stream_type 0x%02X: stream only in baseline", bs.PID, bs.StreamType))
+			continue
+		}
+		if bs.Language != cs.Language {
+			out = append(out, fmt.Sprintf("PID 0x%04X stream_type 0x%02X: language %q -> %q", bs.PID, bs.StreamType, bs.Language, cs.Language))
+		}
+	}
+	for _, cs := range current.Streams {
+		if _, ok := baseByPID[cs.PID]; !ok {
+			out = append(out, fmt.Sprintf("PID 0x%04X stream_type 0x%02X: stream only in current", cs.PID, cs.StreamType))
+		}
+	}
+	return out
 }
 
 func (p *PmtInfo) FindSCTE35() *StreamInfo {

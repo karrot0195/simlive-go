@@ -28,6 +28,7 @@ type PlayoutChannel struct {
 	ContentTimezone string        `gorm:"type:varchar(50)" json:"content_timezone"`
 	ChannelEpgID    string        `gorm:"type:varchar(36)" json:"channel_epg_id"`
 	Status          PlayoutStatus `gorm:"type:varchar(20);default:'PREPARE'" json:"status"`
+	IsActive        bool          `gorm:"column:is_active;not null;default:true" json:"is_active"`
 	Label           string        `gorm:"type:varchar(255)" json:"label"`
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
@@ -185,6 +186,7 @@ type UpdateChannelReq struct {
 	ContentTimezone *string `json:"content_timezone,omitempty"`
 	ChannelEpgID    *string `json:"channel_epg_id,omitempty"`
 	Status          *string `json:"status,omitempty"`
+	IsActive        *bool   `json:"is_active,omitempty"`
 }
 
 // ListChannelsResp is the paginated response for GET /api/channels.

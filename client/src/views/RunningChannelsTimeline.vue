@@ -10,6 +10,8 @@ const channels = ref<ChannelTimeline[]>([])
 const prepared = ref<Record<string, PreparedSegmentsResp>>({})
 const generatedAt = ref<number>(0)
 const now = ref<number>(Date.now() / 1000)
+const TIMELINE_PAGE_SIZE = 50
+const loadedCounts = ref<Record<string, number>>({})
 let eventSource: EventSource | null = null
 
 const load = async () => {
@@ -19,6 +21,7 @@ const load = async () => {
     const resp = await api.getRunningChannelsTimeline()
     channels.value = resp.channels ?? []
     generatedAt.value = resp.generated_at
+    loadedCounts.value = {}
     const monitoredResp = await api.listMonitoredChannels().catch(() => ({ channel_ids: [] }))
     monitored.value = new Set(monitoredResp.channel_ids || [])
     await fetchPrepared()
@@ -46,6 +49,7 @@ const connectSSE = () => {
           else next.push(ch)
         }
         channels.value = next
+        loadedCounts.value = {}
       }
       if (data.generated_at) generatedAt.value = data.generated_at
       now.value = Date.now() / 1000
@@ -103,9 +107,23 @@ const fetchPrepared = async () => {
   prepared.value = next
 }
 
-const fmtTime = (ts: number) => {
+const dayKey = (ts: number) => {
   const d = new Date(ts * 1000)
-  return d.toLocaleTimeString()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const fmtDate = (ts: number) => {
+  const d = new Date(ts * 1000)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+const fmtTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString()
+
+const fmtEntryTime = (e: TimelineEntry, prev: TimelineEntry | null) => {
+  if (prev && dayKey(e.running_time) !== dayKey(prev.running_time)) {
+    return `${fmtDate(e.running_time)} ${e.time_text}`
+  }
+  return e.time_text
 }
 
 const selectedSegment = ref<TimelineEntry | null>(null)
@@ -195,6 +213,30 @@ const visibleChannels = computed(() => {
   }))
 })
 
+const visibleEntries = (ch: ChannelTimeline) =>
+  ch.entries.slice(0, loadedCounts.value[ch.channel_id] ?? TIMELINE_PAGE_SIZE)
+
+const gapSets = computed(() => {
+  const out: Record<string, Set<number>> = {}
+  for (const ch of visibleChannels.value) {
+    const s = new Set<number>()
+    for (let i = 1; i < ch.entries.length; i++) {
+      if (gapSeconds(ch.entries[i - 1], ch.entries[i]) > 10) s.add(ch.entries[i].sequence)
+    }
+    out[ch.channel_id] = s
+  }
+  return out
+})
+
+const loadMore = (ch: ChannelTimeline) => {
+  const cur = loadedCounts.value[ch.channel_id] ?? TIMELINE_PAGE_SIZE
+  loadedCounts.value = { ...loadedCounts.value, [ch.channel_id]: Math.min(cur + TIMELINE_PAGE_SIZE, ch.entries.length) }
+}
+
+const loadAll = (ch: ChannelTimeline) => {
+  loadedCounts.value = { ...loadedCounts.value, [ch.channel_id]: ch.entries.length }
+}
+
 const loadedAhead = (ch: ChannelTimeline) =>
   ch.entries.filter((e) => e.running_time + e.duration > now.value && isPrepared(ch, e)).length
 
@@ -203,8 +245,10 @@ const channelSummary = (ch: ChannelTimeline) => {
   if (!entries.length) return 'No upcoming entries.'
   const first = entries[0]
   const last = entries[entries.length - 1]
-  const from = fmtTime(first.running_time)
-  const to = fmtTime(last.running_time + last.duration)
+  const multiDay = dayKey(first.running_time) !== dayKey(last.running_time + last.duration)
+  const fmt = (ts: number) => (multiDay ? `${fmtDate(ts)} ${fmtTime(ts)}` : fmtTime(ts))
+  const from = fmt(first.running_time)
+  const to = fmt(last.running_time + last.duration)
   const gaps: string[] = []
   for (let i = 1; i < entries.length; i++) {
     const g = gapSeconds(entries[i - 1], entries[i])
@@ -270,14 +314,14 @@ onUnmounted(() => {
         <div v-else class="timeline-scroll">
           <div class="timeline-row">
             <div
-              v-for="(e, i) in ch.entries"
+              v-for="(e, i) in visibleEntries(ch)"
               :key="e.sequence"
               class="entry"
-              :class="{ ad: e.is_ad, gap: i > 0 && gapSeconds(ch.entries[i - 1], e) > 10, running: isRunning(e) }"
+              :class="{ ad: e.is_ad, gap: gapSets[ch.channel_id]?.has(e.sequence) ?? false, running: isRunning(e) }"
               @click="isPrepared(ch, e) ? playSegment(ch, e) : null"
               :style="{ cursor: isPrepared(ch, e) ? 'pointer' : 'default', opacity: isPrepared(ch, e) ? 1 : 0.5 }"
             >
-              <span class="time">{{ e.time_text }}</span>
+              <span class="time">{{ fmtEntryTime(e, i > 0 ? visibleEntries(ch)[i - 1] : null) }}</span>
               <span class="seq">#{{ e.sequence }}</span>
               <span class="dur">{{ e.duration.toFixed(1) }}s</span>
               <span v-if="e.is_ad" class="badge">AD</span>
@@ -285,11 +329,27 @@ onUnmounted(() => {
               <span v-for="r in preparedRenditions(ch, e)" :key="r" class="ready">{{ r }}</span>
               <span v-if="!isPrepared(ch, e)" class="notready">NOT READY</span>
               <span
-                v-if="i > 0 && gapSeconds(ch.entries[i - 1], e) > 10"
+                v-if="i > 0 && gapSeconds(visibleEntries(ch)[i - 1], e) > 10"
                 class="warn"
               >
-                Gap {{ gapSeconds(ch.entries[i - 1], e).toFixed(1) }}s
+                Gap {{ gapSeconds(visibleEntries(ch)[i - 1], e).toFixed(1) }}s
               </span>
+            </div>
+            <div
+              v-if="(loadedCounts[ch.channel_id] ?? TIMELINE_PAGE_SIZE) < ch.entries.length"
+              class="entry load-more-tile"
+              @click="loadMore(ch)"
+            >
+              <span class="lm-title">Load more</span>
+              <span class="lm-count">{{ (loadedCounts[ch.channel_id] ?? TIMELINE_PAGE_SIZE) }} / {{ ch.entries.length }}</span>
+            </div>
+            <div
+              v-if="(loadedCounts[ch.channel_id] ?? TIMELINE_PAGE_SIZE) < ch.entries.length && ch.entries.length - (loadedCounts[ch.channel_id] ?? TIMELINE_PAGE_SIZE) > TIMELINE_PAGE_SIZE"
+              class="entry load-more-tile load-all-tile"
+              @click="loadAll(ch)"
+            >
+              <span class="lm-title">Load all</span>
+              <span class="lm-count">{{ ch.entries.length - (loadedCounts[ch.channel_id] ?? TIMELINE_PAGE_SIZE) }} more</span>
             </div>
           </div>
         </div>
@@ -414,5 +474,26 @@ onUnmounted(() => {
   padding: 0 6px;
   border-radius: 4px;
   font-size: 12px;
+}
+.load-more-tile {
+  background: #e3f2fd;
+  border: 1px dashed #1976d2;
+  cursor: pointer;
+  justify-content: center;
+}
+.load-more-tile:hover {
+  background: #bbdefb;
+}
+.load-all-tile {
+  background: #f3e5f5;
+  border-color: #7b1fa2;
+}
+.lm-title {
+  font-weight: 600;
+  color: #1976d2;
+}
+.lm-count {
+  font-size: 11px;
+  color: #555;
 }
 </style>

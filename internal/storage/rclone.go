@@ -29,9 +29,14 @@ const catTimeout = 10 * time.Second
 // copyTimeout bounds `rclone copyto` (segment downloads for probing).
 const copyTimeout = 10 * time.Second
 
-// Cat reads an M3U8 manifest from S3/MinIO via `rclone cat`
-func (r *RcloneService) Cat(remotePath string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), catTimeout)
+// Cat reads an M3U8 manifest from S3/MinIO via `rclone cat`. The parent
+// context (if non-nil) is used as the base for the timeout so cancellation
+// propagates from the calling supervisor.
+func (r *RcloneService) Cat(parentCtx context.Context, remotePath string) (string, error) {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parentCtx, catTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "rclone", "cat", remotePath)
 	var out bytes.Buffer

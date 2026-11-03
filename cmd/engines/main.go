@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 
 	"simlive/internal/engine"
+	"simlive/internal/lifecycle"
 	"simlive/internal/models"
 	"simlive/internal/storage"
 	"simlive/internal/utils"
@@ -90,13 +91,15 @@ func main() {
 		}
 
 		for {
-			var activeChannels []models.PlayoutChannel
-			statuses := []models.PlayoutStatus{models.PlayoutInactiveStatus, models.PlayoutFailureStatus}
+			activeChannels, err := lifecycle.ActiveChannels(db)
+			if err != nil {
+				log.Printf("[Engine] ActiveChannels error: %v", err)
+				activeChannels = nil
+			}
 
-			db.Where("status NOT IN ?", statuses).Find(&activeChannels)
-
-			reconcileEngines(ctx, activeChannels, &activeEngineTasks, &tasksMu, spawn, settings.TMPDir, engineSvc)
-			time.Sleep(5 * time.Second)
+			pendingRestarts := make(map[string]bool)
+			reconcileEngines(ctx, activeChannels, &activeEngineTasks, &tasksMu, spawn, settings.TMPDir, engineSvc, pendingRestarts)
+			time.Sleep(utils.GetChannelSyncInterval())
 		}
 	}()
 
@@ -111,6 +114,7 @@ func reconcileEngines(
 	spawn func(channelID string, channelCtx context.Context),
 	tmpDir string,
 	engineSvc *engine.Engine,
+	pendingRestarts map[string]bool,
 ) {
 	activeMap := make(map[string]models.PlayoutChannel, len(activeChannels))
 	for _, ch := range activeChannels {
@@ -127,18 +131,21 @@ func reconcileEngines(
 			log.Printf("[Engine] Stopping playout engine for channel: %s (no longer active)", id)
 			task.cancel(fmt.Errorf("channel %s no longer active", id))
 			delete(*tasks, id)
-			engineSvc.ClearChannelCache(id)
-			cleanupChannelDiskDir(tmpDir, id)
+			engineSvc.PurgeChannel(context.Background(), id)
 		} else if isChannelChanged(task.ch, newCh) {
-			log.Printf("[Engine] Channel %s definition changed, restarting playout loop: old(updatedAt=%v status=%s) new(updatedAt=%v status=%s)", id, task.ch.UpdatedAt, task.ch.Status, newCh.UpdatedAt, newCh.Status)
+			log.Printf("[Engine] Channel %s definition changed, restarting playout loop", id)
 			task.cancel(fmt.Errorf("channel %s definition changed", id))
 			delete(*tasks, id)
-			engineSvc.ClearChannelCache(id)
+			engineSvc.PurgeChannel(context.Background(), id)
+			pendingRestarts[id] = true
 		}
 	}
 
 	// 2. Start new playout loop for newly added or modified channels
 	for id, ch := range activeMap {
+		if pendingRestarts[id] {
+			continue
+		}
 		if _, running := (*tasks)[id]; !running {
 			log.Printf("[Engine] Starting playout engine for channel: %s", id)
 			channelCtx, cancel := context.WithCancelCause(parent)
@@ -161,19 +168,7 @@ func reconcileEngines(
 }
 
 func isChannelChanged(oldCh, newCh models.PlayoutChannel) bool {
-	if oldCh.Name != newCh.Name {
-		return true
-	}
-	if oldCh.BaseName != newCh.BaseName {
-		return true
-	}
-	if oldCh.ContentTimezone != newCh.ContentTimezone {
-		return true
-	}
-	if oldCh.ChannelEpgID != newCh.ChannelEpgID {
-		return true
-	}
-	return false
+	return !models.ChannelDefinitionsEqual(oldCh, newCh)
 }
 
 func cleanupChannelDiskDir(tmpDir, channelID string) {

@@ -187,7 +187,6 @@ func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutC
 
 	processor := &SegmentProcessor{
 		planner:         p,
-		reader:          p.rclone,
 		pipe:            p.rdb.Pipeline(),
 		ctx:             ctx,
 		nowUnix:         float64(nowLocal.Unix()),
@@ -392,12 +391,18 @@ func (p *Planner) markChannelInactive(channelID string) error {
 	return nil
 }
 
+// markChannelLive writes status='LIVE' only if the channel is still active
+// (is_active=true AND status NOT IN (INACTIVE, FAILURE)). Returns whether
+// the transition actually happened so callers can log/act accordingly.
 func (p *Planner) markChannelLive(channelID string) error {
 	if p.db == nil {
 		return nil
 	}
 	res := p.db.Model(&models.PlayoutChannel{}).
-		Where("id = ?", channelID).
+		Where("id = ? AND is_active = ? AND status NOT IN ?", channelID, true, []string{
+			string(models.PlayoutInactiveStatus),
+			string(models.PlayoutFailureStatus),
+		}).
 		Update("status", "LIVE")
 	if res.Error != nil {
 		return res.Error
@@ -408,7 +413,10 @@ func (p *Planner) markChannelLive(channelID string) error {
 	return nil
 }
 
-func (p *Planner) MarkChannelFailed(channelID string, errorLabel string) {
+func (p *Planner) MarkChannelFailed(ctx context.Context, channelID string, errorLabel string) {
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
 	if p.db == nil {
 		return
 	}
@@ -425,7 +433,13 @@ func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID s
 		}
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	count := p.incrFailureCounter(ctx, channelID)
+	if ctx.Err() != nil {
+		return
+	}
 	if count >= utils.GetPlannerSettings().FailureInactivateThreshold {
 		if dbErr := p.markChannelInactive(channelID); dbErr != nil {
 			p.logger.Info("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)
