@@ -63,11 +63,11 @@ description: "Task list template for feature implementation"
 
 - [x] T008 [US1] Normalize stop/delete transitions (`status='INACTIVE'`, `is_active=false`, `updated_at` bump) and implement the best-effort immediate Redis purge (HLS master/renditions, rendition metadata, timeline, cursor, fallback; preserve `planner:failures:{id}`) plus segment-track clear in internal/api/handler.go (depends on T003, T004)
 - [x] T009 [P] [US1] Write unit tests for the stop/delete/start/update transition mapping in internal/api/handler_lifecycle_test.go (depends on T008)
-- [ ] T010 [US1] Replace the global blocking tick + watcher in cmd/planner/main.go with a per-channel supervisor reconciler that cancels a channel's context when it leaves the active roster (deactivated or deleted) and waits for exit before cleanup (depends on T006)
-- [ ] T011 [US1] Make planner lifecycle writes conditional on the active predicate — `markChannelLive` becomes `UPDATE ... WHERE id=? AND is_active=true AND status NOT IN ('INACTIVE','FAILURE')` returning whether the transition happened; skip failure-counter/`MarkChannelFailed` writes when the supervisor context is cancelled — in internal/planner/planner.go (depends on T004)
-- [ ] T012 [P] [US1] Add `context.Context` parameters to `ESPXClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` using `http.NewRequestWithContext` in internal/api/espx_client.go
-- [ ] T013 [P] [US1] Make `RcloneService.Cat` accept a parent context and derive its 10s timeout from it in internal/storage/rclone.go
-- [ ] T014 [US1] Run `CleanChannelData` (timeline, cursor, failure counter) only after the supervisor's work unit has fully exited, never concurrently, in cmd/planner/main.go (depends on T010)
+- [x] T010 [US1] Replace the global blocking tick + watcher in cmd/planner/main.go with a per-channel supervisor reconciler that cancels a channel's context when it leaves the active roster (deactivated or deleted) and waits for exit before cleanup (depends on T006)
+- [x] T011 [US1] Make planner lifecycle writes conditional on the active predicate — `markChannelLive` becomes `UPDATE ... WHERE id=? AND is_active=true AND status NOT IN ('INACTIVE','FAILURE')` returning whether the transition happened; skip failure-counter/`MarkChannelFailed` writes when the supervisor context is cancelled — in internal/planner/planner.go (depends on T004)
+- [x] T012 [P] [US1] Add `context.Context` parameters to `ESPXClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` using `http.NewRequestWithContext` in internal/api/espx_client.go
+- [x] T013 [P] [US1] Make `RcloneService.Cat` accept a parent context and derive its 10s timeout from it in internal/storage/rclone.go
+- [x] T014 [US1] Run `CleanChannelData` (timeline, cursor, failure counter) only after the supervisor's work unit has fully exited, never concurrently, in cmd/planner/main.go (depends on T010)
 - [ ] T015 [P] [US1] Write supervisor state-machine unit tests (start, cancel, no-duplicate, cleanup-after-exit) in cmd/planner/reconcile_test.go (depends on T010)
 
 **Checkpoint**: At this point, User Story 1 should be fully functional — stop/delete cancels, purges, and cannot resurrect
@@ -82,8 +82,8 @@ description: "Task list template for feature implementation"
 
 ### Implementation for User Story 2
 
-- [ ] T016 [US2] Start a supervisor immediately for each newly active channel in the reconcile pass (no waiting for `PLANNER_INTERVAL` or other channels' ticks), retaining the `PLANNER_WORKERS` semaphore so waiting supervisors never block discovery, in cmd/planner/main.go (depends on T010)
-- [ ] T017 [US2] Implement supervisor `stopping`/`restart_pending` handling so a reactivation during shutdown queues exactly one restart after `done` closes, and duplicate activation requests are harmless, in cmd/planner/main.go (depends on T016)
+- [x] T016 [US2] Start a supervisor immediately for each newly active channel in the reconcile pass (no waiting for `PLANNER_INTERVAL` or other channels' ticks), retaining the `PLANNER_WORKERS` semaphore so waiting supervisors never block discovery, in cmd/planner/main.go (depends on T010)
+- [x] T017 [US2] Implement supervisor `stopping`/`restart_pending` handling so a reactivation during shutdown queues exactly one restart after `done` closes, and duplicate activation requests are harmless, in cmd/planner/main.go (depends on T016)
 - [x] T018 [US2] Implement the API activation transitions — `POST /:id/start` writes `PREPARE`/`true` with best-effort failure-counter clear; PUT/PATCH with `status=PREPARE|LIVE` or `is_active=true` normalizes to active per contracts/channel-lifecycle.md §2 — in internal/api/handler.go (depends on T004; sequential with T008, same file)
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently — stop/start cycles meet the 10s/30s targets
@@ -99,8 +99,8 @@ description: "Task list template for feature implementation"
 ### Implementation for User Story 3
 
 - [x] T019 [US3] Apply the shared predicate to all API surfaces — honor the optional `is_active` query filter on `GET /api/channels` and use predicate-based purge eligibility — in internal/api/handler.go (depends on T004, T008)
-- [ ] T020 [US3] Make the failure-threshold path set `is_active=false` only (status unchanged), guard it against cancelled contexts, and ensure no automatic re-enable path exists so there is no stop/start churn, in internal/planner/planner.go (depends on T011)
-- [ ] T021 [US3] On startup, reconcile the roster immediately (first pass at boot, not after a full periodic cycle) so mixed-state platforms converge within the target latency, in cmd/planner/main.go (depends on T016)
+- [x] T020 [US3] Make the failure-threshold path set `is_active=false` only (status unchanged), guard it against cancelled contexts, and ensure no automatic re-enable path exists so there is no stop/start churn, in internal/planner/planner.go (depends on T011)
+- [x] T021 [US3] On startup, reconcile the roster immediately (first pass at boot, not after a full periodic cycle) so mixed-state platforms converge within the target latency, in cmd/planner/main.go (depends on T016)
 
 **Checkpoint**: All activation/deactivation paths converge on one predicate; deactivation is durable
 

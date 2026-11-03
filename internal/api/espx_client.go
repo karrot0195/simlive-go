@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -68,7 +69,7 @@ func (c *ESPXClient) GetChannelEPGID(playoutID string) (string, error) {
 }
 
 // API 3: Get Schedules
-func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
+func (c *ESPXClient) GetEPGScheduleItems(ctx context.Context, epgID, date, tz string) (*models.ESPXSchedulesResponse, error) {
 	// 1. Parse base URL path
 	endpoint := fmt.Sprintf("%s/api/v2/common/channel-epg/%s/schedules", c.baseURL, epgID)
 	u, err := url.Parse(endpoint)
@@ -88,7 +89,11 @@ func (c *ESPXClient) GetEPGScheduleItems(epgID, date, tz string) (*models.ESPXSc
 	reqURL := u.String()
 
 	log.Printf("[HTTP] Request URL: %s", reqURL)
-	resp, err := c.httpClient.Get(reqURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -109,9 +114,13 @@ type ESPXChannelDetailFullResp struct {
 	} `json:"channelEpg"`
 }
 
-func (c *ESPXClient) GetChannelDetailWithEPG(channelID string) (*ESPXChannelDetailFullResp, error) {
+func (c *ESPXClient) GetChannelDetailWithEPG(ctx context.Context, channelID string) (*ESPXChannelDetailFullResp, error) {
 	url := fmt.Sprintf("%s/api/v2/common/channel-playouts/%s?$eager=[channelEpg]", c.baseURL, channelID)
-	resp, err := c.httpClient.Get(url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

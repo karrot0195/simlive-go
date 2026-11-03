@@ -90,7 +90,7 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 	}
 
 	// Validate Channel ID against the ESPX API
-	detail, err := h.espx.GetChannelDetailWithEPG(req.ChannelID)
+	detail, err := h.espx.GetChannelDetailWithEPG(c.Request.Context(), req.ChannelID)
 	if err != nil || detail.ID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in ESPX API"})
 		return

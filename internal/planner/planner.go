@@ -93,7 +93,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	// Convert local timezone to +HH:MM for ESPX
 	tzNum := utils.LocalTZOffset()
-	schedules, fetchErr := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, tzNum)
+	schedules, fetchErr := p.espx.GetEPGScheduleItems(ctx, channel.ChannelEpgID, dateStr, tzNum)
 
 	var (
 		items        []models.ESPXScheduleItem
@@ -192,7 +192,7 @@ func (p *Planner) planScheduleItems(ctx context.Context, channel models.PlayoutC
 	var adSegments []models.SegmentItem
 
 	if !channel.UseAdEpgAds {
-		adSegments, _ = p.loadAdSegments()
+		adSegments, _ = p.loadAdSegments(ctx)
 	}
 
 	lastState := p.getLastSegmentState(ctx, channel.ID)
@@ -250,7 +250,7 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	}
 
 	dateStr := dayStart.Format(configs.DATE_FORMAT_YYYY_MM_DD)
-	schedules, err := p.espx.GetEPGScheduleItems(channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
+	schedules, err := p.espx.GetEPGScheduleItems(ctx, channel.ChannelEpgID, dateStr, utils.LocalTZOffset())
 	if err != nil {
 		return false, err
 	}
@@ -280,7 +280,7 @@ func (p *Planner) RecoverFallbackDay(ctx context.Context, channel models.Playout
 	return true, nil
 }
 
-func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
+func (p *Planner) loadAdSegments(ctx context.Context) ([]models.SegmentItem, error) {
 	adsMasterM3u8Path := fmt.Sprintf("%s/vod.m3u8", p.adsBucket)
 
 	renditions := utils.GetRenditionsByMaster(adsMasterM3u8Path, p.rclone)
@@ -289,7 +289,7 @@ func (p *Planner) loadAdSegments() ([]models.SegmentItem, error) {
 	}
 
 	adsM3u8Path := fmt.Sprintf("%s/%s/vod.m3u8", p.adsBucket, renditions[0])
-	m3u8Content, err := p.rclone.Cat(adsM3u8Path)
+	m3u8Content, err := p.rclone.Cat(ctx, adsM3u8Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch ads m3u8: %w", err)
 	}
@@ -461,12 +461,18 @@ func (p *Planner) markChannelInactive(channelID string) error {
 	return nil
 }
 
+// markChannelLive writes status='LIVE' only if the channel is still active
+// (is_active=true AND status NOT IN (INACTIVE, FAILURE)). Returns whether
+// the transition actually happened so callers can log/act accordingly.
 func (p *Planner) markChannelLive(channelID string) error {
 	if p.db == nil {
 		return nil
 	}
 	res := p.db.Model(&models.PlayoutChannel{}).
-		Where("id = ?", channelID).
+		Where("id = ? AND is_active = ? AND status NOT IN ?", channelID, true, []string{
+			string(models.PlayoutInactiveStatus),
+			string(models.PlayoutFailureStatus),
+		}).
 		Update("status", "LIVE")
 	if res.Error != nil {
 		return res.Error
@@ -477,7 +483,10 @@ func (p *Planner) markChannelLive(channelID string) error {
 	return nil
 }
 
-func (p *Planner) MarkChannelFailed(channelID string, errorLabel string) {
+func (p *Planner) MarkChannelFailed(ctx context.Context, channelID string, errorLabel string) {
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
 	if p.db == nil {
 		return
 	}
@@ -494,7 +503,13 @@ func (p *Planner) HandlePrepareResultForChannel(ctx context.Context, channelID s
 		}
 		return
 	}
+	if ctx.Err() != nil {
+		return
+	}
 	count := p.incrFailureCounter(ctx, channelID)
+	if ctx.Err() != nil {
+		return
+	}
 	if count >= utils.GetPlannerSettings().FailureInactivateThreshold {
 		if dbErr := p.markChannelInactive(channelID); dbErr != nil {
 			p.logger.Info("[Planner] markChannelInactive(%s) error: %v", channelID, dbErr)

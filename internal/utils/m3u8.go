@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"context"
 	"regexp"
 	"simlive/internal/storage"
 	"strings"
@@ -10,7 +11,7 @@ func GetRenditionsByMaster(m3u8Path string, rclone *storage.RcloneService) []str
 	renditionsAllow := GetEnv("ACTIVE_RENDITIONS", "360,720,1080")
 	targets := strings.Split(renditionsAllow, ",")
 
-	m3u8Content, err := rclone.Cat(m3u8Path)
+	m3u8Content, err := rclone.Cat(context.Background(), m3u8Path)
 	if err != nil {
 		return make([]string, len(targets))
 	}

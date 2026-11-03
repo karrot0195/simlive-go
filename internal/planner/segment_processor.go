@@ -118,7 +118,7 @@ func (sp *SegmentProcessor) processStreamSegments(stream models.ESPXProgrammeStr
 		m3u8Path = fmt.Sprintf("%s/playout.m3u8", streamAbsolutePath)
 	}
 
-	m3u8Content, err := sp.planner.rclone.Cat(m3u8Path)
+	m3u8Content, err := sp.planner.rclone.Cat(sp.ctx, m3u8Path)
 	if err != nil {
 		return fmt.Errorf("failed to fetch m3u8: %w", err)
 	}
