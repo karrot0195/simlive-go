@@ -1,10 +1,10 @@
-## Root Case
-Partner said: PMT include language descriptor inconsistent -> reset ads state
+## Root Cause
+Partner said: PMT includes inconsistent language descriptor -> resets ad state
 
-## TODO tasks: 
-- [x] verify  PMT include language descriptor -> confirmed PMT include language descriptor
-- [x] verfiy Celebrity Channel include Some Ts with language descriptor != english ? -> found + confirmed exists
-- [x] find solution for can modify / reset language descriptor --> TSDuck support `--audio-language` . quicktest: it can modify. But need verify will impact other information or not . Will verify during implementaion
-- [ ] Implement to simlive go -> DOING
-- [ ] Verify All Features on Local. Expect don't impact the current features
+## TODO tasks:
+- [x] verify that PMT includes language descriptor -> confirmed PMT includes language descriptor
+- [x] verify Celebrity Channel includes some TS with language descriptor != english -> found and confirmed exists
+- [x] find solution to modify / reset language descriptor --> TSDuck supports `--audio-language`. Quick test: it can modify. But need to verify whether it impacts other information or not. Will verify during implementation
+- [ ] Implement in simlive go -> DOING
+- [ ] Verify all features locally. Expect no impact on current features
 - [ ] Deploy new version to simlive5 + verify
