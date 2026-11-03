@@ -20,7 +20,7 @@ All units under `config/system/`, installed to `/etc/systemd/system/`.
 ## Configuration
 
 - `config/docker-compose.yml` → postgres (5432) + redis (6371)
-- `config/.env` → DB, Redis, ESPX, TMP_DIR, renditions, workers
+- `config/.env` → DB, Redis, PARTNER, TMP_DIR, renditions, workers
 - `API_ADDR` → API bind address (default `:8080`; e.g. `API_ADDR=:3030` to expose the
   `/common` XML endpoints on the partner example port without a code change)
 - `config/partner.yaml` → single partner configuration (active profile, partner API

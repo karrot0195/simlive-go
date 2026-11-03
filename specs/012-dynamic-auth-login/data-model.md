@@ -50,7 +50,7 @@ One screen/API exchange in the flow.
 ### AuthVerify
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | Verification endpoint (e.g. `https://api2.espx.cloud/api/v2/accounts/auth/verify-token`). |
+| `url` | string | yes | Verification endpoint (e.g. `https://api2.partner.cloud/api/v2/accounts/auth/verify-token`). |
 | `method` | string | no (default POST) | HTTP method. |
 | `headers` | `map[string]string` | no | Headers; supports placeholders (`{{token}}`). |
 | `body` | object/string | no | Request body template; supports placeholders. |

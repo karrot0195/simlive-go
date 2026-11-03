@@ -15,7 +15,7 @@ Default `EPG_CACHE_DIR`: `{TMP_DIR}/epg-cache`
 | `source_date` | string | Requested provider day, `YYYY-MM-DD`. |
 | `fetched_at` | integer | Unix seconds when the provider response was received. |
 | `timezone` | string | Channel content timezone used to format item timestamps (informational; not a day-boundary source). |
-| `items` | array | Non-empty `ESPXScheduleItem` list exactly as returned by the provider. |
+| `items` | array | Non-empty `PARTNERScheduleItem` list exactly as returned by the provider. |
 
 **Validation rules**
 

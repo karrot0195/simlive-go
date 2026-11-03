@@ -125,7 +125,7 @@ With `$include_metadata=true` and a custom EPG field `title` (`source: programme
 
 - `channel` always contains `id`, `name`, `img` in that order, even when a value is empty.
 - `epgitem` always contains `start`, `stop`, `streamId`, `ads` in that order.
-- `streamId` is the complete storage path including the bucket (rclone `remote:bucket/...` form, e.g. `espx-video-lib:espx-video-lib/vod/...`). Consumers resolve segments as `streamId/{rendition}/{file}` directly; no separate `STORAGE_BUCKET` setting is needed.
+- `streamId` is the complete storage path including the bucket (rclone `remote:bucket/...` form, e.g. `partner-video-lib:partner-video-lib/vod/...`). Consumers resolve segments as `streamId/{rendition}/{file}` directly; no separate `STORAGE_BUCKET` setting is needed.
 - Custom fields are appended after base fields; a custom field that resolves to an empty value with no `default` emits an empty element.
 - `ads` is the lowercase string `true` or `false`.
 - Times are RFC3339 with an explicit offset from the channel's content timezone (host-local fallback).

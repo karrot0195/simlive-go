@@ -35,7 +35,7 @@
 
 **Decision**: Add `buildFallbackSchedule(items, targetDayStart, horizon, tz)` that walks the retained items in order, repeats the sequence as needed, assigns `start = cursor`, `end = start + originalDuration`, and stops at `horizon`. Programme streams are deep-copied. Zero/negative-duration items are skipped; no progress causes the builder to stop rather than loop.
 
-`targetDayStart` is the absolute instant of host-local midnight for the target day; the produced timestamps are formatted in the channel's content timezone so the processor's `ParseESPXTime(..., channel.ContentTimezone)` reads them correctly.
+`targetDayStart` is the absolute instant of host-local midnight for the target day; the produced timestamps are formatted in the channel's content timezone so the processor's `ParsePARTNERTime(..., channel.ContentTimezone)` reads them correctly.
 
 **Rationale**: Timeline segment durations come from each item's m3u8 (`#EXT-X-PTS-RANGE`), not from EPG start/end. EPG times are used only to skip items that already ended and to seed `runningTime`. Repeating the retained day and anchoring it at the target day start therefore produces continuous segments from the seeded running time, with no gap and no rewind. The builder covers "any day" required by the clarification, including a current day after a restart.
 
@@ -88,7 +88,7 @@
 
 ## Decision 9 — Canonical day boundary is host-local
 
-**Decision**: The target day is the host-local day: `processDate = utils.StartOfDay(now.In(utils.LocalLocation()))`, `horizon = utils.EndOfDay(processDate)`, and the fallback marker stores those same `day_start`/`day_end` instants. The only content-timezone use is formatting item timestamps so `utils.ParseESPXTime(..., channel.ContentTimezone)` yields the intended absolute instants.
+**Decision**: The target day is the host-local day: `processDate = utils.StartOfDay(now.In(utils.LocalLocation()))`, `horizon = utils.EndOfDay(processDate)`, and the fallback marker stores those same `day_start`/`day_end` instants. The only content-timezone use is formatting item timestamps so `utils.ParsePARTNERTime(..., channel.ContentTimezone)` yields the intended absolute instants.
 
 **Rationale**: FR-014 mandates the project's existing local-timezone convention with `configs.TZ` as fallback. The current planner already derives `processDate`/`horizon` this way and sends `dateStr` with the local offset. Using a content-timezone day would make the fallback window, the planner horizon, and the UI label disagree whenever the two zones differ — potentially leaving uncovered hours at the end of the day. Host-local keeps all three aligned.
 

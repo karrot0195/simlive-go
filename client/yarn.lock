@@ -438,9 +438,9 @@
   resolved "https://registry.yarnpkg.com/@eslint/js/-/js-8.57.0.tgz#a5417ae8427873f1dd08b70b3574b453e67b5f7f"
   integrity sha512-Ys+3g2TaW7gADOJzPt83SJtCDhMjndcDMFVQ/Tj9iA1BfJzFKD9mAUXT3OenpuPHbI6P/myECxRJrofUsDx/5g==
 
-"@espx/ui@^0.1.1":
+"@partner/ui@^0.1.1":
   version "0.1.1"
-  resolved "http://128.199.149.51:4873/@espx/ui/-/ui-0.1.1.tgz#0bc4cf19b6b968a33c726f50ce2f7689c3ab9192"
+  resolved "http://128.199.149.51:4873/@partner/ui/-/ui-0.1.1.tgz#0bc4cf19b6b968a33c726f50ce2f7689c3ab9192"
   integrity sha512-MCYYMf1O7Na9mMciuSX+fAdfs5aWFh7IWQ9XtLN5Zql4nk3zfvCEotWp74XIBWz64ty4U6W03vxHAnOr86e0Iw==
   dependencies:
     axios "^1.7.0"

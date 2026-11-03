@@ -103,5 +103,5 @@ In-memory only, per service; not persisted.
 - `status` must be one of `PREPARE`, `LIVE`, `INACTIVE`; `FAILURE` is system-written only.
 - If a request supplies both `status` and `is_active` and they contradict, reject with `400`.
 - `is_active=true` with status `INACTIVE` is normalized to `PREPARE`; `is_active=false` with status `PREPARE`/`LIVE` is normalized to `INACTIVE` on the same request.
-- Channel identifiers are validated by the existing path guard and ESPX lookup for creation.
+- Channel identifiers are validated by the existing path guard and PARTNER lookup for creation.
 - The roster query returns only channels satisfying the active predicate, ordered deterministically (by `id`) so diffs are stable.

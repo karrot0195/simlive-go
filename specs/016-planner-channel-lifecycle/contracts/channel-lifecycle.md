@@ -22,7 +22,7 @@ All routes remain under `/api/channels`.
 
 ### POST `/api/channels` (create/upsert)
 
-- Validates the channel against ESPX.
+- Validates the channel against PARTNER.
 - Writes `status='PREPARE'`, `is_active=true`, `updated_at`.
 - Upsert on an existing id follows the same transition (reactivation).
 - Response shape unchanged: `200 {"message": ..., "data": {...}}`.

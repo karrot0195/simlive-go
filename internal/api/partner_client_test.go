@@ -16,8 +16,8 @@ func TestGetEPGScheduleItemsFromXMLKeepsBucketInStreamID(t *testing.T) {
 	const body = `<?xml version="1.0" encoding="UTF-8"?>
 <tv>
   <programme start="20261103000000 +0700" stop="20261103010000 +0700">
-    <ads path="espx-video-lib:espx-video-lib/ads-v3/break-1" duration="30" start="20261103001000 +0700"/>
-    <stream stream_id="espx-video-lib:espx-video-lib/vod/ch-1/prog-1"/>
+    <ads path="partner-video-lib:partner-video-lib/ads-v3/break-1" duration="30" start="20261103001000 +0700"/>
+    <stream stream_id="partner-video-lib:partner-video-lib/vod/ch-1/prog-1"/>
   </programme>
 </tv>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -31,7 +31,7 @@ func TestGetEPGScheduleItemsFromXMLKeepsBucketInStreamID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("STORAGE_BUCKET", "espx-video-lib:espx-video-lib")
+	t.Setenv("STORAGE_BUCKET", "partner-video-lib:partner-video-lib")
 
 	c := &PartnerClient{baseURL: srv.URL, profile: &partner.PartnerProfile{}, httpClient: srv.Client()}
 	resp, err := c.GetEPGScheduleItemsFromXML("ch-1", "2026-11-03", "+07:00")
@@ -46,13 +46,13 @@ func TestGetEPGScheduleItemsFromXMLKeepsBucketInStreamID(t *testing.T) {
 	if len(streams) != 1 {
 		t.Fatalf("want 1 programme stream, got %d", len(streams))
 	}
-	want := "espx-video-lib:espx-video-lib/vod/ch-1/prog-1"
+	want := "partner-video-lib:partner-video-lib/vod/ch-1/prog-1"
 	if streams[0].StreamID != want {
 		t.Fatalf("StreamID = %q, want %q (bucket prefix must be kept verbatim)", streams[0].StreamID, want)
 	}
 
 	ads := resp.Data[0].Programme.Ads
-	if len(ads) != 1 || ads[0].Path != "espx-video-lib:espx-video-lib/ads-v3/break-1" || ads[0].Duration != 30 {
+	if len(ads) != 1 || ads[0].Path != "partner-video-lib:partner-video-lib/ads-v3/break-1" || ads[0].Duration != 30 {
 		t.Fatalf("ads not parsed as expected: %+v", ads)
 	}
 }

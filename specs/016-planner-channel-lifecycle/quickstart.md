@@ -8,8 +8,8 @@ This is the stack-level validation required by the constitution for playout chan
 
 - Go 1.26+, `make`, `curl`, `psql`, `redis-cli`
 - Postgres and Redis from `docker-compose.yml` running
-- `.env` configured for the local stack (`DB_*`, `REDIS_ADDR`, `ESPX_API_URL`, `TMP_DIR`)
-- At least two valid ESPX channels available for registration
+- `.env` configured for the local stack (`DB_*`, `REDIS_ADDR`, `PARTNER_API_URL`, `TMP_DIR`)
+- At least two valid PARTNER channels available for registration
 - Optional for latency tuning: set `CHANNEL_SYNC_INTERVAL=2s` (default) and `PLANNER_INTERVAL=1m`
 
 ## Setup
@@ -22,7 +22,7 @@ make status
 curl -s http://localhost:8080/api/channels | jq '.total'
 ```
 
-Register two channels (replace ids with real ESPX playout ids):
+Register two channels (replace ids with real PARTNER playout ids):
 
 ```bash
 curl -s -X POST http://localhost:8080/api/channels \

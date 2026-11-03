@@ -8,13 +8,13 @@ The planner consumes the partner's XML EPG for one channel and day. Times use th
 <?xml version="1.0" encoding="UTF-8"?>
 <epg>
   <programme start="20261103000000 +0700" stop="20261103010000 +0700">
-    <stream stream_id="espx-video-lib:espx-video-lib/vod/ch-1/prog-1"/>
-    <ads path="espx-video-lib:espx-video-lib/ads-v3/break-1"
+    <stream stream_id="partner-video-lib:partner-video-lib/vod/ch-1/prog-1"/>
+    <ads path="partner-video-lib:partner-video-lib/ads-v3/break-1"
          duration="30"
          start="20261103003000 +0700"/>
   </programme>
   <programme start="20261103010000 +0700" stop="20261103010500 +0700" is_ads="true">
-    <stream stream_id="espx-video-lib:espx-video-lib/ads-v3/break-2"/>
+    <stream stream_id="partner-video-lib:partner-video-lib/ads-v3/break-2"/>
     <ads>true</ads>
   </programme>
 </epg>

@@ -60,7 +60,7 @@
 - [X] T017 [P] [US1] Extend `verifyToken()` in `client/src/stores/auth.ts`: resolve **all** `verify.headers` and `verify.body` placeholders via `resolvePlaceholders` (not just `Authorization` string replace), honor `response_ok` JSON path (default success = HTTP 2xx), and honor `clear_on_error` (default `true` → `reset()` + return to login flow; `false` → keep session); keep `setToken` as fallback when config has no `verify` block
 - [X] T018 [US1] In `client/src/components/DynamicAuth.vue` `submit()` final-step branch: replace `auth.setToken(auth.token)` with `await auth.verifyToken()` (config-driven verify per research D9); show error and stay on final step when verification fails
 - [X] T019 [US1] In `client/src/providers/auth-provider.vue` `onMounted`: replace `setToken(token)` with `verifyToken()` so session restore re-verifies the existing token against the config `verify` block (clear_on_error governs reset on failure)
-- [X] T020 [US1] Add Back navigation in `client/src/components/DynamicAuth.vue`: render a Back button (Vuetify/espx styling per US2) when `stepIndex > 0`; on click store current form into the per-step `forms` snapshot map, decrement `stepIndex`, and call `enterStep` (restores prior values, re-runs target step preCalls per research D10; no main API call on Back)
+- [X] T020 [US1] Add Back navigation in `client/src/components/DynamicAuth.vue`: render a Back button (Vuetify/partner styling per US2) when `stepIndex > 0`; on click store current form into the per-step `forms` snapshot map, decrement `stepIndex`, and call `enterStep` (restores prior values, re-runs target step preCalls per research D10; no main API call on Back)
 
 ### Verification for User Story 1
 
@@ -70,15 +70,15 @@
 
 ---
 
-## Phase 4: User Story 2 - Remove hardcoded login page, use espx UI component (Priority: P1)
+## Phase 4: User Story 2 - Remove hardcoded login page, use partner UI component (Priority: P1)
 
-**Goal**: Replace LoginForm with espx-styled dynamic auth component.
+**Goal**: Replace LoginForm with partner-styled dynamic auth component.
 
-**Independent Test**: Unauthenticated user sees DynamicAuth (not LoginForm); styling matches espx components.
+**Independent Test**: Unauthenticated user sees DynamicAuth (not LoginForm); styling matches partner components.
 
 ### Implementation for User Story 2
 
-- [X] T022 [US2] Restyle `DynamicAuth.vue` with Vuetify/espx styling consistent with other components
+- [X] T022 [US2] Restyle `DynamicAuth.vue` with Vuetify/partner styling consistent with other components
 - [X] T023 [US2] Remove `client/src/components/LoginForm.vue` and any references
 - [X] T024 [US2] Verify `auth-provider.vue` no longer references LoginForm
 

@@ -17,7 +17,7 @@
 ```bash
 export TMP_DIR=$(mktemp -d)
 export EPG_CACHE_DIR="$TMP_DIR/epg-cache"
-export ESPX_URL=http://127.0.0.1:9099      # stub provider
+export PARTNER_URL=http://127.0.0.1:9099      # stub provider
 export PLANNER_INTERVAL=30s
 ```
 

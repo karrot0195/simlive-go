@@ -84,7 +84,7 @@ The client documentation already describes the intended behavior (stop/delete fl
 
 **Decision**: Thread the channel context into external I/O used by preparation:
 
-- `ESPXClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` accept a `context.Context` and use `http.NewRequestWithContext`.
+- `PARTNERClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` accept a `context.Context` and use `http.NewRequestWithContext`.
 - `RcloneService.Cat` accepts a parent context and derives its 10s timeout from it; `CopyTo` already does.
 - Keep existing per-call timeouts so cancellation is bounded even if a remote hangs.
 

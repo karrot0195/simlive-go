@@ -12,7 +12,7 @@ Generated from `internal/api/handler.go` (canonical source). All endpoints serve
 |---|---|---|
 | `API` | `http://localhost:8080/api` | REST CRUD + start/stop |
 | `LIVE_API` | `http://localhost:8080/live` | HLS master + per-rung playlists + `.ts` segments |
-| `REST_API` | `https://api2.espx.cloud/api/v2` | Legacy ESPX upstream (no longer used by the client) |
+| `REST_API` | `https://api2.partner.cloud/api/v2` | Legacy PARTNER upstream (no longer used by the client) |
 
 ---
 
@@ -32,12 +32,12 @@ Status flow (planner = SINGLE writer of `LIVE`):
 All routes are registered on `r.Group("/api")` in `cmd/api/main.go`. Client paths in `src/libs/api.ts` are relative to `baseURL: API` (= `…/api`) and are prefixed with `/channels` so the final URL is `…/api/channels…`.
 
 ### POST /api/channels — Create / Upsert
-Body: `{"channel_id":"..."}` (validated vs ESPX). Response `200`: `{"message":"...","data":{...PlayoutChannel...}}`. Errors: `400` (invalid/ESPX missing), `500` (DB).
+Body: `{"channel_id":"..."}` (validated vs PARTNER). Response `200`: `{"message":"...","data":{...PlayoutChannel...}}`. Errors: `400` (invalid/PARTNER missing), `500` (DB).
 
 ### GET /api/channels — List (paginated)
 Query: `?page=1&page_size=20&status=PREPARE&is_active=true&q=search`. `page_size` clamped `[1,100]`. Response: `{"data":[...],"total":N,"page":1,"page_size":20}`.
 
-### GET /api/channels/esp — ESPX upstream + registered map
+### GET /api/channels/esp — PARTNER upstream + registered map
 Response: `{"data":[...],"registered":{"id":true,...}}`.
 
 ### GET /api/channels/:id — Get single

@@ -95,7 +95,7 @@ internal/
 ├── api/
 │   ├── handler.go               # Normalize start/stop/update/delete transitions + best-effort purge
 │   ├── handler_lifecycle_test.go# NEW: transition mapping tests
-│   └── espx_client.go           # Context-aware EPG/detail requests
+│   └── partner_client.go           # Context-aware EPG/detail requests
 ├── storage/
 │   └── rclone.go                # Context-aware Cat
 └── utils/

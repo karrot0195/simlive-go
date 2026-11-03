@@ -85,7 +85,7 @@ func (p *Planner) ProcessEPGToTimeline(ctx context.Context, channel models.Playo
 
 	logger := utils.GetLogger(fmt.Sprintf("%s:%s", "PLANNER", channel.ID))
 
-	// Convert local timezone to +HH:MM for ESPX
+	// Convert local timezone to +HH:MM for PARTNER
 	tzNum := utils.LocalTZOffset()
 	schedules, fetchErr := p.partner.GetEPGScheduleItemsFromXML(channel.ID, dateStr, tzNum)
 

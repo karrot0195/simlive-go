@@ -16,7 +16,7 @@ info:
 
     Implementation lives in:
     - `internal/api/handler.go` (channel CRUD)
-    - `internal/api/espx_client.go` (ESPX upstream client)
+    - `internal/api/partner_client.go` (PARTNER upstream client)
     - `cmd/api/main.go` (router + HLS routes + CORS)
 
     See `docs/300826-create-rest-api-for-playout-channels-management.md`
@@ -30,7 +30,7 @@ tags:
   - name: channels
     description: Playout-channel CRUD (DB-backed, manual start/stop).
   - name: esp
-    description: ESPX upstream proxy (read-only, list + registered map).
+    description: PARTNER upstream proxy (read-only, list + registered map).
   - name: hls
     description: HLS live-streaming surface (master + per-rung media + segments).
 
@@ -84,9 +84,9 @@ paths:
       tags: [channels]
       summary: Create or upsert a playout channel
       description: |
-        Validates `channel_id` against the ESPX detail endpoint
-        (`GetChannelDetailWithEPG`, ESPX API 2) before persisting. Upserts
-        on primary-key conflict. The ESPX-derived fields (`name`,
+        Validates `channel_id` against the PARTNER detail endpoint
+        (`GetChannelDetailWithEPG`, PARTNER API 2) before persisting. Upserts
+        on primary-key conflict. The PARTNER-derived fields (`name`,
         `base_name`, `content_timezone`, `channel_epg_id`) are refreshed;
         `is_active` is set to `true` and `status` to `'PREPARE'` (the
         planner flips it to `'LIVE'` on the next tick once timeline data
@@ -109,7 +109,7 @@ paths:
                   message: { type: string }
                   data:    { $ref: '#/components/schemas/PlayoutChannel' }
         '400':
-          description: Invalid request body OR channel not found in ESPX.
+          description: Invalid request body OR channel not found in PARTNER.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -119,9 +119,9 @@ paths:
   /api/channels/esp:
     get:
       tags: [esp]
-      summary: List ESPX upstream channels + registered map
+      summary: List PARTNER upstream channels + registered map
       description: |
-        Proxies ESPX API 1 (`GET /api/v2/common/channel-playouts`) and
+        Proxies PARTNER API 1 (`GET /api/v2/common/channel-playouts`) and
         annotates each item with a `registered` boolean (true if the
         channel already exists in our local `playout_channels` table).
         The `registered` map is built with a single
@@ -130,13 +130,13 @@ paths:
       operationId: listESpxChannels
       responses:
         '200':
-          description: ESPX list + registered map.
+          description: PARTNER list + registered map.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ESpxChannelsListResp'
         '502':
-          description: ESPX upstream call failed.
+          description: PARTNER upstream call failed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -520,7 +520,7 @@ components:
         channel_id:
           type: string
           format: uuid
-          description: Channel ID to validate against ESPX API 2.
+          description: Channel ID to validate against PARTNER API 2.
       required: [channel_id]
 
     UpdateChannelReq:
@@ -564,8 +564,8 @@ components:
           description: "Page size actually used (clamped to the [1, 100] range)."
       required: [data, total, page, page_size]
 
-    # ---- ESPX list shape ----------------------------------------------
-    ESPXChannelListItem:
+    # ---- PARTNER list shape ----------------------------------------------
+    PARTNERChannelListItem:
       type: object
       properties:
         id:               { type: string, format: uuid }
@@ -579,11 +579,11 @@ components:
       properties:
         data:
           type: array
-          items: { $ref: '#/components/schemas/ESPXChannelListItem' }
+          items: { $ref: '#/components/schemas/PARTNERChannelListItem' }
         registered:
           type: object
           description: |
-            Map keyed by ESPX channel id; value `true` if the channel
+            Map keyed by PARTNER channel id; value `true` if the channel
             already exists in our local `playout_channels` table. Built
             with a single `SELECT id FROM playout_channels WHERE id IN (...)`
             so the round-trip cost is O(1) regardless of fleet size.

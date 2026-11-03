@@ -1,31 +1,52 @@
 <template>
-  <div class="d-flex align-center justify-center" style="min-height: 100vh; background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)">
-    <v-card
-      class="pa-6"
-      :min-width="stepStyle?.card?.minWidth || 400"
-      :max-width="500"
-      elevation="8"
-      rounded="lg"
-      :style="cardStyle"
-    >
-      <v-card-title class="text-h5 font-weight-bold text-center pa-4" :style="titleStyle">
-        {{ currentStep?.title || 'Login' }}
-      </v-card-title>
-      <v-divider class="mb-4"></v-divider>
-      <v-card-text class="pa-4">
+  <div class="login-shell">
+    <div class="login-bg" aria-hidden="true"></div>
+    <v-card class="login-card" elevation="0" rounded="xl">
+      <div class="login-accent"></div>
+      <v-card-text class="pa-8">
+        <div class="text-center mb-6">
+          <v-avatar size="64" color="primary" variant="tonal" class="mb-3">
+            <v-icon size="36" color="primary">mdi-lock-outline</v-icon>
+          </v-avatar>
+          <h1 class="text-h5 font-weight-bold mb-1">{{ currentStep?.title || 'Sign in' }}</h1>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Enter your credentials to continue
+          </p>
+        </div>
+
         <v-alert
           v-if="error"
           type="error"
           variant="tonal"
-          density="compact"
+          density="comfortable"
           class="mb-4"
+          closable
+          @click:close="error = ''"
         >
           {{ error }}
         </v-alert>
+
         <template v-if="currentStep">
           <template v-for="f in currentStep.fields || []" :key="f.name">
+            <v-text-field
+              v-if="f.type !== 'select'"
+              v-model="form[f.name]"
+              :label="f.label"
+              :type="fieldType(f)"
+              :prepend-inner-icon="fieldIcon(f)"
+              :append-inner-icon="f.type === 'password' ? (showPassword ? 'mdi-eye-off' : 'mdi-eye') : undefined"
+              :required="f.required"
+              variant="outlined"
+              density="comfortable"
+              color="primary"
+              class="mb-4"
+              hide-details="auto"
+              autocomplete="off"
+              @click:append-inner="f.type === 'password' && (showPassword = !showPassword)"
+              @keyup.enter="submit"
+            />
             <v-select
-              v-if="f.type === 'select'"
+              v-else
               v-model="form[f.name]"
               :label="f.label"
               :items="resolvedOptions[f.name] || []"
@@ -34,66 +55,48 @@
               :required="f.required"
               variant="outlined"
               density="comfortable"
-              class="mb-3"
-              hide-details="auto"
-            />
-            <v-text-field
-              v-else
-              v-model="form[f.name]"
-              :label="f.label"
-              :type="f.type === 'password' ? 'password' : 'text'"
-              :required="f.required"
-              variant="outlined"
-              density="comfortable"
-              class="mb-3"
+              color="primary"
+              class="mb-4"
               hide-details="auto"
             />
           </template>
-          <div class="d-flex flex-row gap-3 mt-4">
+
+          <div class="d-flex flex-row gap-3 mt-2">
             <v-btn
               v-if="stepIndex > 0"
               variant="outlined"
+              color="primary"
               size="large"
-              class="flex-grow-1"
+              class="flex-grow-1 text-none"
               :disabled="loading"
               @click="goBack"
             >
               Back
             </v-btn>
             <v-btn
-              :color="stepStyle?.button?.color || 'primary'"
+              color="primary"
               size="large"
-              class="flex-grow-1"
+              class="flex-grow-1 text-none font-weight-semibold"
               :loading="loading"
+              :disabled="loading"
+              elevation="2"
               @click="submit"
             >
-              Continue
+              {{ stepIndex > 0 && currentStep?.fields?.length ? 'Continue' : 'Sign in' }}
             </v-btn>
           </div>
         </template>
-        <div v-else class="text-center text-medium-emphasis">No auth configuration available.</div>
-     </v-card-text>
-   </v-card>
- </div>
 
-<style scoped>
-/* Make the login form more comfortable to read */
-.v-card {
-  font-size: 16px;
-}
-.v-card-title {
-  font-size: 1.5rem !important;
-}
-.v-field__input,
-.v-select__selection-text,
-.v-field-label {
-  font-size: 16px !important;
-}
-.v-btn {
-  font-size: 16px !important;
-  letter-spacing: 0.5px;
-}
-</style>
+        <div v-else class="text-center text-medium-emphasis py-6">
+          No authentication configuration available.
+        </div>
+      </v-card-text>
+    </v-card>
+
+    <p class="login-footer text-caption text-medium-emphasis text-center mt-6">
+      Secured connection &middot; Simulated Live
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -109,15 +112,24 @@ const forms = ref<Record<number, Record<string, any>>>({})
 const loading = ref(false)
 const error = ref('')
 const resolvedOptions = ref<Record<string, any[]>>({})
+const showPassword = ref(false)
 
 const currentStep = computed<AuthStep | null>(() => {
   if (!config.value || !config.value.steps) return null
   return config.value.steps[stepIndex.value] || null
 })
 
-const stepStyle = computed(() => (currentStep.value as any)?.style || (config.value as any)?.style)
-const cardStyle = computed(() => stepStyle.value?.card?.style || {})
-const titleStyle = computed(() => stepStyle.value?.title?.style || {})
+function fieldType(f: any): string {
+  if (f.type === 'password') return showPassword.value ? 'text' : 'password'
+  return 'text'
+}
+
+function fieldIcon(f: any): string {
+  if (f.type === 'password') return 'mdi-lock-outline'
+  const name = String(f.name || '').toLowerCase()
+  if (name.includes('user') || name.includes('email') || name.includes('account')) return 'mdi-account-outline'
+  return 'mdi-form-textbox'
+}
 
 onMounted(async () => {
   config.value = await fetchAuthConfig()
@@ -146,6 +158,7 @@ async function enterStep(index: number) {
   if (!s) return
   stepIndex.value = index
   error.value = ''
+  showPassword.value = false
   const snap = forms.value[index]
   const f: Record<string, any> = {}
   for (const field of s.fields || []) {
@@ -226,3 +239,58 @@ async function submit() {
   }
 }
 </script>
+
+<style scoped>
+.login-shell {
+  position: relative;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow: hidden;
+}
+
+.login-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(1200px 600px at 10% 10%, rgba(37, 99, 235, 0.12), transparent 60%),
+    radial-gradient(900px 500px at 90% 90%, rgba(99, 102, 241, 0.10), transparent 60%),
+    linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+  z-index: 0;
+}
+
+.login-card {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 20px 45px -12px rgba(15, 23, 42, 0.18), 0 4px 12px rgba(15, 23, 42, 0.06);
+}
+
+.login-accent {
+  height: 4px;
+  background: linear-gradient(90deg, #2563eb 0%, #6366f1 100%);
+}
+
+.login-footer {
+  position: relative;
+  z-index: 1;
+}
+
+/* Comfortable, accessible typography */
+.v-card .v-field__input,
+.v-card .v-select__selection-text,
+.v-card .v-field-label {
+  font-size: 15px;
+}
+
+.v-btn {
+  letter-spacing: 0.3px;
+  text-transform: none;
+}
+</style>

@@ -79,7 +79,7 @@ func channelIDGuard(c *gin.Context, id string) bool {
 
 // ----- POST /api/channels (create / upsert) ------------------------------
 
-// CreateOrUpsertChannel validates the channel ID against the ESPX API
+// CreateOrUpsertChannel validates the channel ID against the PARTNER API
 // and upserts the playout_channels row. Renamed for naming consistency
 // with other CRUD verbs.
 func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
@@ -89,10 +89,10 @@ func (h *ChannelHandler) CreateOrUpsertChannel(c *gin.Context) {
 		return
 	}
 
-	// Validate Channel ID against the ESPX API
+	// Validate Channel ID against the PARTNER API
 	detail, err := h.partner.GetChannelDetailWithEPG(req.ChannelID)
 	if err != nil || detail.ID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in ESPX API"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid Channel ID or not found in PARTNER API"})
 		return
 	}
 
@@ -197,7 +197,7 @@ func parsePagination(c *gin.Context) (page, pageSize int) {
 	return
 }
 
-// ----- GET /api/channels/esp (list ESPX channels) -----------------------
+// ----- GET /api/channels/esp (list PARTNER channels) -----------------------
 
 // ----- GET /api/channels/:id --------------------------------------------
 

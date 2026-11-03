@@ -65,7 +65,7 @@ description: "Task list template for feature implementation"
 - [x] T009 [P] [US1] Write unit tests for the stop/delete/start/update transition mapping in internal/api/handler_lifecycle_test.go (depends on T008)
 - [x] T010 [US1] Replace the global blocking tick + watcher in cmd/planner/main.go with a per-channel supervisor reconciler that cancels a channel's context when it leaves the active roster (deactivated or deleted) and waits for exit before cleanup (depends on T006)
 - [x] T011 [US1] Make planner lifecycle writes conditional on the active predicate — `markChannelLive` becomes `UPDATE ... WHERE id=? AND is_active=true AND status NOT IN ('INACTIVE','FAILURE')` returning whether the transition happened; skip failure-counter/`MarkChannelFailed` writes when the supervisor context is cancelled — in internal/planner/planner.go (depends on T004)
-- [x] T012 [P] [US1] Add `context.Context` parameters to `ESPXClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` using `http.NewRequestWithContext` in internal/api/espx_client.go
+- [x] T012 [P] [US1] Add `context.Context` parameters to `PARTNERClient.GetEPGScheduleItems` and `GetChannelDetailWithEPG` using `http.NewRequestWithContext` in internal/api/partner_client.go
 - [x] T013 [P] [US1] Make `RcloneService.Cat` accept a parent context and derive its 10s timeout from it in internal/storage/rclone.go
 - [x] T014 [US1] Run `CleanChannelData` (timeline, cursor, failure counter) only after the supervisor's work unit has fully exited, never concurrently, in cmd/planner/main.go (depends on T010)
 - [ ] T015 [P] [US1] Write supervisor state-machine unit tests (start, cancel, no-duplicate, cleanup-after-exit) in cmd/planner/reconcile_test.go (depends on T010)
@@ -183,7 +183,7 @@ description: "Task list template for feature implementation"
 
 - T002 ∥ T003 ∥ T004 (different files, Setup/Foundational)
 - T007 ∥ T009 once their implementations land
-- T012 ∥ T013 (espx_client.go ∥ rclone.go) alongside T010–T011
+- T012 ∥ T013 (partner_client.go ∥ rclone.go) alongside T010–T011
 - T015 ∥ T016–T018
 - **US4 (T022–T026) runs fully in parallel with US1–US3** after Phase 2
 - T027 ∥ T028 ∥ T029 (three different services)
@@ -196,7 +196,7 @@ description: "Task list template for feature implementation"
 ```bash
 # After Phase 2 completes, launch together (different files):
 Task: "Normalize stop/delete transitions + purge in internal/api/handler.go (T008)"
-Task: "Add context.Context to EPG requests in internal/api/espx_client.go (T012)"
+Task: "Add context.Context to EPG requests in internal/api/partner_client.go (T012)"
 Task: "Make RcloneService.Cat context-aware in internal/storage/rclone.go (T013)"
 
 # After T010 lands:

@@ -7,7 +7,7 @@ Each planner-produced segment is stored in the Redis sorted set `simlive:timelin
 ```json
 {
   "sequence": 142,
-  "storage_path": "espx-video-lib:espx-video-lib/ads-v3/break-1/{rendition}/seg_00002.ts",
+  "storage_path": "partner-video-lib:partner-video-lib/ads-v3/break-1/{rendition}/seg_00002.ts",
   "duration": 4,
   "start_time": 1793691000,
   "time_text": "10:30",

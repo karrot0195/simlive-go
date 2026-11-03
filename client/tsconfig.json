@@ -9,7 +9,7 @@
     "cypress.config.*",
     "nightwatch.conf.*",
     "playwright.config.*"
-, "../espx-packages/ui/src/components/VMAction.vue"  ],
+, "../partner-packages/ui/src/components/VMAction.vue"  ],
   "exclude": ["src/**/__tests__/*", "node_modules/*"],
   "compilerOptions": {
     "noEmit": true,

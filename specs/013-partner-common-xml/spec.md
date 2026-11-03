@@ -18,7 +18,7 @@
 
 ### Session 2026-11-03
 
-- Q: Does the EPG `streamId` carry the storage bucket? → A: Yes. The XML source returns bucket-inclusive stream identifiers (rclone `remote:bucket/...` form, e.g. `espx-video-lib:espx-video-lib/vod/...`). The planner and engine use `streamId` verbatim as the storage path base, so no separate `STORAGE_BUCKET` configuration is needed; the env var and the strip/re-add bucket logic are removed. Ad `path` values were already bucket-inclusive and are used verbatim.
+- Q: Does the EPG `streamId` carry the storage bucket? → A: Yes. The XML source returns bucket-inclusive stream identifiers (rclone `remote:bucket/...` form, e.g. `partner-video-lib:partner-video-lib/vod/...`). The planner and engine use `streamId` verbatim as the storage path base, so no separate `STORAGE_BUCKET` configuration is needed; the env var and the strip/re-add bucket logic are removed. Ad `path` values were already bucket-inclusive and are used verbatim.
 
 ## User Scenarios & Testing *(mandatory)*
 

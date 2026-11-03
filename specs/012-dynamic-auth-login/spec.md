@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Input**: User description: "support dynamic auth login — remove current login PAGE, use via espx ui component; allow flexible client logic defined by auth.yaml; support multiple steps via yaml; Ui follows yaml; YAML can be received from API GO"
+**Input**: User description: "support dynamic auth login — remove current login PAGE, use via partner ui component; allow flexible client logic defined by auth.yaml; support multiple steps via yaml; Ui follows yaml; YAML can be received from API GO"
 
 ## Clarifications
 
@@ -17,7 +17,7 @@
 - Q: Should auth.yaml support conditional steps (skip/branch based on prior results) in v1, or is a strictly sequential flow sufficient? → A: Strictly sequential steps only for v1; no conditionals.
 - Q: On a failed step, when the user retries, should the step's preCalls re-execute as well? → A: Yes — retry re-runs preCalls and the main API call from scratch.
 - Q: Should the Go API serve the auth config as parsed JSON or as raw YAML text? → A: Parsed JSON from a server-side auth.yaml, so the client needs no YAML parser.
-- Q: Does the espx UI library provide a reusable auth/login form component, or should DynamicAuth be built on Vuetify following espx styling? → A: No espx auth component; build on Vuetify following espx styling.
+- Q: Does the partner UI library provide a reusable auth/login form component, or should DynamicAuth be built on Vuetify following partner styling? → A: No partner auth component; build on Vuetify following partner styling.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -35,18 +35,18 @@ As an admin user, I want the login experience to be driven by a declarative auth
 2. **Given** step 1 succeeds and returns a token, **When** moving to step 2, **Then** the preCall/API calls use the token from the prior step.
 3. **Given** any step fails, **When** the API returns an error, **Then** the user sees an error message and can retry the current step.
 
-### User Story 2 - Remove hardcoded login page, use espx UI component (Priority: P1)
+### User Story 2 - Remove hardcoded login page, use partner UI component (Priority: P1)
 
-As a developer, I want the existing LoginForm.vue replaced by a reusable espx UI auth component driven by the yaml config.
+As a developer, I want the existing LoginForm.vue replaced by a reusable partner UI auth component driven by the yaml config.
 
-**Why this priority**: Removes duplicated login UI; aligns with espx design system.
+**Why this priority**: Removes duplicated login UI; aligns with partner design system.
 
-**Independent Test**: The old LoginForm.vue is no longer the entry point; AuthProvider renders the espx-based dynamic auth component.
+**Independent Test**: The old LoginForm.vue is no longer the entry point; AuthProvider renders the partner-based dynamic auth component.
 
 **Acceptance Scenarios**:
 
 1. **Given** an unauthenticated user, **When** the app loads, **Then** the dynamic auth component (not the old LoginForm) is shown.
-2. **Given** the espx component, **When** rendered, **Then** it matches the styling of other espx components.
+2. **Given** the partner component, **When** rendered, **Then** it matches the styling of other partner components.
 
 ### User Story 3 - Auth config delivered from Go API (Priority: P2)
 
@@ -79,7 +79,7 @@ As an operator, I want the Go API to serve the auth.yaml (or its parsed form) so
 - **FR-002**: Each step MUST declare a title, a list of fields (name, type, label, required), an API endpoint, and a response_field indicating which response value becomes the token/credential for subsequent steps.
 - **FR-003**: Each step MAY declare preCall(s): prior HTTP calls (url, method, headers, body) executed before the main API call, whose results can be referenced via Mustache-style placeholders (`{{token}}`, `{{stepN.field}}`) resolved client-side before each call. PreCalls MUST also execute when the step is entered (before dependent UI such as select options renders), and re-execute on retry.
 - **FR-004**: The client MUST render UI dynamically from the step definition (fields, labels, buttons) without hardcoded login form.
-- **FR-005**: The client MUST remove the existing hardcoded LoginForm.vue login page and use a new Vuetify-based auth component following espx styling.
+- **FR-005**: The client MUST remove the existing hardcoded LoginForm.vue login page and use a new Vuetify-based auth component following partner styling.
 - **FR-006**: The client MUST allow flexible logic: field validation rules and token passing between steps as defined in yaml. Steps are strictly sequential in v1 (no conditional/branching steps).
 - **FR-007**: The Go API MUST expose an endpoint serving the auth configuration as parsed JSON (server reads auth.yaml and returns JSON) to the client.
 - **FR-008**: The client MUST fetch the auth config (JSON) from the Go API at runtime, with a bundled fallback auth config if the API is unavailable.
@@ -106,7 +106,7 @@ As an operator, I want the Go API to serve the auth.yaml (or its parsed form) so
 
 ## Assumptions
 
-- espx UI library does not provide a reusable auth component; DynamicAuth is built on Vuetify following espx styling.
+- partner UI library does not provide a reusable auth component; DynamicAuth is built on Vuetify following partner styling.
 - The SSO service (port 3030) remains the underlying identity provider; yaml steps call SSO endpoints.
 - Auth config is non-secret (endpoints/field definitions only); secrets remain in server .env.
 - v1 flow is strictly sequential: no conditional or branching steps.

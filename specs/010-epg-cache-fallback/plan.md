@@ -110,7 +110,7 @@ Findings from `/speckit-analyze` (2026-10-30) and how the design resolves them.
 
 | Finding | Resolution |
 |---------|------------|
-| I1 (HIGH) mixed day boundaries | Canonical target day is the host-local day per FR-014. `processDate`/`horizon` come from `utils.StartOfDay`/`EndOfDay` in `utils.LocalLocation()`; the fallback builder anchors at that absolute instant and formats timestamps in `channel.ContentTimezone` so `utils.ParseESPXTime` in the processor reads them correctly. Fallback markers store the same host-local `day_start`/`day_end`. |
+| I1 (HIGH) mixed day boundaries | Canonical target day is the host-local day per FR-014. `processDate`/`horizon` come from `utils.StartOfDay`/`EndOfDay` in `utils.LocalLocation()`; the fallback builder anchors at that absolute instant and formats timestamps in `channel.ContentTimezone` so `utils.ParsePARTNERTime` in the processor reads them correctly. Fallback markers store the same host-local `day_start`/`day_end`. |
 | C1 (MEDIUM) SC-008 uncovered | Added quickstart scenario 7: 30 consecutive simulated outage days (clock shift) with no manual intervention. |
 | U1 (MEDIUM) FR-007 implicit | Fallback planning gains an explicit guard: it runs only when the target day has no timeline coverage; sequence and running time are seeded from the last timeline member. A repeated call cannot duplicate coverage. |
 | I2 (MEDIUM) stale marker | Mark the fallback day only AFTER coverage is produced; clear it on planning failure. The API label is driven by the marker, so a failed fallback cannot show a false label. |

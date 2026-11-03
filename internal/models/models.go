@@ -38,7 +38,7 @@ type PlayoutChannel struct {
 	UseAdEpgAds bool `json:"use_ad_epg_ads"`
 }
 
-// PartnerChannelListItem is a single entry in the ESPX API 1 response
+// PartnerChannelListItem is a single entry in the PARTNER API 1 response
 // (`GET /api/v2/common/channel-playouts`). Promoted from the anonymous
 // struct inside `PartnerChannelListResp` so the new `/api/channels/esp` REST
 // route can return a stable shape independent of the upstream response.
@@ -122,7 +122,7 @@ type SegmentItem struct {
 	SliceInserts []SpliceInsert `json:"splice_inserts,omitempty"`
 }
 
-// Response structs for ESPX APIs
+// Response structs for PARTNER APIs
 type PartnerChannelListResp struct {
 	Data []PartnerChannelListItem `json:"data"`
 }
@@ -200,7 +200,7 @@ type ListChannelsResp struct {
 }
 
 // PartnerChannelsListResp is the response for GET /api/channels/esp. `Registered`
-// is keyed by the ESPX channel id; `true` means the channel already exists
+// is keyed by the PARTNER channel id; `true` means the channel already exists
 // in our local playout_channels table. Built with a single
 // `SELECT id FROM playout_channels WHERE id IN (...)` so the round-trip
 // stays O(1) regardless of the fleet size.

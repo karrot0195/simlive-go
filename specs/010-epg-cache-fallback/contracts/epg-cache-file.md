@@ -53,4 +53,4 @@
 ## Compatibility
 
 - Bumping `version` requires a reader fallback that ignores unknown versions.
-- `items` must remain round-trippable through `models.ESPXScheduleItem`.
+- `items` must remain round-trippable through `models.PARTNERScheduleItem`.

@@ -1,6 +1,6 @@
 # SCTE-35 PMT Verification Report
 
-- Target: https://simlive5.espx.cloud/live/f1533ebe-dc74-4e85-a34e-a9bc4eedee78/360p/playlist.m3u8
+- Target: https://simlive5.partner.cloud/live/f1533ebe-dc74-4e85-a34e-a9bc4eedee78/360p/playlist.m3u8
 - Date: 2026-10-25
 - Tool: cmd/scte35-check
 - Result: PASS

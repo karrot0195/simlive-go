@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import '@espx/ui/index.css'
 import MainProvider from '@/providers/main-provider.vue'
 
 const router = useRouter()

@@ -109,7 +109,7 @@ make start-all
 
 ## Test Data
 
-- Test channels with ad breaks configured in the ESPX schedule
+- Test channels with ad breaks configured in the PARTNER schedule
 - VOD content with known PTS ranges
 - Ad segments in the configured ads bucket
 

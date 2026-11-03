@@ -55,7 +55,7 @@ export interface PartnerChannelListItem {
 
 export interface PartnerChannelsListResp {
   data: PartnerChannelListItem[]
-  /** Keyed by ESPX channel id; value true if already registered locally. */
+  /** Keyed by PARTNER channel id; value true if already registered locally. */
   registered: Record<string, boolean>
 }
 

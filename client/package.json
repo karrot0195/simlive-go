@@ -15,7 +15,6 @@
     "format": "prettier --write src/"
   },
   "dependencies": {
-    "@espx/ui": "0.1.5",
     "@mdi/font": "^7.4.47",
     "@types/lodash": "^4.17.9",
     "axios": "^1.7.7",
