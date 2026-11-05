@@ -69,14 +69,14 @@ func TestLoadConfigFileParsesProfiles(t *testing.T) {
 
 func TestResolveConfigPathPrefersEnv(t *testing.T) {
 	path := writeTemp(t, "custom.yaml", sampleConfig)
-	t.Setenv("PARTNER_CONFIG_PATH", path)
+	t.Setenv("PARTNER_CONFIG", path)
 	if got := ResolveConfigPath(); got != path {
 		t.Fatalf("ResolveConfigPath = %q, want %q", got, path)
 	}
 }
 
 func TestResolveConfigPathDefault(t *testing.T) {
-	t.Setenv("PARTNER_CONFIG_PATH", "")
+	t.Setenv("PARTNER_CONFIG", "")
 	if got := ResolveConfigPath(); got != defaultPartnerPath {
 		t.Fatalf("ResolveConfigPath = %q, want %q", got, defaultPartnerPath)
 	}
@@ -84,7 +84,7 @@ func TestResolveConfigPathDefault(t *testing.T) {
 
 func TestLoadConfigUsesEnvPath(t *testing.T) {
 	path := writeTemp(t, "env-partner.yaml", sampleConfig)
-	t.Setenv("PARTNER_CONFIG_PATH", path)
+	t.Setenv("PARTNER_CONFIG", path)
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -130,7 +130,6 @@ func TestProfileLookup(t *testing.T) {
 }
 
 func TestAPIApplyDefaults(t *testing.T) {
-	t.Setenv("PARTNER_API_URL", "")
 	t.Setenv("TZ", "UTC")
 	var api PartnerAPI
 	api.applyDefaults()
@@ -145,14 +144,6 @@ func TestAPIApplyDefaults(t *testing.T) {
 	}
 }
 
-func TestAPIApplyDefaultsUsesPartnerAPIURL(t *testing.T) {
-	t.Setenv("PARTNER_API_URL", "http://env.example.com:9999")
-	var api PartnerAPI
-	api.applyDefaults()
-	if api.BaseURL != "http://env.example.com:9999" {
-		t.Fatalf("base url = %q, want env value", api.BaseURL)
-	}
-}
 
 func TestXMLFieldValidation(t *testing.T) {
 	cases := []struct {
@@ -181,5 +172,45 @@ func TestXMLFieldValidation(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestLoadConfigFile_DataProviderDefaults(t *testing.T) {
+	data := []byte("active: alpha\npartners:\n  alpha:\n    api:\n      base_url: http://x\n")
+	path := writeTemp(t, "partner.yaml", string(data))
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Partners["alpha"].DataProvider != "rclone" {
+		t.Fatalf("data provider = %q, want rclone", cfg.Partners["alpha"].DataProvider)
+	}
+}
+
+func TestLoadConfigFile_DataProviderHTTP(t *testing.T) {
+	data := []byte("active: alpha\npartners:\n  alpha:\n    api:\n      base_url: http://x\n    data_provider: http\n    data:\n      endpoint: http://example.com/data\n")
+	path := writeTemp(t, "partner.yaml", string(data))
+	cfg, err := LoadConfigFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Partners["alpha"].DataProvider != "http" {
+		t.Fatalf("data provider = %q, want http", cfg.Partners["alpha"].DataProvider)
+	}
+}
+
+func TestLoadConfigFile_UnknownDataProvider(t *testing.T) {
+	data := []byte("active: alpha\npartners:\n  alpha:\n    api:\n      base_url: http://x\n    data_provider: ftp\n")
+	path := writeTemp(t, "partner.yaml", string(data))
+	if _, err := LoadConfigFile(path); err == nil {
+		t.Fatal("expected error for unknown data provider")
+	}
+}
+
+func TestLoadConfigFile_HTTPMissingEndpoint(t *testing.T) {
+	data := []byte("active: alpha\npartners:\n  alpha:\n    api:\n      base_url: http://x\n    data_provider: http\n")
+	path := writeTemp(t, "partner.yaml", string(data))
+	if _, err := LoadConfigFile(path); err == nil {
+		t.Fatal("expected error for missing http endpoint")
 	}
 }

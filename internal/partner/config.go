@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultPartnerPath = "./config/partner.yaml"
+const defaultPartnerPath = "./partner.yaml"
 
 // Default endpoint paths used when a profile does not override them.
 const (
@@ -26,7 +26,7 @@ var reservedFieldNames = map[string]bool{
 	"start": true, "stop": true, "streamId": true, "ads": true, "channelId": true,
 }
 
-// PartnerConfig is the root of config/partner.yaml.
+// PartnerConfig is the root of {ROOT}/partner.yaml.
 type PartnerConfig struct {
 	Active   string                    `yaml:"active"`
 	Partners map[string]PartnerProfile `yaml:"partners"`
@@ -34,9 +34,18 @@ type PartnerConfig struct {
 
 // PartnerProfile describes one partner's upstream connection, auth flow, and XML extensions.
 type PartnerProfile struct {
-	API  PartnerAPI     `yaml:"api"`
-	Auth map[string]any `yaml:"auth"`
-	XML  PartnerXML     `yaml:"xml"`
+	API          PartnerAPI     `yaml:"api"`
+	Auth         map[string]any `yaml:"auth"`
+	XML          PartnerXML     `yaml:"xml"`
+	DataProvider string         `yaml:"data_provider"`
+	Data         *PartnerData   `yaml:"data"`
+}
+
+// PartnerData holds configuration for data acquisition providers.
+type PartnerData struct {
+	Endpoint string            `yaml:"endpoint"`
+	Headers  map[string]string `yaml:"headers"`
+	Timeout  string            `yaml:"timeout"`
 }
 
 // PartnerAPI holds the upstream connection details.
@@ -78,9 +87,9 @@ type XMLField struct {
 	Default string `yaml:"default"`
 }
 
-// ResolveConfigPath returns the partner config path: PARTNER_CONFIG_PATH or the default.
+// ResolveConfigPath returns the partner config path: PARTNER_CONFIG or the default.
 func ResolveConfigPath() string {
-	if p := os.Getenv("PARTNER_CONFIG_PATH"); p != "" {
+	if p := os.Getenv("PARTNER_CONFIG"); p != "" {
 		return p
 	}
 	return defaultPartnerPath
@@ -113,9 +122,36 @@ func LoadConfigFile(path string) (*PartnerConfig, error) {
 	for id := range cfg.Partners {
 		prof := cfg.Partners[id]
 		prof.API.applyDefaults()
+		if err := validateDataProvider(&prof); err != nil {
+			return nil, fmt.Errorf("partner %q: %w", id, err)
+		}
 		cfg.Partners[id] = prof
 	}
 	return &cfg, nil
+}
+
+func validateDataProvider(p *PartnerProfile) error {
+	if p == nil {
+		return nil
+	}
+	provider := strings.TrimSpace(p.DataProvider)
+	if provider == "" {
+		p.DataProvider = "rclone"
+		return nil
+	}
+	provider = strings.ToLower(provider)
+	p.DataProvider = provider
+	switch provider {
+	case "rclone":
+		return nil
+	case "http":
+		if p.Data == nil || strings.TrimSpace(p.Data.Endpoint) == "" {
+			return fmt.Errorf("http data provider requires endpoint")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown data provider %q", p.DataProvider)
+	}
 }
 
 // Profile returns the profile with the given id.
@@ -145,11 +181,7 @@ func (c *PartnerConfig) ActiveProfile() (PartnerProfile, error) {
 // applyDefaults fills in unset connection fields.
 func (a *PartnerAPI) applyDefaults() {
 	if a.BaseURL == "" {
-		if env := os.Getenv("PARTNER_API_URL"); env != "" {
-			a.BaseURL = env
-		} else {
-			a.BaseURL = defaultAPIBaseURL
-		}
+		a.BaseURL = defaultAPIBaseURL
 	}
 	a.BaseURL = strings.TrimRight(a.BaseURL, "/")
 	if a.Timeout == "" {

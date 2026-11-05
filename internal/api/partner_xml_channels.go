@@ -11,7 +11,7 @@ import (
 )
 
 // PartnerXMLHandler serves the partner-facing common XML endpoints. It reads
-// config/partner.yaml per request so operator edits take effect without a
+// {ROOT}/partner.yaml per request so operator edits take effect without a
 // restart, and resolves the active profile for both endpoints. db may be nil
 // for upstream-only mode (used by tests and deployments that resolve guides
 // purely upstream).

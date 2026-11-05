@@ -1,0 +1,53 @@
+# partner.example.yaml (simple for demo partner)
+
+active: default
+
+partners:
+  default:
+    api:
+      base_url: "http://localhost:3030"
+      timeout: "10s"
+      headers:
+        Accept: "application/json"
+      channel_list_query:
+        "$limit": "500"
+      schedule_query:
+        "$limit": "30000"
+
+    auth:
+      verify:
+        url: "http://localhost:3030/auth/verify"
+        method: POST
+        headers:
+          Authorization: "{{token}}"
+        clear_on_error: true
+      steps:
+        - title: "Login"
+          fields:
+            - name: username
+              type: text
+              label: Username
+              required: true
+            - name: password
+              type: password
+              label: Password
+              required: true
+          api: "http://localhost:3030/auth/login"
+          method: POST
+          headers:
+            Content-Type: "application/json"
+          body:
+            username: "{{username}}"
+            password: "{{password}}"
+          response_field: "token"
+
+    data_provider: http
+    data:
+      endpoint: "http://localhost:3030/data/sample.dat"
+      timeout: "30s"
+
+    xml:
+      channel:
+        custom_fields: []
+      epg:
+        custom_fields: []

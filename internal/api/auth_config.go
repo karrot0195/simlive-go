@@ -32,7 +32,7 @@ const legacyAuthPath = "./config/auth.yaml"
 //
 // Resolution order:
 //  1. AUTH_CONFIG_PATH override (if set and readable).
-//  2. The active profile's `auth` block from config/partner.yaml.
+//  2. The active profile's `auth` block from {ROOT}/partner.yaml.
 //  3. Legacy config/auth.yaml (read-only).
 //  4. The built-in default.
 //
@@ -49,7 +49,7 @@ func LoadAuthConfig() (map[string]any, error) {
 	}
 
 	if cfg, ok := readAuthFile(legacyAuthPath); ok {
-		utils.GetLogger("AUTH").Warn("auth: serving legacy config/auth.yaml; migrate to partner.yaml")
+		utils.GetLogger("AUTH").Warn("auth: serving legacy config/auth.yaml; migrate to {ROOT}/partner.yaml")
 		return cfg, nil
 	}
 

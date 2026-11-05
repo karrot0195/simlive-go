@@ -56,7 +56,7 @@ func main() {
 
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
-	partnerClient := api.NewPartnerClient(settings.PartnerURL)
+	partnerClient := api.NewPartnerClient()
 	rcloneSvc := storage.NewRcloneService()
 	plannerSvc := planner.NewPlanner(db, rdb, partnerClient, rcloneSvc)
 

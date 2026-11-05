@@ -42,7 +42,7 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: settings.RedisAddr})
 
 	// 3. Init Services
-	partnerClient := api.NewPartnerClient(settings.PartnerURL)
+	partnerClient := api.NewPartnerClient()
 	channelHandler := api.NewChannelHandler(db, partnerClient, rdb)
 	partnerXMLHandler := api.NewPartnerXMLHandler(db)
 	api.StartSegmentTrackRecorder(db, rdb)
@@ -91,7 +91,7 @@ func main() {
 		// GET /api/channels — list local playout_channels rows (paginated).
 		apiGroup.GET("/channels", channelHandler.ListChannels)
 		// Channel list for partners is served via /common/channel-playouts-xml
-		// (sourced from config/partner.yaml API settings); no /api/channels/esp.
+		// (sourced from {ROOT}/partner.yaml API settings); no /api/channels/esp.
 		// GET /api/channels/timeline/running — upcoming timelines for all enabled channels.
 		apiGroup.GET("/channels/timeline/running", channelHandler.GetRunningChannelsTimeline)
 		apiGroup.GET("/channels/monitored", channelHandler.ListMonitoredChannels)
@@ -111,7 +111,7 @@ func main() {
 		apiGroup.POST("/channels/:id/stop", channelHandler.StopChannel)
 	}
 
-	// Partner-facing common XML source (config-driven; see config/partner.yaml).
+	// Partner-facing common XML source (config-driven; see {ROOT}/partner.yaml).
 	commonGroup := r.Group("/common")
 	{
 		// GET /common/channel-playouts-xml — channel list XML.

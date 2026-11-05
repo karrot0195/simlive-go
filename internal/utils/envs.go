@@ -17,7 +17,6 @@ type Settings struct {
 	DBName     string
 	RedisAddr  string
 	RedisPass  string
-	PartnerURL string
 
 	TMPDir string
 	// EpgCacheDir holds the retained (last known-good) EPG schedule per
@@ -155,7 +154,6 @@ func GetSettings() *Settings {
 	dbName := GetEnv("DB_NAME", "simlive")
 
 	redisAddr := GetEnv("REDIS_ADDR", "localhost:6379")
-	partnerURL := GetEnv("PARTNER_API_URL", "http://localhost:3030")
 
 	tmpDir := GetEnv("TMP_DIR", os.TempDir())
 	return &Settings{
@@ -165,7 +163,6 @@ func GetSettings() *Settings {
 		DBUser:      dbUser,
 		DBPassword:  dbPass,
 		RedisAddr:   redisAddr,
-		PartnerURL:  partnerURL,
 		TMPDir:      tmpDir,
 		EpgCacheDir: GetEnv("EPG_CACHE_DIR", filepath.Join(tmpDir, "epg-cache")),
 		APIAddr:     GetEnv("API_ADDR", ":8080"),

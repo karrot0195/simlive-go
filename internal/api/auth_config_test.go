@@ -60,7 +60,7 @@ func stepCount(v any) int {
 }
 
 func TestAuthConfigFromPartnerYAML(t *testing.T) {
-	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", partnerAuthYAML))
+	t.Setenv("PARTNER_CONFIG", writeFile(t, "partner.yaml", partnerAuthYAML))
 	t.Setenv("AUTH_CONFIG_PATH", "")
 
 	cfg, err := LoadAuthConfig()
@@ -80,7 +80,7 @@ func TestAuthConfigFromPartnerYAML(t *testing.T) {
 }
 
 func TestAuthConfigFallsBackToLegacyAuthYAML(t *testing.T) {
-	t.Setenv("PARTNER_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("PARTNER_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
 	legacy := writeFile(t, "auth.yaml", "steps:\n  - title: \"Legacy\"\n    api: \"https://legacy.example.com/login\"\n")
 	t.Setenv("AUTH_CONFIG_PATH", legacy)
 
@@ -94,7 +94,7 @@ func TestAuthConfigFallsBackToLegacyAuthYAML(t *testing.T) {
 }
 
 func TestAuthConfigInvalidPartnerFallsBackToDefault(t *testing.T) {
-	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", "this: is: not: valid: yaml: ["))
+	t.Setenv("PARTNER_CONFIG", writeFile(t, "partner.yaml", "this: is: not: valid: yaml: ["))
 	t.Setenv("AUTH_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-auth.yaml"))
 
 	cfg, err := LoadAuthConfig()
@@ -109,7 +109,7 @@ func TestAuthConfigInvalidPartnerFallsBackToDefault(t *testing.T) {
 func TestAuthConfigUnusableAuthBlockFallsBack(t *testing.T) {
 	// partner.yaml with an auth block that has no steps.
 	content := "active: default\npartners:\n  default:\n    auth:\n      verify:\n        url: \"https://x/verify\"\n"
-	t.Setenv("PARTNER_CONFIG_PATH", writeFile(t, "partner.yaml", content))
+	t.Setenv("PARTNER_CONFIG", writeFile(t, "partner.yaml", content))
 	t.Setenv("AUTH_CONFIG_PATH", filepath.Join(t.TempDir(), "missing-auth.yaml"))
 
 	cfg, err := LoadAuthConfig()
@@ -122,7 +122,7 @@ func TestAuthConfigUnusableAuthBlockFallsBack(t *testing.T) {
 }
 
 func TestAuthConfigMissingPartnerFallsBackToDefault(t *testing.T) {
-	t.Setenv("PARTNER_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("PARTNER_CONFIG", filepath.Join(t.TempDir(), "missing.yaml"))
 	t.Setenv("AUTH_CONFIG_PATH", "/nonexistent/auth.yaml")
 
 	cfg, err := LoadAuthConfig()

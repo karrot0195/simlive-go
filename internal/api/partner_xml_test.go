@@ -20,7 +20,7 @@ func writePartnerConfig(t *testing.T, baseURL, extraYAML string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write partner.yaml: %v", err)
 	}
-	t.Setenv("PARTNER_CONFIG_PATH", path)
+	t.Setenv("PARTNER_CONFIG", path)
 }
 
 func newTestRouter() *gin.Engine {

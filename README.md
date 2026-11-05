@@ -68,6 +68,10 @@ simlive is split into three cooperating services plus a web client.
 
 Data flow: planner decides the timeline → engines materialize segments (with ad breaks) → api exposes them as a live HLS playlist. Postgres holds channels/assets/playlists; Redis caches hot state.
 
+## Partner Integration
+
+See [PARTNER_GUIDE.md](PARTNER_GUIDE.md) for partner XML configuration, auth setup, and using the demo partner server.
+
 ## Configuration
 
 Environment variables via `.env` (see `.env.example`). Key groups:
@@ -76,7 +80,7 @@ Environment variables via `.env` (see `.env.example`). Key groups:
 |---|---|
 | Database | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` |
 | Redis | `REDIS_ADDR` |
-| Partner/Source | `PARTNER_API_URL`, `SIMLIVE_QUALITY` |
+| Partner/Source | `PARTNER_CONFIG`, `SIMLIVE_QUALITY` |
 | Engine | `TMP_DIR`, `ENABLE_CLEAN_UP`, `MAX_WORKERS`, `SIMLIVE_KEEP_BEHIND`, `SIMLIVE_DOWNLOAD_AHEAD`, `ACTIVE_RENDITIONS`, `PLANNER_INTERVAL` |
 
 Docker compose and systemd units live under `config/`.

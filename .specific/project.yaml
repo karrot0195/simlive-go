@@ -8,6 +8,7 @@ architecture:
   language: Go
   database: PostgreSQL (+ Redis cache)
   unit_test_framework: Go test
+  container_engine: podman
 skills:
 - name: start api
   description: make start-api
@@ -24,6 +25,6 @@ skills:
 - name: test
   description: make test
 - name: db query
-  description: docker exec simlive_postgres psql -U postgres -d simlive
+  description: podman exec simlive_postgres psql -U postgres -d simlive
 rules: []
 features_file: .specific/project-features.yaml

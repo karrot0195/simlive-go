@@ -1,17 +1,27 @@
 apiVersion: agent-skills/v1
 kind: Extensions
 hooks:
+  before_tasks:
+    - description: "should ensure there is how to test each US"
+  before_implement:
+    - description: "just work on 1 US at the same time"
+  after_implement:
+    - description: "must ensure the test has been implement and pass for this implement"
   before_specify:
-  - extension: sync
-    command: speckit-log
-    description: Record current branch before specifying
-    optional: true
-    enabled: true
-    condition: ''
+    - extension: sync
+      command: speckit-log
+      description: Record current branch before specifying
+      optional: true
+      enabled: true
+      priority: 10
+      prompt: "Record current branch before specifying?"
+      condition: null
   after_specify:
-  - extension: sync
-    command: speckit-log
-    description: Remember last generated spec/branch
-    optional: true
-    enabled: true
-    condition: ''
+    - extension: sync
+      command: speckit-log
+      description: Remember last generated spec/branch
+      optional: true
+      enabled: true
+      priority: 10
+      prompt: "Remember last generated spec/branch?"
+      condition: null

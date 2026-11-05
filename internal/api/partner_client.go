@@ -27,8 +27,8 @@ type PartnerClient struct {
 	httpClient *http.Client
 }
 
-func NewPartnerClient(baseURL string) *PartnerClient {
-	profile := partner.ProfileFromBaseURL(baseURL)
+func NewPartnerClient() *PartnerClient {
+	profile := partner.ProfileFromBaseURL("")
 	if cfg, err := partner.LoadConfig(); err == nil {
 		if p, err := cfg.ActiveProfile(); err == nil {
 			if p.API.BaseURL == "" {

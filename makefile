@@ -1,40 +1,32 @@
-.PHONY: start-api start-planner start-engines start-all build build-client stop clean clean-logs logs restart status test fmt vet tidy help
+.PHONY: start-api start-planner start-engines start-partner start-all build build-client stop clean clean-logs logs restart status test fmt vet tidy help
 
 LOG_DIR := logs
-BIN_DIR := config/bin
+BIN_DIR := bin
 GO ?= go
 CLIENT_DIR := client
 
-# Reusable: kill a service by pidfile AND by process name (so stale/missing
-# pidfiles cannot leave a duplicate running). Usage: $(call kill_if_running,name)
+# Reusable: kill all processes by name
+# Usage: $(call kill_if_running,name)
 define kill_if_running
-	@pids=""; \
-	if [ -f "$(LOG_DIR)/$(1).pid" ]; then \
-		pp=$$(cat "$(LOG_DIR)/$(1).pid" 2>/dev/null); \
-		[ -n "$$pp" ] && pids="$$pids $$pp"; \
-	fi; \
-	for pp in $$(pgrep -x "$(1)" 2>/dev/null); do pids="$$pids $$pp"; done; \
-	pids=$$(printf '%s\n' $$pids | sort -u | tr '\n' ' '); \
-	for pid in $$pids; do \
-		[ -n "$$pid" ] || continue; \
-		if kill -0 "$$pid" 2>/dev/null; then \
-			echo "  Stopping existing $(1) (pid $$pid)..."; \
-			kill "$$pid" 2>/dev/null || true; \
-			for i in 1 2 3 4 5 6 7 8 9 10; do \
-				kill -0 "$$pid" 2>/dev/null || break; \
-				sleep 0.2; \
-			done; \
-			if kill -0 "$$pid" 2>/dev/null; then \
-				echo "  $(1) did not exit; sending SIGKILL"; \
-				kill -9 "$$pid" 2>/dev/null || true; \
-			fi; \
-			echo "  $(1) stopped."; \
+	@if pgrep -x "$(1)" >/dev/null 2>&1; then \
+		echo "  Stopping existing $(1)..."; \
+		pkill -x "$(1)" 2>/dev/null || true; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do \
+			pgrep -x "$(1)" >/dev/null 2>&1 || break; \
+			sleep 0.2; \
+		done; \
+		if pgrep -x "$(1)" >/dev/null 2>&1; then \
+			echo "  $(1) did not exit; sending SIGKILL"; \
+			pkill -9 -x "$(1)" 2>/dev/null || true; \
+			sleep 0.2; \
 		fi; \
-	done; \
-	rm -f "$(LOG_DIR)/$(1).pid"
+		echo "  $(1) stopped."; \
+	else \
+		echo "  $(1) not running."; \
+	fi
 endef
 
-# Reusable: start a service in the background and record its pid
+# Reusable: start a service in the background
 # Usage: $(call start_service,name,binary_path)
 define start_service
 	@if [ ! -x "$(2)" ]; then \
@@ -42,9 +34,13 @@ define start_service
 		exit 1; \
 	fi
 	@mkdir -p "$(LOG_DIR)"
-	@nohup "$(2)" > "$(LOG_DIR)/$(1).log" 2>&1 & \
-	echo $$! > "$(LOG_DIR)/$(1).pid"
-	@echo "  $(1) started (pid $$(cat "$(LOG_DIR)/$(1).pid")) - logs: $(LOG_DIR)/$(1).log"
+	@nohup "$(2)" > "$(LOG_DIR)/$(1).log" 2>&1 &
+	@sleep 0.5
+	@if pgrep -x "$(1)" >/dev/null 2>&1; then \
+		echo "  $(1) started - logs: $(LOG_DIR)/$(1).log"; \
+	else \
+		echo "  $(1) started (check logs) - logs: $(LOG_DIR)/$(1).log"; \
+	fi
 endef
 
 start-api:
@@ -62,11 +58,17 @@ start-engines:
 	@$(call kill_if_running,engines)
 	@$(call start_service,engines,$(BIN_DIR)/engines)
 
+start-partner:
+	@echo "Starting Partner..."
+	@$(call kill_if_running,partner)
+	@$(call start_service,partner,$(BIN_DIR)/partner)
+
 start-all: build
 	@echo "Starting all services..."
 	@$(MAKE) start-api
 	@$(MAKE) start-planner
 	@$(MAKE) start-engines
+	@$(MAKE) start-partner
 	@echo ""
 	@echo "All services started in background."
 	@echo "Tail logs with: make logs  (or: tail -f $(LOG_DIR)/*.log)"
@@ -79,7 +81,7 @@ build:
 	@mkdir -p $(BIN_DIR)
 	@echo "Building all services..."
 	@status=0; \
-	for svc in api planner engines; do \
+	for svc in api planner engines partner; do \
 		$(GO) build -o $(BIN_DIR)/$$svc ./cmd/$$svc/ & \
 		pids="$$pids $$!"; \
 	done; \
@@ -99,20 +101,20 @@ logs:
 
 stop:
 	@echo "Stopping all services..."
-	@for name in api planner engines; do \
-		for pid in $$(pgrep -x "$$name" 2>/dev/null); do \
-			echo "  Stopping $$name (pid $$pid)..."; \
-			kill "$$pid" 2>/dev/null || true; \
+	@for name in api planner engines partner; do \
+		if pgrep -x "$$name" >/dev/null 2>&1; then \
+			echo "  Stopping $$name..."; \
+			pkill -x "$$name" 2>/dev/null || true; \
 			for i in 1 2 3 4 5 6 7 8 9 10; do \
-				kill -0 "$$pid" 2>/dev/null || break; \
+				pgrep -x "$$name" >/dev/null 2>&1 || break; \
 				sleep 0.2; \
 			done; \
-			if kill -0 "$$pid" 2>/dev/null; then \
+			if pgrep -x "$$name" >/dev/null 2>&1; then \
 				echo "  $$name did not exit; sending SIGKILL"; \
-				kill -9 "$$pid" 2>/dev/null || true; \
+				pkill -9 -x "$$name" 2>/dev/null || true; \
 			fi; \
 			echo "  $$name stopped."; \
-		done; \
+		fi; \
 	done
 	@rm -f "$(LOG_DIR)"/*.pid
 	@echo "All services stopped."
@@ -122,7 +124,7 @@ restart:
 	@$(MAKE) start-all
 
 status:
-	@for name in api planner engines; do \
+	@for name in api planner engines partner; do \
 		pids=$$(pgrep -x "$$name" 2>/dev/null | tr '\n' ' '); \
 		if [ -n "$$pids" ]; then \
 			echo "$$name: running (pids $$pids)"; \
@@ -153,11 +155,12 @@ clean-logs: stop
 
 help:
 	@echo "Available targets:"
-	@echo "  build          Build api, planner, engines"
+	@echo "  build          Build api, planner, engines, partner"
 	@echo "  build-client   Build the client"
 	@echo "  start-api      Start API service"
 	@echo "  start-planner  Start planner service"
 	@echo "  start-engines  Start engines service"
+	@echo "  start-partner  Start partner demo service"
 	@echo "  start-all      Build and start all services"
 	@echo "  stop           Stop all services"
 	@echo "  restart        Stop then start all services"
