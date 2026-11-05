@@ -31,7 +31,7 @@
 
 - [x] T001 Run baseline `make fmt`, `make vet`, `make test`, and `make build` from `makefile`; record any pre-existing failures before changing code
 - [x] T002 [P] Add an asset-reader seam so planner tests can serve manifests without rclone: introduce a `Cat` interface and `GetRenditionsFromMasterText` helper in `internal/utils/m3u8.go`, then store the reader on `SegmentProcessor` in `internal/planner/segment_processor.go`
-- [ ] T003 [P] Add shared test builders for content/ad manifests and timeline assertions in `internal/planner/segment_processor_test.go`
+- [x] T003 [P] Add shared test builders for content/ad manifests and timeline assertions in `internal/planner/segment_processor_test.go`
 
 ---
 
@@ -41,17 +41,17 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T004 [P] Add failing parser tests for attribute-bearing `<ads path duration start/>`, text-only `<ads>true</ads>`, `programme@is_ads`, missing streams, and malformed timestamps in `internal/api/partner_client_test.go`
+- [x] T004 [P] Add failing parser tests for attribute-bearing `<ads path duration start/>`, text-only `<ads>true</ads>`, `programme@is_ads`, missing streams, and malformed timestamps in `internal/api/partner_client_test.go`
 - [x] T005 Extend `GetEPGScheduleItemsFromXML` in `internal/api/partner_client.go` to parse inline markers and set `Programme.IsAds` for text-only or attribute-based programme ad designations; keep time normalization to the server clock
-- [ ] T006 [P] Add failing model tests asserting a content segment with `is_ad=false`, `ad_type="in"`, and break metadata emits a CUE-IN date-range in `internal/models/scte35_fields_test.go`
+- [x] T006 [P] Add failing model tests asserting a content segment with `is_ad=false`, `ad_type="in"`, and break metadata emits a CUE-IN date-range in `internal/models/scte35_fields_test.go`
 - [x] T007 Update `buildMediaPlaylistBody` in `internal/models/scte35.go` to emit the CUE-IN date-range when `AdType=="in"` and `AdBreakID!=0`, independent of `IsAd`
-- [ ] T008 [P] Add failing tests for a per-plan break counter and a marker-derived break context in `internal/planner/segment_processor_test.go`
+- [x] T008 [P] Add failing tests for a per-plan break counter and a marker-derived break context in `internal/planner/segment_processor_test.go`
 - [x] T009 Replace timestamp-derived break identity with a per-plan counter and an XML-marker-backed break context in `internal/planner/segment_processor.go`; use the full counter for `EventID` and `counter & 0xFFFF` for `UniqueProgramID`
-- [ ] T010 [P] Add failing tests for shifting inline ad marker starts when padding shifts a programme in `internal/planner/schedule_pad_test.go`
+- [x] T010 [P] Add failing tests for shifting inline ad marker starts when padding shifts a programme in `internal/planner/schedule_pad_test.go`
 - [x] T011 Shift each inline ad marker start by the same delta applied to its programme window in `internal/planner/schedule_pad.go`; drop markers whose timestamps cannot be parsed after the shift
-- [ ] T012 Add failing tests for ad asset loading from a master playlist, primary rendition selection, `#EXT-X-PTS-RANGE` durations, `#EXTINF` fallback, and the no-rendition skip path in `internal/planner/segment_processor_test.go`
-- [ ] T013 Implement `loadAdSegments` in `internal/planner/segment_processor.go`: read `<path>/vod.m3u8`, resolve renditions, read the primary rendition's `vod.m3u8`, and return segment specs with the marker path as the bucket-inclusive storage base
-- [ ] T014 Add failing tests for boundary position selection and relative PTS computation in `internal/planner/segment_processor_test.go`
+- [x] T012 Add failing tests for ad asset loading from a master playlist, primary rendition selection, `#EXT-X-PTS-RANGE` durations, `#EXTINF` fallback, and the no-rendition skip path in `internal/planner/segment_processor_test.go`
+- [x] T013 Implement `loadAdSegments` in `internal/planner/segment_processor.go`: read `<path>/vod.m3u8`, resolve renditions, read the primary rendition's `vod.m3u8`, and return segment specs with the marker path as the bucket-inclusive storage base
+- [x] T014 Add failing tests for boundary position selection and relative PTS computation in `internal/planner/segment_processor_test.go`
 - [x] T015 Implement placement marker helpers in `internal/planner/segment_processor.go`: `0x30` at break start − 8 s and − 4 s, `0x36` at break end − 4 s, with `SpliceTimePTS=(currentPtsOffset-delay)*TICKS` and `SpliceTimeSeconds` set to the absolute channel position
 
 **Checkpoint**: Parsing, break identity, padding, asset loading, and marker helpers are ready.
@@ -66,14 +66,14 @@
 
 ### Tests for User Story 1
 
-- [ ] T016 [US1] Add failing tests in `internal/planner/segment_processor_test.go` for: one marker → one break; several markers → independent breaks in start order; no markers → zero ad segments; marker start behind the plan start skipped; `duration<=0` ignored; content exhausted before a future marker plays the break at content end
+- [x] T016 [US1] Add failing tests in `internal/planner/segment_processor_test.go` for: one marker → one break; several markers → independent breaks in start order; no markers → zero ad segments; marker start behind the plan start skipped; `duration<=0` ignored; content exhausted before a future marker plays the break at content end
 
 ### Implementation for User Story 1
 
-- [ ] T017 [US1] Rewrite the ad selection loop in `processStreamSegments` in `internal/planner/segment_processor.go` to build and sort the marker list, skip invalid/past markers, and call the break insertion path once per marker; remove the interval-trigger branch
-- [ ] T018 [US1] Remove the content-programme ad path (`adBreakForProgramme`, `applyAdMarker` first/last handling) and its stale tests from `internal/planner/segment_processor.go` and `internal/planner/segment_processor_test.go`; programme-level ad programmes use the synthesized-marker path instead
-- [ ] T019 [US1] Audit and remove dormant interval-ad and legacy JSON-schedule references from `internal/planner/planner.go`, `internal/utils/envs.go`, and `internal/api/partner_client.go` so `use_ad_epg_ads` and interval settings cannot influence the timeline
-- [ ] T020 [US1] Verify XML-only ad behavior via skill `start planner` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: seed a channel with `db query` (`docker exec simlive_postgres psql -U postgres -d simlive`), run `make start-planner`, then inspect `docker exec simlive_redis redis-cli --raw ZRANGE simlive:timeline:<channel> 0 -1`; expect one break per marker, shared `ad_break_id`, and zero ad segments on a marker-free day
+- [x] T017 [US1] Rewrite the ad selection loop in `processStreamSegments` in `internal/planner/segment_processor.go` to build and sort the marker list, skip invalid/past markers, and call the break insertion path once per marker; remove the interval-trigger branch
+- [x] T018 [US1] Remove the content-programme ad path (`adBreakForProgramme`, `applyAdMarker` first/last handling) and its stale tests from `internal/planner/segment_processor.go` and `internal/planner/segment_processor_test.go`; programme-level ad programmes use the synthesized-marker path instead
+- [x] T019 [US1] Audit and remove dormant interval-ad and legacy JSON-schedule references from `internal/planner/planner.go`, `internal/utils/envs.go`, and `internal/api/partner_client.go` so `use_ad_epg_ads` and interval settings cannot influence the timeline
+- [x] T020 [US1] Verify XML-only ad behavior via skill `start planner` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: seed a channel with `db query` (`docker exec simlive_postgres psql -U postgres -d simlive`), run `make start-planner`, then inspect `docker exec simlive_redis redis-cli --raw ZRANGE simlive:timeline:<channel> 0 -1`; expect one break per marker, shared `ad_break_id`, and zero ad segments on a marker-free day
 
 **Checkpoint**: US1 is independently demonstrable; interval ads are gone.
 
@@ -87,15 +87,15 @@
 
 ### Tests for User Story 2
 
-- [ ] T021 [P] [US2] Add failing boundary tests in `internal/planner/segment_processor_test.go` covering both pre-roll positions, cue-out, placement-end, cue-in on content with `is_ad=false`, shared identity, and the case where pre-roll positions fall before the available timeline
-- [ ] T022 [P] [US2] Add failing playlist-ordering tests in `internal/models/scte35_fields_test.go` asserting date-range CUE-OUT before the first ad, date-range CUE-IN before the following content, and per-segment `TYPE=48/52/53/54` tags
+- [x] T021 [P] [US2] Add failing boundary tests in `internal/planner/segment_processor_test.go` covering both pre-roll positions, cue-out, placement-end, cue-in on content with `is_ad=false`, shared identity, and the case where pre-roll positions fall before the available timeline
+- [x] T022 [P] [US2] Add failing playlist-ordering tests in `internal/models/scte35_fields_test.go` asserting date-range CUE-OUT before the first ad, date-range CUE-IN before the following content, and per-segment `TYPE=48/52/53/54` tags
 
 ### Implementation for User Story 2
 
 - [x] T023 [US2] Implement `insertAdBreak` in `internal/planner/segment_processor.go`: load the asset, compute the played duration from its segments, append ad segments with continuous `PtsOffset`, stamp the first ad as `ad_type="out"` with the `0x34` marker, and stamp the `0x36` placement-end marker in the ad segment containing break end − 4 s
 - [x] T024 [US2] Implement proactive pre-roll stamping in `processSegment` in `internal/planner/segment_processor.go` so a marker is attached before `addSegment` flushes the segment; track emitted positions per break to prevent duplicates
 - [x] T025 [US2] Carry a pending cue-in on `SegmentProcessor` across schedule-item boundaries in `internal/planner/segment_processor.go`; stamp the first following content segment with `ad_type="in"`, `AdBreakID`, `AdBreakStart`, and `AdBreakDuration`, without setting `IsAd`
-- [ ] T026 [US2] Verify HLS boundary output via skill `start all` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: run `make start-all`, then `curl -s http://localhost:8080/live/<channel>/360p/playlist.m3u8`; expect CUE-OUT with `END-ON-NEXT=YES` before the first ad, CUE-IN before resumed content, `TYPE=48` twice before the break, `TYPE=52` on the first ad, `TYPE=54` before break end, and `TYPE=53` on the first content segment after
+- [x] T026 [US2] Verify HLS boundary output via skill `start all` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: run `make start-all`, then `curl -s http://localhost:8080/live/<channel>/360p/playlist.m3u8`; expect CUE-OUT with `END-ON-NEXT=YES` before the first ad, CUE-IN before resumed content, `TYPE=48` twice before the break, `TYPE=52` on the first ad, `TYPE=54` before break end, and `TYPE=53` on the first content segment after
 
 **Checkpoint**: US2 boundaries are visible in both the timeline and the playlist.
 
@@ -109,13 +109,13 @@
 
 ### Tests for User Story 3
 
-- [ ] T027 [US3] Add failing PTS tests in `internal/planner/segment_processor_test.go` walking content→ad→content and two-break timelines; assert monotonic `PtsOffset`, continuous `MediaStart/MediaEnd`, `SpliceTimePTS=(currentPtsOffset-delay)*TICKS`, and `SpliceTimeSeconds` equal to the absolute break position
+- [x] T027 [US3] Add failing PTS tests in `internal/planner/segment_processor_test.go` walking content→ad→content and two-break timelines; assert monotonic `PtsOffset`, continuous `MediaStart/MediaEnd`, `SpliceTimePTS=(currentPtsOffset-delay)*TICKS`, and `SpliceTimeSeconds` equal to the absolute break position
 
 ### Implementation for User Story 3
 
 - [x] T028 [US3] Ensure ad segments inherit `currentPtsOffset` and advance it by their own durations in `internal/planner/segment_processor.go`; never derive output offsets from the ad asset's original PTS
 - [x] T029 [US3] Audit all marker and segment PTS computations in `internal/planner/segment_processor.go` and `internal/utils/tsduck.go`; keep immediate splices free of `pts_time`, keep placement markers in the rewritten PTS space, and preserve the 33-bit mask at emission
-- [ ] T030 [US3] Verify PTS continuity via skill `test`: run `make test` and confirm the new PTS tests pass together with existing `internal/models/scte35_fields_test.go` round-trip tests
+- [x] T030 [US3] Verify PTS continuity via skill `test`: run `make test` and confirm the new PTS tests pass together with existing `internal/models/scte35_fields_test.go` round-trip tests
 
 **Checkpoint**: US3 has no discontinuities or rewind in the produced timeline.
 
@@ -129,12 +129,12 @@
 
 ### Tests for User Story 4
 
-- [ ] T031 [P] [US4] Add failing PMT invariant tests in `internal/utils/tsduck_test.go` asserting `SCTE35_PID=="0x1F00"`, both PMT command builders use `--add-pid 0x1F00/0x86 --add-registration 0x43554549`, and splice XML uses the correct immediate/pts_time shape per marker type
+- [x] T031 [P] [US4] Add failing PMT invariant tests in `internal/utils/tsduck_test.go` asserting `SCTE35_PID=="0x1F00"`, both PMT command builders use `--add-pid 0x1F00/0x86 --add-registration 0x43554549`, and splice XML uses the correct immediate/pts_time shape per marker type
 
 ### Implementation for User Story 4
 
-- [ ] T032 [US4] Confirm the new signaling flow does not alter PMT construction in `internal/utils/tsduck.go` or `internal/engine/engine.go`; if tests expose drift, restore the static values from spec 001 rather than copying main's ad-only PMT path
-- [ ] T033 [US4] Verify PMT stability via skill `start all` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: run `make start-all`, then `./bin/pmt-verify -url http://localhost:8080/live/<channel>/360p/playlist.m3u8`; expect identical PMT content across content, ad, and splice-bearing segments, with the SCTE-35 stream declared in every segment
+- [x] T032 [US4] Confirm the new signaling flow does not alter PMT construction in `internal/utils/tsduck.go` or `internal/engine/engine.go`; if tests expose drift, restore the static values from spec 001 rather than copying main's ad-only PMT path
+- [x] T033 [US4] Verify PMT stability via skill `start all` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: run `make start-all`, then `./bin/pmt-verify -url http://localhost:8080/live/<channel>/360p/playlist.m3u8`; expect identical PMT content across content, ad, and splice-bearing segments, with the SCTE-35 stream declared in every segment
 
 **Checkpoint**: US4 remains a hard invariant, not a regression risk.
 
@@ -148,12 +148,12 @@
 
 ### Tests for User Story 5
 
-- [ ] T034 [P] [US5] Add failing XML-source tests in `internal/api/partner_client_test.go` and `internal/planner/schedule_fallback_test.go` covering item mapping, missing-stream omission, retained-schedule fallback, and the absence of any second schedule source
+- [x] T034 [P] [US5] Add failing XML-source tests in `internal/api/partner_client_test.go` and `internal/planner/schedule_fallback_test.go` covering item mapping, missing-stream omission, retained-schedule fallback, and the absence of any second schedule source
 
 ### Implementation for User Story 5
 
-- [ ] T035 [US5] Ensure `ProcessEPGToTimeline` and `RecoverFallbackDay` in `internal/planner/planner.go` call only `GetEPGScheduleItemsFromXML` plus the retained fallback; remove any reachable legacy JSON schedule path from the XML planning flow
-- [ ] T036 [US5] Verify XML source behavior via skill `start planner` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: serve a stub XML guide, seed the channel with `db query`, run `make start-planner`, and confirm via `docker exec simlive_redis redis-cli --raw ZRANGE simlive:timeline:<channel> 0 -1` that only stub items and markers appear; then make the stub unavailable and confirm retained-schedule fallback still plans
+- [x] T035 [US5] Ensure `ProcessEPGToTimeline` and `RecoverFallbackDay` in `internal/planner/planner.go` call only `GetEPGScheduleItemsFromXML` plus the retained fallback; remove any reachable legacy JSON schedule path from the XML planning flow
+- [x] T036 [US5] Verify XML source behavior via skill `start planner` using `specs/014-xml-epg-scte35-pipeline/quickstart.md`: serve a stub XML guide, seed the channel with `db query`, run `make start-planner`, and confirm via `docker exec simlive_redis redis-cli --raw ZRANGE simlive:timeline:<channel> 0 -1` that only stub items and markers appear; then make the stub unavailable and confirm retained-schedule fallback still plans
 
 **Checkpoint**: US5 proves the XML source is authoritative and fallback is intact.
 
@@ -163,9 +163,9 @@
 
 **Purpose**: Final gates and end-to-end validation.
 
-- [ ] T037 [P] Run `make fmt`, `make vet`, `make test`, and `make build` from `makefile`; fix every failure before completion
-- [ ] T038 Run all `specs/014-xml-epg-scte35-pipeline/quickstart.md` scenarios, including the negative cases (no ads, past marker, bad asset, zero duration, duplicate starts)
-- [ ] T039 Stop started services, remove the test channel row and temporary fixtures, and record any implementation deviation in `specs/014-xml-epg-scte35-pipeline/research.md`
+- [x] T037 [P] Run `make fmt`, `make vet`, `make test`, and `make build` from `makefile`; fix every failure before completion
+- [x] T038 Run all `specs/014-xml-epg-scte35-pipeline/quickstart.md` scenarios, including the negative cases (no ads, past marker, bad asset, zero duration, duplicate starts)
+- [x] T039 Stop started services, remove the test channel row and temporary fixtures, and record any implementation deviation in `specs/014-xml-epg-scte35-pipeline/research.md`
 
 ---
 
