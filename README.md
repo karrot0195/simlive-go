@@ -8,7 +8,7 @@ Simulated live streaming platform: turns VOD assets into HLS live streams with S
 
 - Go 1.26+
 - Node.js + pnpm (for the client)
-- Docker (for Postgres + Redis)
+- Podman (for Postgres + Redis) — `podman compose` is used throughout
 - `tsduck` (`tsp`, `tstables`), `ffmpeg`/`ffprobe`, `rclone`
 
 ### 2. Configure environment
@@ -21,7 +21,7 @@ cp .env.example .env
 ### 3. Start dependencies
 
 ```bash
-cd config && docker compose up -d
+podman compose up -d
 ```
 
 This starts Postgres (port 5432) and Redis (port 6371).
@@ -68,9 +68,17 @@ simlive is split into three cooperating services plus a web client.
 
 Data flow: planner decides the timeline → engines materialize segments (with ad breaks) → api exposes them as a live HLS playlist. Postgres holds channels/assets/playlists; Redis caches hot state.
 
+## Screenshots
+
+| Player view | Running channels timeline |
+|---|---|
+| ![Player view](data/docs/001.png) | ![Running channels timeline](data/docs/002.png) |
+
+![HLS playlist in browser](data/docs/003.png)
+
 ## Partner Integration
 
-See [PARTNER_GUIDE.md](PARTNER_GUIDE.md) for partner XML configuration, auth setup, and using the demo partner server.
+See [PARTNER_GUIDE.md](PARTNER_GUIDE.md) for partner XML configuration, auth setup, and using the demo partner server. Start it with `make start-partner` (listens on `:3030` by default).
 
 ## Configuration
 
@@ -83,7 +91,7 @@ Environment variables via `.env` (see `.env.example`). Key groups:
 | Partner/Source | `PARTNER_CONFIG`, `SIMLIVE_QUALITY` |
 | Engine | `TMP_DIR`, `ENABLE_CLEAN_UP`, `MAX_WORKERS`, `SIMLIVE_KEEP_BEHIND`, `SIMLIVE_DOWNLOAD_AHEAD`, `ACTIVE_RENDITIONS`, `PLANNER_INTERVAL` |
 
-Docker compose and systemd units live under `config/`.
+Systemd units and build/deploy scripts live under `config/`.
 
 ## Build & Run
 
@@ -103,11 +111,13 @@ make tidy         # go mod tidy
 ## Project Structure
 
 ```
-cmd/        Go binaries: api, planner, engines, plus dev tools (pmt-verify, scte35-check, hls-watch, testredis)
-internal/   Core packages: models, storage, api, planner, engine, utils, configs, verify
+cmd/        Go binaries: api, planner, engines, partner, plus dev tools (pmt-verify, scte35-check, hls-watch, test-stream, testredis)
+internal/   Core packages: models, storage, api, planner, engine, downloader, partner, utils, configs, lifecycle, custom-errors, verify
 client/     Vue 3 + Vite + Vuetify admin UI
-config/     Docker compose, systemd units, build/deploy scripts
+config/     Build/deploy scripts and binaries (config/bin/)
+docker-compose.yml  Postgres + Redis (podman compose)
 docs/       Project documentation
+data/       Sample partner data and assets
 requests/   Partner/feature request specs
 specs/      Feature specifications
 ```
@@ -117,6 +127,7 @@ specs/      Feature specifications
 - `pmt-verify` — watches downloaded segments and verifies PMT/SCTE-35 consistency.
 - `scte35-check` — HTTP-based SCTE-35/PMT verifier for a live playlist.
 - `hls-watch` — monitors an HLS playlist, analyzes segments (PTS, SCTE-35, PMT).
+- `test-stream` — synthetic test stream generator for load/segment testing.
 - `testredis` — Redis test/debug utility.
 
 ## Requirements
