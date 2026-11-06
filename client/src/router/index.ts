@@ -2,7 +2,7 @@ import Panel from '@/views/Panel.vue'
 import RunningChannelsTimeline from '@/views/RunningChannelsTimeline.vue'
 import { createRouter, createWebHistory } from 'vue-router'
 
-const adminId = (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
+import { adminId } from '@/libs/app-config'
 
 const getCurrentUserId = () => {
   try {
@@ -34,7 +34,7 @@ const router = createRouter({
 
 router.beforeEach((to, from, next) => {
   if (to.name === 'timeline') {
-    if (adminId && getCurrentUserId() === adminId) {
+    if (adminId.value && getCurrentUserId() === adminId.value) {
       next()
     } else {
       next('/')

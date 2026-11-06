@@ -85,6 +85,8 @@ func main() {
 	{
 		// GET /api/auth/config — serve parsed auth config (JSON) to client.
 		apiGroup.GET("/auth/config", api.GetAuthConfig)
+		// GET /api/config — serve app-level config (JSON) to client.
+		apiGroup.GET("/config", api.GetAppConfig)
 
 		// POST /api/channels — create / upsert (validates against PARTNER).
 		apiGroup.POST("/channels", channelHandler.CreateOrUpsertChannel)

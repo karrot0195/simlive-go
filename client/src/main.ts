@@ -32,4 +32,6 @@ app.use(createPinia())
 app.use(router)
 app.use(vuetify)
 
-app.mount('#app')
+import('@/libs/app-config').then(({ loadAppConfig }) => loadAppConfig()).finally(() => {
+  app.mount('#app')
+})

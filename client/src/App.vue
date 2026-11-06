@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import MainProvider from '@/providers/main-provider.vue'
+import { adminId } from '@/libs/app-config'
 
 const router = useRouter()
 const route = useRoute()
@@ -9,8 +10,6 @@ const route = useRoute()
 const isActive = (routeName) => {
   return route.name === routeName
 }
-
-const adminId = (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
 
 const getCurrentUserId = () => {
   try {
@@ -24,7 +23,7 @@ const getCurrentUserId = () => {
   }
 }
 
-const isAdmin = computed(() => !!adminId && getCurrentUserId() === adminId)
+const isAdmin = computed(() => !!adminId.value && getCurrentUserId() === adminId.value)
 
 const allMenuItems = [
   { name: 'channels', path: '/', label: 'Home', icon: 'mdi-home' },

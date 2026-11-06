@@ -29,6 +29,7 @@ var reservedFieldNames = map[string]bool{
 // PartnerConfig is the root of {ROOT}/partner.yaml.
 type PartnerConfig struct {
 	Active   string                    `yaml:"active"`
+	AdminID  string                    `yaml:"admin_id"`
 	Partners map[string]PartnerProfile `yaml:"partners"`
 }
 

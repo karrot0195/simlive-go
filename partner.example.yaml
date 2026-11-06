@@ -1,6 +1,7 @@
 # partner.example.yaml (simple for demo partner)
 
 active: default
+admin_id: "admin@gmail.com"
 
 partners:
   default:

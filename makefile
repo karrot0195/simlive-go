@@ -1,4 +1,4 @@
-.PHONY: start-api start-planner start-engines start-partner start-all build build-client stop clean clean-logs logs restart status test fmt vet tidy help
+.PHONY: start-api start-planner start-engines start-partner start-all build build-client stop clean clean-logs logs restart status test fmt vet tidy help apply-env
 
 LOG_DIR := logs
 BIN_DIR := bin
@@ -173,3 +173,15 @@ help:
 	@echo "  vet            Run go vet"
 	@echo "  tidy           Run go mod tidy"
 	@echo "  help           Show this help"
+	@echo "  apply-env      Apply .config/<ENV>/ to project root (ENV=arg1)"
+
+apply-env:
+	@ENV="$(or $(ENV),$(word 2,$(MAKECMDGOALS)))"; \
+	if [ -z "$$ENV" ]; then echo "Usage: make apply-env ENV=<name> (e.g. make apply-env ENV=local)"; exit 1; fi; \
+	if [ ! -d ".config/$$ENV" ]; then echo "Missing .config/$$ENV"; exit 1; fi; \
+	cp -a ".config/$$ENV/." .; \
+	echo "Applied $$ENV"
+
+# Allow positional arg: make apply-env local
+%:
+	@:

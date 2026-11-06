@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { restClient } from '@/libs/client'
+import { adminId } from '@/libs/app-config'
 
 export const useAuthStore = defineStore('auth', {
   state: () => ({
@@ -38,9 +39,8 @@ export const useAuthStore = defineStore('auth', {
           localStorage.setItem('userInfo', JSON.stringify(response.data))
           localStorage.setItem(
             'is_super_admin',
-            String(
-              response.data.sub ===
-                (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
+             String(
+               response.data.sub === adminId.value
             )
           )
           console.log('Token verified successfully:', response.data)
@@ -99,9 +99,8 @@ export const useAuthStore = defineStore('auth', {
         localStorage.setItem('userInfo', JSON.stringify(data))
         localStorage.setItem(
           'is_super_admin',
-          String(
-            data.sub ===
-              (import.meta.env.VITE_ADMIN_ID || '').toString().trim().toLowerCase()
+           String(
+             data.sub === adminId.value
           )
         )
         return true
