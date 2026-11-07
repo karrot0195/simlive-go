@@ -43,13 +43,30 @@ const connectSSE = () => {
         // (omitted from the payload) are left untouched so they remain
         // visible but stop receiving segment updates.
         const next = [...channels.value]
+        const oldLengths: Record<string, number> = {}
+        for (const ch of channels.value) oldLengths[ch.channel_id] = ch.entries.length
         for (const ch of data.channels) {
           const idx = next.findIndex((c) => c.channel_id === ch.channel_id)
           if (idx >= 0) next[idx] = ch
           else next.push(ch)
         }
         channels.value = next
-        loadedCounts.value = {}
+        // Preserve the operator's pagination choice across live updates instead of
+        // resetting to the first page: keep fully-expanded channels fully expanded
+        // and clamp partially-loaded counts to the new entry count.
+        const nextCounts: Record<string, number> = { ...loadedCounts.value }
+        for (const ch of data.channels) {
+          const prev = nextCounts[ch.channel_id]
+          if (prev == null) continue
+          const wasAll = prev >= (oldLengths[ch.channel_id] ?? 0) && (oldLengths[ch.channel_id] ?? 0) > 0
+          if (wasAll) {
+            nextCounts[ch.channel_id] = ch.entries.length
+          } else {
+            // Spec: partial (Load more) progress resets to the initial page on SSE.
+            delete nextCounts[ch.channel_id]
+          }
+        }
+        loadedCounts.value = nextCounts
       }
       if (data.generated_at) generatedAt.value = data.generated_at
       now.value = Date.now() / 1000

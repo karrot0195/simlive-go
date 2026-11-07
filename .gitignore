@@ -12,6 +12,8 @@ bin/
 .env
 config/deploy-targets.json
 config/DEPLOY.md
+.config/deploy-targets.json
+.config/DEPLOY.md
 **/__pycache__/*
 partner.yaml
 archived
